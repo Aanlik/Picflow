@@ -85,15 +85,15 @@ jobs:
           EXPECTED_PICFLOW_VERSION: ${{ steps.picflow.outputs.version }}
         run: |
           mkdir -p /tmp/pixcake-fixture/proofs/shoot
-          docker run -d --name picflow-e2e -p 127.0.0.1:19300:3000 -e PORT=3000 -e PICPEAK_INTEGRATED_BRIDGE=true -e EXTERNAL_MEDIA_ROOT=/external-media -v /tmp/pixcake-fixture/proofs:/external-media:ro "$PICFLOW_IMAGE"
-          uv run --directory bridge python scripts/integration.py --container picflow-e2e --root /tmp/pixcake-fixture --count 100 --report integration-report.json
+          docker run -d --name pixcake-e2e -p 127.0.0.1:19300:3000 -e PORT=3000 -e PICPEAK_INTEGRATED_BRIDGE=true -e EXTERNAL_MEDIA_ROOT=/external-media -v /tmp/pixcake-fixture/proofs:/external-media:ro "$PICFLOW_IMAGE"
+          uv run --directory bridge python scripts/integration.py --container pixcake-e2e --root /tmp/pixcake-fixture --count 100 --report integration-report.json
       - name: Mobile browser downloads
         run: |
           npm ci
           npx playwright install --with-deps chromium webkit
           DOWNLOAD_FIXTURE_REPORT=bridge/integration-report.json PLAYWRIGHT_BASE_URL=http://127.0.0.1:19300 npx playwright test --config playwright.downloads.config.ts
       - if: always()
-        run: docker rm -f picflow-e2e || true
+        run: docker rm -f pixcake-e2e || true
       - name: Publish only after manual approval of a release run
         if: github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main'
         env:
