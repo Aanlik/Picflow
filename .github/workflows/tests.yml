@@ -46,7 +46,7 @@ jobs:
         env:
           SKIP_S3_TESTS: 'true'
           PICPEAK_PG_TEST_URL: 'postgres://picflow:testpass@127.0.0.1:5432/picflow_test'
-        run: npx jest --ci
+        run: npm test -- --ci
 
   frontend:
     runs-on: ubuntu-latest
