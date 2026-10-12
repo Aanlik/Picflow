@@ -37,7 +37,7 @@ const pgUrl = process.env.PICPEAK_PG_TEST_URL;
     const bearer = `Bearer ${mintAdminToken(adminId)}`;
     const created = await request(app).post('/api/admin/events').set('Authorization', bearer).send({
       event_type: 'project', event_name: 'Fresh PostgreSQL', event_date: '2026-10-01',
-      customer_name: 'Customer', customer_email: 'customer@example.test', admin_email: 'admin@example.test',
+      customer_name: 'Customer',
       password: 'Strong-Test-Photo-Pass-924!', expiration_days: 30, feedback_enabled: true,
     });
     expect(created.status).toBe(200);
