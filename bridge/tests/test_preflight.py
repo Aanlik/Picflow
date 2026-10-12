@@ -9,7 +9,7 @@ spec.loader.exec_module(preflight)
 
 
 def compose():
-    return {"services": {"picflow": {"image": "picflow:1.0", "volumes": [{"target": "/external-media/shoot", "read_only": True}]}, "bridge": {"image": "pixcake-bridge:0.1.0", "volumes": [{"target": "/raw/shoot", "read_only": True}]}}}
+    return {"services": {"picflow": {"image": "picflow:1.0.1", "volumes": [{"target": "/external-media/shoot", "read_only": True}]}, "bridge": {"image": "pixcake-bridge:0.1.0", "volumes": [{"target": "/raw/shoot", "read_only": True}]}}}
 
 
 def test_safe_deployment():
@@ -40,7 +40,7 @@ def test_raw_write_rejected():
 
 def integrated():
     return {"services": {"picpeak": {
-        "image": "picflow:1.0",
+        "image": "picflow:1.0.1",
         "ports": [{"host_ip": "192.168.1.12", "target": 3000}],
         "volumes": [
             {"target": "/external-media/Camera", "read_only": True},

@@ -693,13 +693,9 @@ class FeedbackService {
       // Update photo stats
       await this.updatePhotoFeedbackStats(photoId);
 
-      // Log activity
-      await logActivity(`photo_${feedback_type}`, { photo_id: photoId }, eventId, {
-        type: 'guest',
-        id: guest_id || guestIdentifier?.substring(0, 16),
-        name: guest_name || 'Anonymous',
-      });
-
+      // The HTTP route logs one action with event and actor context. Logging
+      // here too created duplicate unread notifications for guest comments
+      // and extra rows for each item in batch feedback.
       return { id, created: true };
     } catch (error) {
       logger.error('Error submitting feedback:', error);

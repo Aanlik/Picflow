@@ -33,7 +33,7 @@ export const useGalleryPhotos = (
     staleTime: 5 * 60 * 1000, // 5 minutes
     // Keep shared proofing state (labels, likes, ratings and comment counts)
     // fresh for guests who leave the gallery open on another device.
-    refetchInterval: 15_000,
+    refetchInterval: 5_000,
     refetchIntervalInBackground: false,
     refetchOnWindowFocus: true,
     // Add a small delay to ensure auth token is properly set

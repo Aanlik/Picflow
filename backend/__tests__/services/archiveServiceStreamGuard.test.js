@@ -91,6 +91,13 @@ describe('archiveService storage reads', () => {
     return db('events').where({ id }).first();
   }
 
+  async function waitForClosedReads(timeoutMs = 250) {
+    const deadline = Date.now() + timeoutMs;
+    while (open.size > 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+  }
+
   beforeAll(async () => {
     ({ db, cleanup } = await bootTestDb());
     await seedMinimal(db);
@@ -124,7 +131,10 @@ describe('archiveService storage reads', () => {
 
     await expect(archiveEvent(event)).rejects.toThrow('socket reset by peer');
 
-    await new Promise((r) => setImmediate(r));
+    // destroy() starts stream teardown immediately, but Readable.from(async
+    // generator) emits `close` after its in-flight async read settles. Wait
+    // for that contract instead of assuming one event-loop turn is enough.
+    await waitForClosedReads();
     expect(open.size).toBe(0);
     const row = await db('events').where({ id: event.id }).first();
     expect(Boolean(row.is_archived)).toBe(false);

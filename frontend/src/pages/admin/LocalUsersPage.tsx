@@ -25,21 +25,21 @@ export const LocalUsersPage = () => {
   });
   return <div className="space-y-6"><h1 className="text-2xl font-bold">{t('localUsers.title')}</h1>
     <div className="flex gap-2 border-b" role="tablist" aria-label={t('localUsers.title')}>
-      <button type="button" role="tab" aria-selected={activePanel === 'users'} className="px-3 py-2 border-b-2 aria-selected:border-blue-600" onClick={() => setActivePanel('users')}>{t('localUsers.accountsTab')}</button>
-      <button type="button" role="tab" aria-selected={activePanel === 'roles'} className="px-3 py-2 border-b-2 aria-selected:border-blue-600" onClick={() => setActivePanel('roles')}>{t('localUsers.rolesTab')}</button>
+      <button id="local-users-tab" type="button" role="tab" aria-label={t('localUsers.accountsTab')} aria-controls="local-users-panel" aria-selected={activePanel === 'users'} className="px-3 py-2 border-b-2 aria-selected:border-blue-600" onClick={() => setActivePanel('users')}>{t('localUsers.accountsTab')}</button>
+      <button id="local-roles-tab" type="button" role="tab" aria-label={t('localUsers.rolesTab')} aria-controls="local-roles-panel" aria-selected={activePanel === 'roles'} className="px-3 py-2 border-b-2 aria-selected:border-blue-600" onClick={() => setActivePanel('roles')}>{t('localUsers.rolesTab')}</button>
     </div>
-    {activePanel === 'roles' ? <RoleManagementTab /> : <>
+    {activePanel === 'roles' ? <div id="local-roles-panel" role="tabpanel" aria-labelledby="local-roles-tab"><RoleManagementTab /></div> : <div id="local-users-panel" role="tabpanel" aria-labelledby="local-users-tab">
     <Card><h2 className="text-lg font-semibold mb-4">{t('localUsers.existingTitle')}</h2>{isError && <p role="alert">{t('localUsers.loadError')}</p>}
       <table className="w-full text-left"><thead><tr><th>{t('localUsers.username')}</th><th>{t('localUsers.role')}</th><th>{t('localUsers.status')}</th></tr></thead><tbody>{data?.users.map(u => <tr key={u.id}><td>{u.username}</td><td>{roleLabel(u.role)}</td><td>{u.is_active ? t('localUsers.enabled') : t('localUsers.disabled')}</td></tr>)}</tbody></table>
     </Card>
     <Card><h2 className="text-lg font-semibold mb-4">{t('localUsers.createTitle')}</h2><p className="mb-4 text-sm text-neutral-500">{t('localUsers.createHelp')}</p>
       <form className="space-y-4" onSubmit={e => { e.preventDefault(); create.mutate(); }}>
-        <Input label={t('localUsers.username')} value={username} autoComplete="off" onChange={e => setUsername(e.target.value)} required minLength={3} maxLength={50} />
-        <Input label={t('localUsers.initialPassword')} type="password" value={password} autoComplete="new-password" onChange={e => setPassword(e.target.value)} required minLength={12} maxLength={128} />
-        <label className="block">{t('localUsers.role')}<select className="input ml-3" required value={role} onChange={e => setRole(e.target.value)}><option value="">{t('localUsers.chooseRole')}</option>{data?.roles.map(r => <option key={r.id} value={r.id}>{t(`users.roles.${r.name}`, { defaultValue: r.display_name })}</option>)}</select></label>
-        {error && <p role="alert" className="text-red-600">{error}</p>}<Button type="submit" disabled={create.isPending}>{create.isPending ? t('localUsers.creating') : t('localUsers.createButton')}</Button>
+        <Input id="local-user-username" aria-label={t('localUsers.username')} label={t('localUsers.username')} value={username} autoComplete="off" onChange={e => setUsername(e.target.value)} required minLength={3} maxLength={50} />
+        <Input id="local-user-password" aria-label={t('localUsers.initialPassword')} label={t('localUsers.initialPassword')} type="password" value={password} autoComplete="new-password" onChange={e => setPassword(e.target.value)} required minLength={12} maxLength={128} />
+        <label htmlFor="local-user-role" className="block">{t('localUsers.role')}<select id="local-user-role" aria-label={t('localUsers.role')} className="input ml-3" required value={role} onChange={e => setRole(e.target.value)}><option value="">{t('localUsers.chooseRole')}</option>{data?.roles.map(r => <option key={r.id} value={r.id}>{t(`users.roles.${r.name}`, { defaultValue: r.display_name })}</option>)}</select></label>
+        {error && <p role="alert" className="text-red-600">{error}</p>}<Button type="submit" aria-label={t('localUsers.createButton')} disabled={create.isPending}>{create.isPending ? t('localUsers.creating') : t('localUsers.createButton')}</Button>
       </form>
     </Card>
-    </>}
+    </div>}
   </div>;
 };

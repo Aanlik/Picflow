@@ -1,4 +1,4 @@
-const { filterDeliveredPhotoEntries } = require('../archiveService');
+const { filterDeliveredPhotoEntries, getArchivableDeliveredPhotoIds } = require('../archiveService');
 
 describe('Bridge project archive contents', () => {
   it('keeps only the managed photo rows marked as delivered', () => {
@@ -17,5 +17,14 @@ describe('Bridge project archive contents', () => {
   it('leaves ordinary non-Bridge archives unchanged', () => {
     const entries = [{ key: 'events/active/portrait/individual/proof.jpg' }];
     expect(filterDeliveredPhotoEntries({}, [], null, entries)).toBe(entries);
+  });
+
+  it('archives only currently retained deliveries after a customer withdrawal', () => {
+    expect(getArchivableDeliveredPhotoIds([
+      { photo_id: 1, delivered: true, selection_cancelled: false },
+      { photo_id: 2, delivered: true, selection_cancelled: true },
+      { photo_id: 3, delivered: true, withdraw_pending: true },
+      { photo_id: 4, delivered: false, selection_cancelled: false },
+    ])).toEqual(new Set([1]));
   });
 });

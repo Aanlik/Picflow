@@ -83,6 +83,7 @@ async def main(args):
         assert login.status_code == 200, login.text
         version = await admin.get("/api/admin/system/version")
         assert version.status_code == 200, version.text
+        health = (await admin.get("/health")).json()
         expected_build = os.environ.get("EXPECTED_PICFLOW_VERSION")
         if not expected_build:
             compose_file = Path(__file__).resolve().parents[2] / "compose.yaml"
@@ -94,6 +95,11 @@ async def main(args):
             assert match, f"Could not read the pinned stack version from {compose_file}"
             expected_build = match.group(1)
         assert version.json().get("build") == expected_build, version.text
+        expected_revision = os.environ.get("EXPECTED_PICFLOW_REVISION")
+        if expected_revision:
+            assert version.json().get("revision") == expected_revision, version.text
+            assert health.get("revision") == expected_revision, json.dumps(health)
+        assert health.get("build") == expected_build, json.dumps(health)
         language = await admin.put("/api/admin/settings/general", json={"general_default_language": "zh-CN"})
         assert language.status_code == 200, language.text
         event = await admin.post("/api/admin/events", json={

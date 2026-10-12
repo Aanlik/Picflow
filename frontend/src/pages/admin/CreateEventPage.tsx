@@ -28,6 +28,7 @@ import { usePublicSettings } from '../../hooks/usePublicSettings';
 import { cssTemplatesService } from '../../services/cssTemplates.service';
 import { useTranslation } from 'react-i18next';
 import { categoryLabel } from '../../utils/categoryLabel';
+import { cssTemplateLabel } from '../../utils/cssTemplateLabel';
 import { ThemeConfig, GALLERY_THEME_PRESETS } from '../../types/theme.types';
 import { Code } from 'lucide-react';
 
@@ -645,7 +646,7 @@ export const CreateEventPage: React.FC = () => {
                           : 'border-neutral-200 dark:border-neutral-700 hover:border-neutral-300 dark:hover:border-neutral-600'
                       }`}
                     >
-                      <div className="font-medium text-sm text-neutral-900 dark:text-neutral-100">{template.name}</div>
+                      <div className="font-medium text-sm text-neutral-900 dark:text-neutral-100">{cssTemplateLabel(template.name, t)}</div>
                       <div className="text-xs text-neutral-500 dark:text-neutral-400 mt-1">
                         {t('events.customTemplate', 'Custom Template')} {template.slot_number}
                       </div>

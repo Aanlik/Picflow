@@ -123,4 +123,29 @@ describe('admin photography workflow summary', () => {
     });
     expect(String(global.fetch.mock.calls[1][0])).toContain('raw_subdir=2026%2F26-10-04%2F01_RAW');
   });
+
+  it('moves withdrawn deliveries out of the delivered workflow filter', async () => {
+    global.fetch = jest.fn(async () => ({
+      status: 200,
+      json: async () => ({
+        event_id: eventId,
+        stage: 'DELIVERED',
+        photos: [
+          { photo_id: 1, delivered: true, selection_cancelled: true },
+          { photo_id: 2, delivered: true, selection_cancelled: false },
+          { photo_id: 3, delivered: false, withdraw_pending: true },
+        ],
+      }),
+      headers: { get: () => '' },
+    }));
+
+    const result = await auth(request(app).get(`/api/admin/photography-workflow/${eventId}`));
+
+    expect(result.status).toBe(200);
+    expect(result.body.photos).toEqual([
+      expect.objectContaining({ photo_id: 1, cancelled: true }),
+      expect.objectContaining({ photo_id: 2, cancelled: false }),
+      expect.objectContaining({ photo_id: 3, cancelled: true }),
+    ]);
+  });
 });

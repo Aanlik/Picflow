@@ -5,7 +5,8 @@ describe('Bridge delivery download filenames', () => {
   const delivered = {
     id: 12,
     filename: 'event-001-12.jpg',
-    original_filename: `DSC00125.__bridge_${digest}.JPG`,
+    original_filename: `2026-10-12_individual_DSC00125.__bridge_${digest}.JPG`,
+    source_filename: 'DSC00125.ARW',
   };
 
   it('strips the private Bridge marker even when original names are disabled', () => {

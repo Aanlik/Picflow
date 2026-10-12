@@ -65,6 +65,7 @@ export interface RetouchWorkflowPhoto {
   photo_id: number;
   selected: boolean;
   selection_cancelled?: boolean;
+  delivered_retained?: boolean;
   delivered: boolean;
   current_version: number;
   added_during_editing: boolean;

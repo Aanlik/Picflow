@@ -70,6 +70,7 @@ jobs:
           tags: ${{ steps.picflow.outputs.image }}
           build-args: |
             PICFLOW_VERSION=${{ steps.picflow.outputs.version }}
+            PICFLOW_REVISION=${{ github.sha }}
           load: true
           cache-from: type=gha,scope=picflow
           cache-to: type=gha,mode=max,scope=picflow
@@ -83,6 +84,7 @@ jobs:
         env:
           PICFLOW_IMAGE: ${{ steps.picflow.outputs.image }}
           EXPECTED_PICFLOW_VERSION: ${{ steps.picflow.outputs.version }}
+          EXPECTED_PICFLOW_REVISION: ${{ github.sha }}
         run: |
           mkdir -p /tmp/pixcake-fixture/proofs/shoot
           docker run -d --name pixcake-e2e -p 127.0.0.1:19300:3000 -e PORT=3000 -e PICPEAK_INTEGRATED_BRIDGE=true -e EXTERNAL_MEDIA_ROOT=/external-media -v /tmp/pixcake-fixture/proofs:/external-media:ro "$PICFLOW_IMAGE"

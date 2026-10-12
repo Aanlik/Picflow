@@ -13,6 +13,7 @@
 
 const { db } = require('../database/db');
 const logger = require('../utils/logger');
+const path = require('path');
 const {
   sanitizeForContentDisposition,
   sanitizeForZipEntry,
@@ -80,6 +81,19 @@ async function getUseOriginalFilenames() {
  * never populated).
  */
 function pickRawDownloadName(photo, useOriginal) {
+  // Bridge replacements use an internal date/category prefix plus a private
+  // reconciliation marker. When source_filename is available, keep the
+  // camera-original stem and use the delivered image extension.
+  const bridgeMarkedName = photo && typeof photo.original_filename === 'string'
+    ? photo.original_filename
+    : '';
+  if (photo?.source_filename && /\.__bridge_[a-f0-9]{64}(?=\.[^.]+$)/i.test(bridgeMarkedName)) {
+    const sourceBase = path.basename(photo.source_filename);
+    const sourceExt = path.extname(sourceBase);
+    const sourceStem = sourceExt ? sourceBase.slice(0, -sourceExt.length) : sourceBase;
+    const deliveredExt = path.extname(bridgeMarkedName) || '.jpg';
+    return `${sourceStem}${deliveredExt}`;
+  }
   const bridgeName = photo && typeof photo.original_filename === 'string'
     ? photo.original_filename.replace(/\.__bridge_[a-f0-9]{64}(?=\.[^.]+$)/i, '')
     : null;

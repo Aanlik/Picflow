@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { RefreshCw, Save } from 'lucide-react';
 import { api } from '../../config/api';
 import { Card, Button } from '../common';
+import { countWorkflowPhotos, matchesWorkflowPhotoFilter, type WorkflowPhotoFilter } from '../../utils/workflowPhotoFilter';
 
 type PhotoState = {
   photo_id: number;
@@ -55,8 +56,8 @@ type Workflow = {
 
 const stageValues = ['SELECTING', 'EDITING', 'DELIVERED', 'ARCHIVED'] as const;
 const requestStatuses = ['open', 'in_progress', 'waiting_customer', 'completed', 'closed', 'cancelled'] as const;
-const photoFilters = ['all', 'proof', 'selected', 'editing', 'delivered', 'additional', 'requests', 'cancelled', 'errors'] as const;
-type PhotoFilter = typeof photoFilters[number];
+const photoFilters: WorkflowPhotoFilter[] = ['all', 'proof', 'selected', 'editing', 'delivered', 'additional', 'requests', 'cancelled', 'errors'];
+type PhotoFilter = WorkflowPhotoFilter;
 const metricNames: Record<string, string> = {
   '客户已选': 'selected', '追加选片': 'additionalSelections', 'RAW已匹配': 'matched',
   '用户上传原图': 'uploadedSource',
@@ -143,32 +144,24 @@ export function PhotographyWorkflowCard({ eventId }: { eventId: number }) {
   const autoBind = () => void perform(() => api.post(`/admin/photography-workflow/${eventId}/auto-bind`, {}));
 
   const isBound = Boolean(workflow?.configured);
-  const photos = workflow?.photos || [];
+  const photos = useMemo(() => workflow?.photos || [], [workflow?.photos]);
   const activeRequestPhotoIds = useMemo(() => new Set(requests
     .filter((request) => !['cancelled', 'completed', 'closed'].includes(request.status))
     .map((request) => request.photo_id)), [requests]);
-  const photoFilterCounts = useMemo(() => ({
-    all: photos.length,
-    proof: photos.filter((photo) => !photo.selected && !photo.cancelled && !photo.delivered && !photo.error).length,
-    selected: photos.filter((photo) => photo.selected && !photo.ready_for_editing && !photo.delivered && !photo.error).length,
-    editing: photos.filter((photo) => photo.selected && photo.ready_for_editing && !photo.delivered && !photo.error).length,
-    delivered: photos.filter((photo) => photo.delivered).length,
-    additional: photos.filter((photo) => photo.selected && photo.added_during_editing).length,
-    requests: photos.filter((photo) => activeRequestPhotoIds.has(photo.photo_id)).length,
-    cancelled: photos.filter((photo) => photo.cancelled).length,
-    errors: photos.filter((photo) => photo.error).length,
-  }), [photos, activeRequestPhotoIds]);
-  const filteredPhotos = useMemo(() => photos.filter((photo) => {
-    if (photoFilter === 'all') return true;
-    if (photoFilter === 'requests') return activeRequestPhotoIds.has(photo.photo_id);
-    if (photoFilter === 'proof') return !photo.selected && !photo.cancelled && !photo.delivered && !photo.error;
-    if (photoFilter === 'selected') return photo.selected && !photo.ready_for_editing && !photo.delivered && !photo.error;
-    if (photoFilter === 'editing') return photo.selected && photo.ready_for_editing && !photo.delivered && !photo.error;
-    if (photoFilter === 'delivered') return photo.delivered;
-    if (photoFilter === 'additional') return photo.selected && photo.added_during_editing;
-    if (photoFilter === 'cancelled') return photo.cancelled;
-    return photo.error;
-  }), [photos, photoFilter, activeRequestPhotoIds]);
+  const stage = workflow?.stage || 'SELECTING';
+  const photoFilterCounts = useMemo(
+    () => countWorkflowPhotos(photos, stage, activeRequestPhotoIds),
+    [photos, stage, activeRequestPhotoIds],
+  );
+  const filteredPhotos = useMemo(
+    () => photos.filter((photo) => matchesWorkflowPhotoFilter(
+      photo,
+      photoFilter,
+      stage,
+      activeRequestPhotoIds.has(photo.photo_id),
+    )),
+    [photos, photoFilter, stage, activeRequestPhotoIds],
+  );
   return <Card><div className="p-6 space-y-5">
     <div className="flex flex-wrap items-center justify-between gap-3">
       <div>

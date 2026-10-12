@@ -29,14 +29,18 @@ export function WorkflowStatusBadge({
   const version = state === 'delivered' && photo.retouch_version
     ? ` · V${photo.retouch_version}`
     : '';
+  const retained = photo.retouch_delivered_retained && photo.retouch_version
+    ? ` · ${t('photographyWorkflow.retainedDeliveredVersion', { version: photo.retouch_version })}`
+    : '';
+  const status = `${label}${version}${additional}${retained}`;
 
   return (
     <span
       className={`absolute ${position} z-[3] max-w-[calc(100%-1rem)] truncate rounded-full font-semibold shadow-sm ring-1 ring-white/40 ${stateClass[state]} ${compact ? 'px-1.5 py-0.5 text-[9px]' : 'px-2.5 py-1 text-[11px]'}`}
-      aria-label={`${label}${version}${additional}`}
-      title={`${label}${version}${additional}`}
+      aria-label={status}
+      title={status}
     >
-      {label}{version}{additional}
+      {status}
     </span>
   );
 }

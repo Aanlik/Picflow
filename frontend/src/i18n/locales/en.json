@@ -402,6 +402,7 @@
     "sortBy": "Sort By",
     "sortByCaptureDate": "Sort by Capture Date",
     "sortByRating": "Sort by Rating",
+    "sortByCurrent": "Sort by {{sort}}",
     "photoGallery": "Photo Gallery",
     "photos": "Photos",
     "allRightsReserved": "All rights reserved",
@@ -478,7 +479,9 @@
       "portraits": "Portraits",
       "groupPhotos": "Group Photos",
       "details": "Details",
-      "party": "Party"
+      "party": "Party",
+      "individualPhotos": "Individual Photos",
+      "collages": "Collages"
     },
     "addCategory": "Add Category",
     "eventSpecificCategories": "Event-Specific Categories",
@@ -972,7 +975,6 @@
       "allowedFileTypes": "Allowed File Types",
       "allowedFileTypesHelp": "Comma-separated list of file extensions, e.g. jpg,jpeg,png,webp. Applies to every upload path, including guest uploads and the chunked (large-file) API. Videos are off by default: add mp4, mov or webm to accept them.",
       "featureToggles": "Feature Toggles",
-      "enableRegistration": "Allow self-registration for admins",
       "enableShortGalleryUrls": "Use short gallery URLs",
       "enableShortGalleryUrlsHelp": "Removes the event slug from new share links while keeping existing links working.",
       "useOriginalFilenames": "Use original filenames on download",
@@ -1724,6 +1726,7 @@
     "storageSoftLimitConfigured": "Configured alert limit: {{limit}}",
     "storageSoftLimitRecommended": "Suggested alert limit: {{limit}}",
     "version": "Version",
+    "buildRevision": "Build commit",
     "archivedEvents": "Archived Events",
     "systemHealth": "System Health",
     "health": {
@@ -2143,7 +2146,7 @@
     "pages": "Pages",
     "previewLinks": "Preview Links",
     "englishVersion": "English Version",
-    "germanVersion": "German Version",
+    "chineseVersion": "Simplified Chinese",
     "editPage": "Edit {{page}}",
     "pageTitle": "Page Title",
     "pageContent": "Page Content",
@@ -2232,8 +2235,6 @@
         "redoShort": "Redo"
       }
     },
-    "showInFooter": "Show in gallery footer",
-    "showInFooterHelp": "When off, this page is hidden from the public gallery footer. The page itself remains accessible at its direct URL.",
     "unsavedChangesConfirm": "You have unsaved changes. Do you want to save them?",
     "preview": {
       "brandLogo": "Brand logo",
@@ -2580,14 +2581,9 @@
           "name": "Upload Backup",
           "description": "Upload a backup file",
           "comingSoon": "Upload functionality coming soon",
-          "manifestComingSoon": "Manifest Upload functionality coming soon",
           "picpeak": {
             "name": ".picpeak backup",
             "description": "Portable full backup — restores everything (full override, keeps your current account)."
-          },
-          "manifest": {
-            "name": "Manifest + files",
-            "description": "Upload a manifest and its backup files (legacy format)."
           }
         },
         "configuration": {
@@ -3578,12 +3574,13 @@
       "cancelled": "Withdrawn by client"
     },
     "clientState": {
-      "proof": "Original proof",
+      "proof": "To select",
       "selected": "Selected for retouching",
       "editing": "Retouching",
       "delivered": "Retouched",
       "cancelled": "Retouch selection withdrawn"
     },
+    "retainedDeliveredVersion": "retouch V{{version}} kept",
     "quickFilterTitle": "Filter photos by retouching stage",
     "quickFilter": {
       "all": "All",

@@ -959,7 +959,7 @@ export const EventInformationCard: React.FC<EventInformationCardProps> = ({
                   event.protection_level === 'standard' ? 'bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300' :
                   'bg-neutral-100 dark:bg-neutral-700 text-neutral-700 dark:text-neutral-300'
                 }`}>
-                  {event.protection_level || 'standard'}
+                  {t(`events.protectionLevel${String(event.protection_level || 'standard').replace(/^./, (letter) => letter.toUpperCase())}`, '标准：禁用相关键盘快捷键')}
                 </span>
                 {/* !! on the next three — SQLite integer booleans render literal "0" when falsy */}
                 {!!event.disable_right_click && (
@@ -1005,10 +1005,10 @@ export const EventInformationCard: React.FC<EventInformationCardProps> = ({
                       {t('events.heroLogoVisibleLabel', 'Logo visible')}
                     </span>
                     <span className="inline-flex items-center px-2 py-1 text-xs font-medium bg-neutral-100 dark:bg-neutral-700 text-neutral-700 dark:text-neutral-300 rounded">
-                      {t('events.heroLogoSizeLabel', 'Size')}: {event.hero_logo_size || 'medium'}
+                      {t('events.heroLogoSizeLabel', '大小')}: {t(`events.heroLogoSize${String(event.hero_logo_size || 'medium').replace(/^./, (letter) => letter.toUpperCase())}`, '中')}
                     </span>
                     <span className="inline-flex items-center px-2 py-1 text-xs font-medium bg-neutral-100 dark:bg-neutral-700 text-neutral-700 dark:text-neutral-300 rounded">
-                      {t('events.heroLogoPositionLabel', 'Position')}: {event.hero_logo_position || 'top'}
+                      {t('events.heroLogoPositionLabel', '位置')}: {t(`events.heroLogoPosition${String(event.hero_logo_position || 'top').replace(/^./, (letter) => letter.toUpperCase())}`, '顶部（标题上方）')}
                     </span>
                   </>
                 ) : (

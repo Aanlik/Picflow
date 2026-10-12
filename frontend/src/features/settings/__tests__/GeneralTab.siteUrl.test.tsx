@@ -26,7 +26,6 @@ const base: GeneralSettings = {
   max_files_per_upload: 500,
   allowed_file_types: 'jpg,png',
   max_upload_batch_size_mb: 95,
-  enable_registration: false,
   maintenance_mode: false,
   short_gallery_urls: false,
   use_original_filenames_for_downloads: false,

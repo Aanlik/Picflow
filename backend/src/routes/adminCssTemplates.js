@@ -174,8 +174,8 @@ router.post('/:slotNumber/reset', adminAuth, requirePermission('branding.edit'),
       db('css_templates')
         .where({ slot_number: 1 })
         .update({
-          name: 'Elegant Dark',
-          css_content: DEFAULT_CSS_TEMPLATE,
+          name: '优雅暗色',
+          css_content: DEFAULT_CSS_TEMPLATE.replace(/\/\*[\s\S]*?\*\//g, '').trim(),
           is_enabled: true,
           updated_at: db.fn.now()
         })

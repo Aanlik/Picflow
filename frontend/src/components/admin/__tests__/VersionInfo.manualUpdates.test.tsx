@@ -8,7 +8,7 @@ vi.mock('react-i18next', () => ({
 }));
 
 vi.mock('../../../config/api', () => ({
-  api: { get: vi.fn().mockResolvedValue({ data: { backend: '1.0.0', frontend: '1.0.0', build: '1.0', node: 'v22', environment: 'production' } }) },
+  api: { get: vi.fn().mockResolvedValue({ data: { backend: '1.0.1', frontend: '1.0.1', build: '1.0.1', node: 'v22', environment: 'production' } }) },
 }));
 
 import { api } from '../../../config/api';
@@ -19,7 +19,7 @@ describe('VersionInfo manual update policy', () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(<QueryClientProvider client={client}><VersionInfo /></QueryClientProvider>);
 
-    await waitFor(() => expect(screen.getAllByText((_, element) => element?.textContent === 'Picflow v1.0').length).toBeGreaterThan(0));
+    await waitFor(() => expect(screen.getAllByText((_, element) => element?.textContent === 'Picflow v1.0.1').length).toBeGreaterThan(0));
 
     expect(api.get).toHaveBeenCalledWith('/admin/system/version');
     expect(api.get).not.toHaveBeenCalledWith('/admin/system/updates');

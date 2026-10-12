@@ -275,6 +275,8 @@ app.get(['/health', '/api/health'], async (req, res) => {
     await db.raw('SELECT 1');
     res.json({
       status: 'ok',
+      build: process.env.PICFLOW_BUILD_VERSION || process.env.PHOFLOW_BUILD_VERSION || process.env.PICPEAK_BUILD_VERSION || '1.0',
+      revision: process.env.PICFLOW_BUILD_REVISION || process.env.GITHUB_SHA || null,
       timestamp: new Date().toISOString(),
       pid: process.pid,
       uptime: process.uptime()
@@ -283,6 +285,8 @@ app.get(['/health', '/api/health'], async (req, res) => {
     logger.error('Health check failed:', error);
     res.status(503).json({
       status: 'error',
+      build: process.env.PICFLOW_BUILD_VERSION || process.env.PHOFLOW_BUILD_VERSION || process.env.PICPEAK_BUILD_VERSION || '1.0',
+      revision: process.env.PICFLOW_BUILD_REVISION || process.env.GITHUB_SHA || null,
       timestamp: new Date().toISOString(),
       pid: process.pid,
       uptime: process.uptime()

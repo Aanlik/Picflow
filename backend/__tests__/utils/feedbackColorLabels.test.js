@@ -110,7 +110,7 @@ describe('colour label submission (#1044)', () => {
     expect(await feedbackService.getPhotoColorLabelCounts(photoIds[0])).toEqual({ green: 1 });
   });
 
-  it('records customer feedback activity as a guest actor', async () => {
+  it('leaves activity logging to the HTTP route so actions are not duplicated', async () => {
     const inserted = await db('photos').insert({
       event_id: eventId,
       filename: 'notification-test.jpg',
@@ -130,7 +130,7 @@ describe('colour label submission (#1044)', () => {
       .where({ activity_type: 'photo_like', event_id: eventId })
       .orderBy('id', 'desc')
       .first();
-    expect(activity.actor_type).toBe('guest');
+    expect(activity).toBeUndefined();
   });
 
   it('switches to another colour in place — never a second row per guest', async () => {

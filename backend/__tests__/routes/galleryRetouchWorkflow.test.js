@@ -115,7 +115,9 @@ describe('gallery retouch workflow and client requests', () => {
     }));
     const result = await get(`/api/gallery/${slug}/retouch-workflow`);
     expect(result.status).toBe(200);
-    expect(result.body.photos[0]).toMatchObject({ state: 'proof', selection_cancelled: false, delivered: true });
+    expect(result.body.photos[0]).toMatchObject({
+      state: 'proof', selection_cancelled: false, delivered_retained: true, delivered: true, current_version: 2,
+    });
     global.fetch = jest.fn(async (url) => ({
       status: 200,
       json: async () => String(url).includes('/version-folder')

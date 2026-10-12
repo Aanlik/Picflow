@@ -402,6 +402,7 @@
     "sortBy": "排序方式",
     "sortByCaptureDate": "按拍摄时间排序",
     "sortByRating": "按评分排序",
+    "sortByCurrent": "按{{sort}}排序",
     "photoGallery": "照片相册",
     "photos": "照片",
     "allRightsReserved": "保留所有权利",
@@ -478,7 +479,9 @@
       "portraits": "人像",
       "groupPhotos": "合影",
       "details": "细节",
-      "party": "派对"
+      "party": "派对",
+      "individualPhotos": "单张照片",
+      "collages": "拼图"
     },
     "addCategory": "添加分类",
     "eventSpecificCategories": "本项目分类",
@@ -623,7 +626,7 @@
     "totalPhotos": "照片总数",
     "managePhotos": "管理照片",
     "actions": "操作",
-    "archivingInfo": "归档会生成包含全部照片的 ZIP 文件，并关闭客户访问。",
+    "archivingInfo": "归档会关闭客户访问并生成 ZIP。已接入精修流程的项目只打包当前保留的精修成片，RAW 原片仍保留在 NAS。",
     "archivedOn": "已归档于",
     "downloadArchive": "下载归档",
     "loadingPhotos": "照片加载中…",
@@ -890,10 +893,10 @@
       "title": "确认批量归档",
       "intro_one": "即将归档 {{count}} 个项目，此操作将：",
       "intro_other": "即将归档 {{count}} 个项目，此操作将：",
-      "effectZip": "为每个项目创建所有照片的 ZIP 归档",
+      "effectZip": "为每个项目创建 ZIP；已接入精修流程的项目仅包含当前保留的精修成片",
       "effectInaccessible": "关闭客户的相册访问",
       "effectDelisted": "将项目从开放中的项目列表移除",
-      "effectStorage": "通过压缩照片腾出存储空间",
+      "effectStorage": "将应用内的交付照片移入归档，释放应用存储空间",
       "listHeading": "待归档项目：",
       "submit_one": "归档 {{count}} 个项目",
       "submit_other": "归档 {{count}} 个项目"
@@ -973,7 +976,6 @@
       "allowedFileTypes": "允许的文件类型",
       "allowedFileTypesHelp": "使用逗号分隔文件扩展名，例如 jpg、jpeg、png、webp。此设置适用于所有上传入口，包括客户上传和大文件分块上传 API。视频默认关闭；添加 mp4、mov 或 webm 即可允许上传。",
       "featureToggles": "功能开关",
-      "enableRegistration": "允许管理员自行登记",
       "enableShortGalleryUrls": "使用短相册 URL",
       "enableShortGalleryUrlsHelp": "新分享链接省略项目名称部分，已有链接仍可使用。",
       "useOriginalFilenames": "下载时使用原始文件名",
@@ -1185,7 +1187,7 @@
       "defaultAllowColorLabels": "颜色标记",
       "defaultKeybindMode": "图片查看器默认快捷键",
       "keybindColors": "1：选为精修；2：备选；3：不选",
-      "keybindLightroom": "Lightroom：1–5 设置星级，6–9 设置颜色"
+      "keybindLightroom": "Lightroom：1–5 设置星级，6–9 设置红／黄／绿／蓝颜色标记。紫色标记在工作台编号为 10；Lightroom 快捷键不包含两位数“10”。"
     },
     "imageSecurity": {
       "title": "图像保护",
@@ -1232,7 +1234,7 @@
       "fit": "缩放方式",
       "fitHelp": "设置如何调整图片以适配缩略图尺寸；“裁剪铺满”填满区域，“完整显示”保留整张图片。",
       "regenerateTitle": "重新生成缩略图",
-      "regenerateHelp": "更改缩略图设置后，重新生成所有已有缩略图以应用新配置。 这在背景中运行，大型相册可能需要一段时间。",
+      "regenerateHelp": "更改缩略图设置后，可重新生成已有缩略图以应用新配置。此操作会在后台运行；照片较多时可能需要一些时间。",
       "regenerateButton": "重生成全部缩略图",
       "regenerateStarted": "已开始重新生成缩略图",
       "regenerateError": "启动缩略图再生失败",
@@ -1249,7 +1251,7 @@
       "saveError": "保存缩略图设置失败",
       "loadError": "加载缩略图设置失败",
       "infoTitle": "关于缩略图",
-      "infoText": "缩略图是您原版生成的较小的预览图像。 增加照片的大小或质量会改善图片在相册网格中的外观，但会使用更多的存储和带宽。 在更改设置后，请使用“ 重新生成全部缩略图 ” 来更新已有的照片。",
+      "infoText": "缩略图是由原图生成的较小预览图。提高缩略图尺寸或质量可改善照片在网格中的显示效果，但会占用更多存储空间和带宽。更改设置后，请重新生成缩略图以更新已有照片。",
       "fit_cover": "裁剪铺满（保留比例）",
       "fit_contain": "完整显示（保留比例）",
       "fit_fill": "拉伸填满（不保留比例）",
@@ -1266,18 +1268,18 @@
       "sitemapUrlHelp": "可选，填写后添加至 robots.txt。",
       "aiBlockingTitle": "AI 爬虫限制",
       "blockAiCrawlers": "屏蔽 AI/LLM 爬行器",
-      "blockAiCrawlersHelp": "防止人工智能训练bots访问您的内容。",
+      "blockAiCrawlersHelp": "阻止 AI 爬虫访问您的内容，降低内容被用于模型训练的风险。",
       "blockedAgents": "已限制的 AI 爬虫",
       "addAgentPlaceholder": "输入代理名称...",
-      "blockSocialBots": "屏蔽社交媒体预览 bots",
-      "blockSocialBotsHelp": "防止在Twitter,Facebook,LinkedIn等网站进行链接预览.",
+      "blockSocialBots": "屏蔽社交平台链接预览爬虫",
+      "blockSocialBotsHelp": "阻止 Twitter、Facebook、LinkedIn 等平台抓取页面并生成链接预览。",
       "metaTagsTitle": "元标记自定义规则",
       "metaNoindex": "添加无索引元标记",
-      "metaNoindexHelp": "告诉搜索引擎不要索引页面(HTML-level,补充机器人.txt).",
+      "metaNoindexHelp": "通过 HTML 元标记和 robots.txt 提示搜索引擎不要收录此页面。",
       "metaNofollow": "添加不跟随元标记",
-      "metaNofollowHelp": "命令搜索引擎不要在页面上跟踪链接.",
+      "metaNofollowHelp": "提示搜索引擎不要跟踪此页面中的链接。",
       "metaNoai": "添加 noai/ noimageai 元标记",
-      "metaNoaiHelp": "表示内容不应用于AI培训.",
+      "metaNoaiHelp": "声明页面内容不用于 AI 训练或图像训练。",
       "customRules": "自定义 robots.txt 规则",
       "ruleAgentPlaceholder": "用户代理",
       "rulePathPlaceholder": "禁止访问的路径",
@@ -1308,7 +1310,7 @@
       "title": "功能开关",
       "intro": "开启或关闭可选功能。开启的功能会出现在左侧导航栏；测试中的功能可先试用，再按需关闭。",
       "notYetAvailable": "暂未开放，功能发布后可开启。",
-      "sidebarHidden": "没有边栏项目——在背景中运行",
+      "sidebarHidden": "没有可显示的侧边栏项目",
       "unsavedChanges": "您有未保存的更改",
       "preview": {
         "title": "侧边栏预览",
@@ -1553,7 +1555,7 @@
       "glassEffect": "毛玻璃效果",
       "glassEffectDesc": "创建现代磨砂玻璃效果：",
       "tip": "提示",
-      "tipText": "可在“设置 → CSS 模板”中使用 Apple Liquid Glass 等预设样式。"
+      "tipText": "可在“设置 → CSS 模板”中使用“苹果液态玻璃”等预设样式。"
     },
     "resetToDefault": "重置为默认值",
     "applyTheme": "应用主题",
@@ -1724,6 +1726,7 @@
     "storageSoftLimitConfigured": "已配置提醒上限：{{limit}}",
     "storageSoftLimitRecommended": "建议的提醒上限：{{limit}}",
     "version": "版本",
+    "buildRevision": "构建提交",
     "archivedEvents": "已归档项目",
     "systemHealth": "系统状态",
     "health": {
@@ -2142,8 +2145,8 @@
     "loadingPages": "正在加载页面...",
     "pages": "页面",
     "previewLinks": "预览链接",
-    "englishVersion": "英语版本",
-    "germanVersion": "德语版本",
+    "englishVersion": "英文版",
+    "chineseVersion": "简体中文版",
     "editPage": "编辑 {{page}}",
     "pageTitle": "页面标题",
     "pageContent": "页面内容",
@@ -2232,8 +2235,6 @@
         "redoShort": "重做"
       }
     },
-    "showInFooter": "在相册页脚中显示",
-    "showInFooterHelp": "关闭时，此页面会隐藏在公共相册页脚上。 页面本身仍可访问其直接 URL。",
     "unsavedChangesConfirm": "有尚未保存的更改，要保存吗？",
     "preview": {
       "brandLogo": "品牌标志",
@@ -2557,12 +2558,12 @@
       }
     },
     "restore": {
-      "superAdminOnly": "恢复备份可以取代关于这个实例的所有数据，用户账户和角色包含在内，所以只有超级管理员才能做到这一点.",
+      "superAdminOnly": "恢复备份会替换此实例中的数据，包括用户账号和角色，因此仅超级管理员可以执行。",
       "steps": {
         "selectSource": "选择源",
         "chooseBackup": "选择备份",
         "restoreOptions": "恢复选项",
-        "reviewConfirm": "复检确认",
+        "reviewConfirm": "检查并确认",
         "progress": "恢复进度"
       },
       "source": {
@@ -2580,14 +2581,9 @@
           "name": "上传备份",
           "description": "上传备份文件",
           "comingSoon": "上传功能即将到来",
-          "manifestComingSoon": "即时上传功能",
           "picpeak": {
-            "name": ".picpak 备份",
-            "description": "便携式全备份——恢复一切(全覆盖，保留您的经常账户)."
-          },
-          "manifest": {
-            "name": "声明 + 文件",
-            "description": "上传清单文件及其备份文件（旧版格式）。"
+            "name": ".picpeak 备份",
+            "description": "便携式完整备份，可恢复数据和文件；恢复时会保留当前管理员账号。"
           }
         },
         "configuration": {
@@ -3354,7 +3350,7 @@
       "editor": "编辑项目和照片内容，但不能创建或删除项目。",
       "viewer": "只读查看概览和项目。",
       "solo_photographer": "适用于单人摄影工作室的完整管理角色，可管理项目、照片、客户、设置和团队。",
-      "team_photographer": "协作摄影师角色，可查看项目、上传和管理照片并查看客户信息；不能管理设置、用户或财务。"
+      "team_photographer": "协作摄影师角色，可查看项目、上传和管理照片并查看客户信息；不能管理系统设置或用户账号。"
     }
   },
   "ui": {
@@ -3578,12 +3574,13 @@
       "cancelled": "客户已撤回"
     },
     "clientState": {
-      "proof": "原始预览",
+      "proof": "待选片",
       "selected": "已选待精修",
       "editing": "精修中",
       "delivered": "精修完成",
       "cancelled": "已撤回精修选择"
     },
+    "retainedDeliveredVersion": "已保留精修 V{{version}}",
     "cancelledSelectionNote": "已撤回精修选择；已交付成片仍保留在相册中。",
     "quickFilterTitle": "按精修进度筛选照片",
     "quickFilter": {

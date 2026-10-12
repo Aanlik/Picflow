@@ -11,6 +11,7 @@ import { WorkflowStatusBadge } from './WorkflowStatusBadge';
 import { useGuestIdentityOptional } from '../../contexts/GuestIdentityContext';
 import { useInputMode } from '../../hooks/useInputMode';
 import type { Photo } from '../../types';
+import { photoDisplayFilename } from '../../utils/photoFilename';
 import { WorkflowPhotoAction } from './WorkflowPhotoAction';
 
 // Shared across mounted photo tiles so a mouse drag can apply the selection
@@ -530,7 +531,7 @@ export const PhotoCard: React.FC<PhotoCardProps> = ({
           {/* Selection Checkbox (visible on hover or when selected) */}
           <button
             type="button"
-            aria-label={tAudit('gallery.selectPhoto', { filename: photo.original_filename || photo.filename })}
+            aria-label={tAudit('gallery.selectPhoto', { filename: photoDisplayFilename(photo) })}
             role="checkbox"
             aria-checked={isSelected}
             data-testid={checkboxTestId ? `gallery-photo-checkbox-${photo.id}` : undefined}

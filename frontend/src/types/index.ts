@@ -117,6 +117,7 @@ export interface Photo {
   // post migration 062. Null for legacy rows. Surfaced in the lightbox
   // when the admin toggles `use_original_filenames` on (#508).
   original_filename?: string | null;
+  source_filename?: string | null;
   url: string;
   thumbnail_url?: string;
   hero_url?: string; // Hero-optimized image URL (1920x1080) for full-width hero sections
@@ -183,6 +184,7 @@ export interface Photo {
   retouch_state?: 'proof' | 'selected' | 'editing' | 'delivered' | 'cancelled';
   retouch_selected?: boolean;
   retouch_selection_cancelled?: boolean;
+  retouch_delivered_retained?: boolean;
   retouch_version?: number;
   retouch_added_during_editing?: boolean;
   retouch_workflow_enabled?: boolean;

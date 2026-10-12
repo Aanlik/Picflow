@@ -75,7 +75,7 @@ PLATFORM=linux/arm64 ./scripts/build-picflow.sh
 
 如果在其他 Docker 主机上构建，需要将构建出的同版本镜像转移并加载到 NAS，再在 NAS 上启动 Compose。
 
-当前 [Compose](compose.yaml) 固定使用本地镜像 `picflow:1.0`；上面的构建脚本从 Compose 读取镜像版本，不要求自行拼接版本号。正式发布流程见 [RELEASING.md](RELEASING.md)。
+当前 [Compose](compose.yaml) 固定使用本地镜像 `picflow:1.0.1`；上面的构建脚本从 Compose 读取镜像版本，不要求自行拼接版本号。正式发布流程见 [RELEASING.md](RELEASING.md)。
 
 ### 3. 初始化并关联照片
 
@@ -145,7 +145,7 @@ RAW 支持 `.ARW`、`.CR3`、`.CR2`、`.NEF`、`.RAF`、`.DNG`、`.ORF`、`.RW2`
 
 Bridge 结合文件事件与周期扫描检测成片，以 SHA-256 去重；相同内容不会重复上传。返修只扫描每张照片当前待交付的版本目录，失败或待上传任务不计入成功版本数。
 
-单个 `picflow:1.0` 镜像运行 Picflow 与 Bridge，默认使用 SQLite，不需要 PostgreSQL、Redis 或单独的 Bridge 容器。Picflow 提供唯一网页入口；Bridge 监听容器回环地址 `127.0.0.1:8080`，通过 Picflow 后台代理调用，无需单独账号或 Public API Token。Compose 服务名为 `picflow`；逻辑数据卷为 `picflow-data` 与 `picflow-bridge-data`，物理卷名保留旧安装命名。
+单个 `picflow:1.0.1` 镜像运行 Picflow 与 Bridge，默认使用 SQLite，不需要 PostgreSQL、Redis 或单独的 Bridge 容器。Picflow 提供唯一网页入口；Bridge 监听容器回环地址 `127.0.0.1:8080`，通过 Picflow 后台代理调用，无需单独账号或 Public API Token。Compose 服务名为 `picflow`；逻辑数据卷为 `picflow-data` 与 `picflow-bridge-data`，物理卷名保留旧安装命名。
 
 | 持久化位置 | 用途 |
 | --- | --- |

@@ -133,6 +133,13 @@ describe('Premium lightbox canvas rendering (#1325)', () => {
     }));
   });
 
+  it('separates the like and download controls when both are enabled', () => {
+    mount({ allowDownloads: true, feedbackEnabled: true, feedbackOptions: { allowLikes: true } });
+
+    expect(document.querySelector<HTMLButtonElement>('.gallery-premium-like-btn')?.style.right).toBe('3.25rem');
+    expect(document.querySelector<HTMLButtonElement>('.gallery-premium-download-btn')).toBeInTheDocument();
+  });
+
   it('opens batch-selection mode instead of selecting or downloading every photo', () => {
     const onToggleSelectionMode = vi.fn();
     const onPhotoSelect = vi.fn();
@@ -143,6 +150,26 @@ describe('Premium lightbox canvas rendering (#1325)', () => {
     expect(onToggleSelectionMode).toHaveBeenCalledOnce();
     expect(onPhotoSelect).not.toHaveBeenCalled();
     expect(download).not.toHaveBeenCalled();
+  });
+
+  it('downloads a photo directly from its premium-layout card', () => {
+    const onDownload = vi.fn();
+    mount({ allowDownloads: true, onDownload });
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'ui.downloadPhoto' })[0]);
+
+    expect(onDownload).toHaveBeenCalledOnce();
+    expect(onDownload.mock.calls[0][0]).toMatchObject({ id: 1, filename: 'photo-1.jpg' });
+  });
+
+  it('respects a category-level download restriction on premium cards', () => {
+    mount({
+      allowDownloads: true,
+      photos: photos.map((photo) => ({ ...photo, category_allow_downloads: photo.id !== 1 })),
+    });
+
+    expect(within(screen.getByTestId('photo-card-1')).queryByRole('button', { name: 'ui.downloadPhoto' })).not.toBeInTheDocument();
+    expect(within(screen.getByTestId('photo-card-2')).getByRole('button', { name: 'ui.downloadPhoto' })).toBeInTheDocument();
   });
 
   it.each([

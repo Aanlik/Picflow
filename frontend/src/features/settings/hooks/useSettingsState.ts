@@ -31,7 +31,6 @@ export interface GeneralSettings {
   allowed_file_types: string;
   // #509 — re-added after the main-into-beta merge dropped it.
   max_upload_batch_size_mb: number;
-  enable_registration: boolean;
   maintenance_mode: boolean;
   short_gallery_urls: boolean;
   use_original_filenames_for_downloads: boolean;
@@ -139,7 +138,6 @@ export function useSettingsState() {
     max_files_per_upload: 500,
     allowed_file_types: 'jpg,jpeg,png,gif,webp',
     max_upload_batch_size_mb: 95,
-    enable_registration: false,
     maintenance_mode: false,
     short_gallery_urls: false,
     use_original_filenames_for_downloads: true,
@@ -232,7 +230,6 @@ export function useSettingsState() {
         ),
         allowed_file_types: settings.general_allowed_file_types || 'jpg,jpeg,png,gif,webp',
         max_upload_batch_size_mb: toNumber(settings.general_max_upload_batch_size_mb, 95),
-        enable_registration: toBoolean(settings.general_enable_registration, false),
         maintenance_mode: toBoolean(settings.general_maintenance_mode, false),
         short_gallery_urls: toBoolean(settings.general_short_gallery_urls, false),
         use_original_filenames_for_downloads: toBoolean(

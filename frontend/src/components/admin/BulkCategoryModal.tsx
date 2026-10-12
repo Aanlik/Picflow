@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { FolderOpen, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { categoryLabel } from '../../utils/categoryLabel';
 import { Button, Card } from '../common';
 
 interface CategoryOption {
@@ -76,7 +77,7 @@ export const BulkCategoryModal: React.FC<BulkCategoryModalProps> = ({
                 <option key={category.id} value={category.id}>
                   {category.is_folder
                     ? t('photos.folderOption', '{{name}} (folder — hidden from the main grid)', { name: category.name })
-                    : category.name}
+                    : categoryLabel(category, t)}
                 </option>
               ))}
             </select>

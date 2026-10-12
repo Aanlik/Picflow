@@ -234,16 +234,6 @@ export const GeneralTab: React.FC<GeneralTabProps> = ({
           <label className="flex items-center">
             <input
               type="checkbox"
-              checked={generalSettings.enable_registration}
-              onChange={(e) => setGeneralSettings(prev => ({ ...prev, enable_registration: e.target.checked }))}
-              className="w-4 h-4 text-primary-600 rounded focus:ring-primary-500"
-            />
-            <span className="ml-2 text-sm text-neutral-700 dark:text-neutral-300">{t('settings.general.enableRegistration')}</span>
-          </label>
-
-          <label className="flex items-center">
-            <input
-              type="checkbox"
               checked={generalSettings.maintenance_mode}
               onChange={(e) => setGeneralSettings(prev => ({ ...prev, maintenance_mode: e.target.checked }))}
               className="w-4 h-4 text-primary-600 rounded focus:ring-primary-500"

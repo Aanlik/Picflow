@@ -6,6 +6,7 @@ const logger = require('../utils/logger');
 const { checkLatestRelease } = require('../services/githubUpdateService');
 const appVersion = require('../../package.json').version || '1.0.0';
 const buildVersion = process.env.PICFLOW_BUILD_VERSION || process.env.PHOFLOW_BUILD_VERSION || process.env.PICPEAK_BUILD_VERSION || '1.0';
+const buildRevision = process.env.PICFLOW_BUILD_REVISION || process.env.GITHUB_SHA || null;
 
 const router = express.Router();
 
@@ -15,6 +16,7 @@ router.get('/version', adminAuth, requirePermission(['settings.view', 'system.vi
       backend: appVersion,
       frontend: appVersion,
       build: buildVersion,
+      revision: buildRevision,
       node: process.version,
       environment: process.env.NODE_ENV || 'production',
     });

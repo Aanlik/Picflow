@@ -126,6 +126,29 @@ describe('gallery feedback visibility', () => {
       expect(res.status).toBe(200);
     });
 
+    it('records one guest activity for a comment without a duplicate service log', async () => {
+      const activityQuery = db('activity_logs').where({ event_id: eventId, activity_type: 'guest_feedback_comment' });
+      const before = Number((await activityQuery.clone().count('id as count').first()).count);
+      const inserted = await db('photos').insert({
+        event_id: eventId,
+        filename: 'comment-notification-test.jpg',
+        path: `events/${SLUG}/comment-notification-test.jpg`,
+        type: 'individual',
+        uploaded_at: new Date().toISOString(),
+      }).returning('id');
+      const commentPhoto = typeof inserted[0] === 'object' ? inserted[0].id : inserted[0];
+      const res = await request(app)
+        .post(`/api/gallery/${SLUG}/photos/${commentPhoto}/feedback`)
+        .set('Authorization', `Bearer ${token()}`)
+        .send({ feedback_type: 'comment', comment_text: '仅记录一次通知' });
+
+      expect(res.status).toBe(200);
+      const activities = await activityQuery.orderBy('id', 'desc');
+      expect(activities).toHaveLength(before + 1);
+      expect(activities[0]).toMatchObject({ actor_type: 'guest' });
+      expect(await db('activity_logs').where({ event_id: eventId, activity_type: 'photo_comment' })).toHaveLength(0);
+    });
+
     it('leaves hidden photos out of the top rated in the feedback summary', async () => {
       const res = await request(app)
         .get(`/api/gallery/${SLUG}/feedback-summary`)

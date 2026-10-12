@@ -172,12 +172,15 @@ CMD ["./wait-for-db.sh", "node", "--max-http-header-size=32768", "server.js"]
 
 FROM python:3.12.14-alpine AS bridge-python
 FROM picflow-base AS picflow
-ARG PICFLOW_VERSION=1.0
+ARG PICFLOW_VERSION=1.0.1
+ARG PICFLOW_REVISION=unknown
 ENV PICFLOW_BUILD_VERSION=${PICFLOW_VERSION} \
+    PICFLOW_BUILD_REVISION=${PICFLOW_REVISION} \
     PICFLOW_GITHUB_REPOSITORY=Aanlik/Picflow
 LABEL org.opencontainers.image.title="Picflow" \
       org.opencontainers.image.source="https://github.com/Aanlik/Picflow" \
       org.opencontainers.image.version=${PICFLOW_VERSION}
+LABEL org.opencontainers.image.revision=${PICFLOW_REVISION}
 COPY --from=bridge-python /usr/local /usr/local
 RUN apk add --no-cache supervisor coreutils libffi bzip2 xz-libs zlib expat sqlite-libs readline ncurses-libs libuuid && /usr/local/bin/python3.12 -m venv /opt/bridge/venv
 COPY bridge/requirements.lock /opt/bridge/requirements.lock

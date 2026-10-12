@@ -51,6 +51,7 @@ import { getDownloadableSelectedPhotoIds } from './downloadSelection';
 import { BatchFeedbackControls } from './BatchFeedbackControls';
 import { categoryLabel } from '../../utils/categoryLabel';
 import { versionedRetouchUrl } from '../../utils/versionedRetouchUrl';
+import { photoDisplayFilename } from '../../utils/photoFilename';
 
 interface GalleryViewProps {
   slug: string;
@@ -179,13 +180,14 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ slug, event, requiresP
     queryFn: () => galleryService.getRetouchWorkflow(slug),
     enabled: Boolean(data?.event?.id),
     staleTime: 0,
-    refetchInterval: 15000,
+    refetchInterval: 5000,
     retry: false,
   });
   const retouchByPhotoId = useMemo(() => new Map((retouchWorkflow?.photos || []).map((photo) => [photo.photo_id, photo])), [retouchWorkflow?.photos]);
   const galleryPhotos = useMemo(() => (data?.photos || []).map((photo) => {
     const localizedPhoto = {
       ...photo,
+      filename: photoDisplayFilename(photo),
       category_name: categoryLabel({ name: photo.category_name, slug: photo.category_slug }, t),
     };
     const state = retouchByPhotoId.get(photo.id);
@@ -202,6 +204,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ slug, event, requiresP
       retouch_version: version,
       retouch_selected: Boolean(photo.retouch_selected),
       retouch_selection_cancelled: Boolean(state?.selection_cancelled),
+      retouch_delivered_retained: Boolean(state?.delivered_retained),
       retouch_added_during_editing: Boolean(state?.added_during_editing),
       retouch_workflow_enabled: true,
       retouch_withdraw_pending: Boolean(state?.withdraw_pending),

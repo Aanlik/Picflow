@@ -29,6 +29,12 @@ function filterDeliveredPhotoEntries(event, photos, deliveredPhotoIds, entries) 
   return entries.filter((entry) => keys.has(entry.key));
 }
 
+function getArchivableDeliveredPhotoIds(photos = []) {
+  return new Set(photos
+    .filter((photo) => photo.delivered && !photo.selection_cancelled && !photo.withdraw_pending)
+    .map((photo) => Number(photo.photo_id)));
+}
+
 async function archiveEvent(event) {
   const storage = getStorage();
   const archiveName = `${event.slug}.zip`;
@@ -61,9 +67,7 @@ async function archiveEvent(event) {
     if (bridgeConfig()) {
       const workflow = await getProjectDetail(event.id);
       if (workflow.status === 200 && Array.isArray(workflow.data?.photos)) {
-        deliveredPhotoIds = new Set(workflow.data.photos
-          .filter((photo) => photo.delivered)
-          .map((photo) => Number(photo.photo_id)));
+        deliveredPhotoIds = getArchivableDeliveredPhotoIds(workflow.data.photos);
       } else if (workflow.status !== 404) {
         throw new Error(`无法读取精修交付状态，已停止归档以避免打包错误内容（${workflow.status}）`);
       }
@@ -295,4 +299,4 @@ async function archiveEvent(event) {
   }
 }
 
-module.exports = { archiveEvent, filterDeliveredPhotoEntries };
+module.exports = { archiveEvent, filterDeliveredPhotoEntries, getArchivableDeliveredPhotoIds };

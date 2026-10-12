@@ -13,7 +13,7 @@ import { ColorLabelBadge } from '../ColorLabelBadge';
 import { WorkflowStatusBadge } from '../WorkflowStatusBadge';
 import 'yet-another-react-lightbox/plugins/captions.css';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Heart, Check, Star, MessageSquare, Package, LogOut, ListChecks, X } from 'lucide-react';
+import { Heart, Check, Star, MessageSquare, Package, LogOut, ListChecks, X, Download as DownloadIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useInView } from 'react-intersection-observer';
 
@@ -35,6 +35,7 @@ import './GalleryPremiumLayout.css';
 import { lightboxImageUrl } from '../imageTiers';
 import { renderPremiumLightboxImage } from './PremiumLightboxImage';
 import { useViewerLikeIds } from '../../../hooks/useViewerLikeIds';
+import { photoDisplayFilename } from '../../../utils/photoFilename';
 
 interface PhotoCardProps {
   photo: Photo;
@@ -43,6 +44,7 @@ interface PhotoCardProps {
   onClick: () => void;
   onLike: (e: React.MouseEvent) => void;
   onSelect: (e: React.MouseEvent) => void;
+  onDownload: (e: React.MouseEvent) => void;
   isSelected: boolean;
   isSelectionMode: boolean;
   isLiked: boolean;
@@ -64,10 +66,12 @@ const PhotoCard: React.FC<PhotoCardProps> = ({
   onClick,
   onLike,
   onSelect,
+  onDownload,
   isSelected,
   isSelectionMode,
   isLiked,
   slug,
+  allowDownloads = true,
   feedbackEnabled = false,
   allowLikes = false,
   index
@@ -135,7 +139,9 @@ const PhotoCard: React.FC<PhotoCardProps> = ({
 
       {/* Selection Checkbox */}
       <button
+        type="button"
         onClick={onSelect}
+        aria-label={isSelected ? tAudit('gallery.cancelSelection') : tAudit('gallery.selectPhotos')}
         className={`gallery-premium-checkbox ${isSelected || isSelectionMode ? 'visible' : ''} ${isSelected ? 'selected' : ''}`}
       >
         {isSelected && <Check className="w-3.5 h-3.5" strokeWidth={3} />}
@@ -147,11 +153,30 @@ const PhotoCard: React.FC<PhotoCardProps> = ({
         <button
           onClick={onLike}
           className={`gallery-premium-like-btn ${isLiked ? 'liked' : ''}`}
-          style={{ top: 'auto', bottom: '0.75rem' }}
+          style={{
+            top: 'auto',
+            bottom: '0.75rem',
+            right: allowDownloads && photo.category_allow_downloads !== false && !isSelectionMode ? '3.25rem' : '0.75rem',
+          }}
         >
           <Heart
             className={`w-5 h-5 ${isLiked ? 'fill-current' : ''}`}
           />
+        </button>
+      )}
+
+      {allowDownloads && photo.category_allow_downloads !== false && !isSelectionMode && (
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            onDownload(event);
+          }}
+          aria-label={tAudit('ui.downloadPhoto')}
+          title={tAudit('ui.downloadPhoto')}
+          className="gallery-premium-download-btn"
+        >
+          <DownloadIcon className="w-4 h-4" />
         </button>
       )}
 
@@ -197,7 +222,7 @@ export const GalleryPremiumLayout: React.FC<GalleryPremiumLayoutProps> = ({
   onPhotoClick: _onPhotoClick,
   onOpenPhotoWithFeedback: _onOpenPhotoWithFeedback,
   onFeedbackChange,
-  onDownload: _onDownload,
+  onDownload,
   selectedPhotos = new Set(),
   isSelectionMode = false,
   onPhotoSelect,
@@ -221,7 +246,6 @@ export const GalleryPremiumLayout: React.FC<GalleryPremiumLayoutProps> = ({
   // These props are passed by parent but we use our own lightbox, so mark as intentionally unused
   void _onPhotoClick;
   void _onOpenPhotoWithFeedback;
-  void _onDownload;
   const { t } = useTranslation();
   const downloadPhotoMutation = useDownloadPhoto();
   const [lightboxIndex, setLightboxIndex] = useState(-1);
@@ -347,7 +371,7 @@ export const GalleryPremiumLayout: React.FC<GalleryPremiumLayoutProps> = ({
       thumbnail: photo.thumbnail_url || undefined,
       download: allowDownloads ? photo.url : undefined,
       title: showOriginalFilename
-        ? (photo.original_filename || photo.filename)
+        ? photoDisplayFilename(photo)
         : undefined,
     }));
   }, [filteredPhotos, allowDownloads, showOriginalFilename, imageDimensions]);
@@ -572,6 +596,7 @@ export const GalleryPremiumLayout: React.FC<GalleryPremiumLayoutProps> = ({
                   height={height}
                   onClick={() => setLightboxIndex(photoIndex)}
                   onLike={(e) => handleLike(originalPhoto, e)}
+                  onDownload={(e) => onDownload(originalPhoto, e)}
                   onSelect={(e) => {
                     e.stopPropagation();
                     onPhotoSelect?.(originalPhoto.id);
@@ -667,6 +692,8 @@ export const GalleryPremiumLayout: React.FC<GalleryPremiumLayoutProps> = ({
                           {t(`photographyWorkflow.clientState.${currentLightboxPhoto.retouch_state}`)}
                           {currentLightboxPhoto.retouch_state === 'delivered' && currentLightboxPhoto.retouch_version
                             ? ` · V${currentLightboxPhoto.retouch_version}` : ''}
+                          {currentLightboxPhoto.retouch_delivered_retained && currentLightboxPhoto.retouch_version
+                            ? ` · ${t('photographyWorkflow.retainedDeliveredVersion', { version: currentLightboxPhoto.retouch_version })}` : ''}
                         </p>
                       )}
                     </div>

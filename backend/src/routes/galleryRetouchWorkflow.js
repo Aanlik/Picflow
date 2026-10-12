@@ -48,6 +48,7 @@ router.get('/:slug/retouch-workflow', verifyGalleryAccess, resolveGuest, blockHi
         // The internal flag still protects Bridge from processing its RAW,
         // but it should not present as a cancelled/revision-only customer state.
         selection_cancelled: Boolean(photo.selection_cancelled && !photo.delivered),
+        delivered_retained: Boolean(photo.selection_cancelled && photo.delivered),
         delivered: Boolean(photo.delivered),
         current_version: Number(photo.current_version) || 0,
         added_during_editing: Boolean(photo.added_during_editing),

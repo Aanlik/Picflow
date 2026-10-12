@@ -91,7 +91,16 @@ router.get('/:eventId', (req, res, next) => parseId(req.params.eventId) ? next()
     });
   }
   if (result.status !== 200) return res.status(503).json(bridgeFailure(result));
-  res.json({ ...result.data, configured: true });
+  // Keep withdrawn deliveries in the cancellation bucket so the photographer
+  // does not see a photo in both "delivered" and "cancelled". When the guest
+  // keeps the retouched file it remains on NAS, but is back in the proof queue.
+  const photos = Array.isArray(result.data?.photos)
+    ? result.data.photos.map((photo) => ({
+      ...photo,
+      cancelled: Boolean(photo.cancelled || photo.selection_cancelled || photo.withdraw_pending),
+    }))
+    : result.data?.photos;
+  res.json({ ...result.data, photos, configured: true });
 });
 
 router.get('/:eventId/requests', (req, res, next) => parseId(req.params.eventId) ? next() : res.sendStatus(400), requireEventOwnership, async (req, res) => {

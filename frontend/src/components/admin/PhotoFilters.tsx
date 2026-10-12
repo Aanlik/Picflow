@@ -2,6 +2,7 @@ import React from 'react';
 import { Search, Filter, SortAsc, SortDesc } from 'lucide-react';
 import { Input } from '../common';
 import { useTranslation } from 'react-i18next';
+import { categoryLabel } from '../../utils/categoryLabel';
 
 interface PhotoFiltersProps {
   categories: Array<{ id: number | string; name: string; slug: string }>;
@@ -71,7 +72,7 @@ export const PhotoFilters: React.FC<PhotoFiltersProps> = ({
             <option value="uncategorized">{t('gallery.uncategorized', 'Uncategorized')}</option>
             {categories.map(cat => (
               <option key={cat.id} value={cat.id}>
-                {cat.name}
+                {categoryLabel(cat, t)}
               </option>
             ))}
           </select>

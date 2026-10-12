@@ -134,7 +134,7 @@ export const CssTemplateEditor: React.FC = () => {
               </label>
               <input
                 type="text"
-                value={activeTemplate.name}
+                value={cssTemplateLabel(activeTemplate.name, t)}
                 onChange={(e) => updateLocalTemplate({ name: e.target.value })}
                 maxLength={50}
                 className="w-full px-3 py-2 border border-neutral-300 dark:border-neutral-600 rounded-lg bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 focus:ring-2 focus:ring-primary-500 focus:border-accent-dark"

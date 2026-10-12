@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useDevToolsProtection } from '../../hooks/useDevToolsProtection';
 import { X, ChevronLeft, ChevronRight, Download, ZoomIn, ZoomOut, Minimize2, MessageSquare, Heart, Star, ClipboardList } from 'lucide-react';
 import type { Photo } from '../../types';
+import { photoDisplayFilename } from '../../utils/photoFilename';
 import { useSavePhotoToDevice } from '../../hooks/useGallery';
 import { AuthenticatedImage } from '../common';
 import { PhotoFeedback } from './PhotoFeedback';
@@ -882,19 +883,19 @@ export const PhotoLightbox: React.FC<PhotoLightboxProps> = ({
           <div className="text-white min-w-0">
             <p className="gallery-numeric text-sm opacity-75">
               {currentIndex + 1} / {photos.length}
-              {currentPhoto.retouch_workflow_enabled && currentPhoto.retouch_state && <span className="ml-2 text-emerald-300">· {tAudit(`photographyWorkflow.clientState.${currentPhoto.retouch_state}`)}{currentPhoto.retouch_state === 'delivered' && currentPhoto.retouch_version ? ` V${currentPhoto.retouch_version}` : ''}{currentPhoto.retouch_added_during_editing ? ` · ${tAudit('photographyWorkflow.clientAdditionalSelection')}` : ''}</span>}
+              {currentPhoto.retouch_workflow_enabled && currentPhoto.retouch_state && <span className="ml-2 text-emerald-300">· {tAudit(`photographyWorkflow.clientState.${currentPhoto.retouch_state}`)}{currentPhoto.retouch_state === 'delivered' && currentPhoto.retouch_version ? ` V${currentPhoto.retouch_version}` : ''}{currentPhoto.retouch_delivered_retained && currentPhoto.retouch_version ? ` · ${tAudit('photographyWorkflow.retainedDeliveredVersion', { version: currentPhoto.retouch_version })}` : ''}{currentPhoto.retouch_added_during_editing ? ` · ${tAudit('photographyWorkflow.clientAdditionalSelection')}` : ''}</span>}
             </p>
             {/* #508 — original camera filename next to the counter when
                 the admin has flipped the matching toggle. Falls back to
                 the storage filename only if `original_filename` is null
                 (pre-migration-062 uploads). truncate + max-w keep long
                 names from pushing the action row to another line. */}
-            {showOriginalFilename && (currentPhoto.original_filename || currentPhoto.filename) && (
+            {showOriginalFilename && photoDisplayFilename(currentPhoto) && (
               <p
                 className="text-xs opacity-60 truncate max-w-[14rem] sm:max-w-md mt-0.5"
-                title={currentPhoto.original_filename || currentPhoto.filename}
+                title={photoDisplayFilename(currentPhoto)}
               >
-                {currentPhoto.original_filename || currentPhoto.filename}
+                {photoDisplayFilename(currentPhoto)}
               </p>
             )}
 

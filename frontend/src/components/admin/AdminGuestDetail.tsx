@@ -54,7 +54,7 @@ export const AdminGuestDetail: React.FC<AdminGuestDetailProps> = ({ eventId, gue
   };
   liked.forEach((p) => add(p, 'like'));
   favorited.forEach((p) => add(p, 'favorite'));
-  rated.forEach((r) => add(r.photo, 'rating'));
+  rated.forEach((r) => add(r.photo, t('admin.guests.detail.rated', '评分')));
   reacted.forEach((r) => add(r.photo, r.reaction));
   labeled.forEach((r) => add(r.photo, colorBadge(r.color_label)));
 
