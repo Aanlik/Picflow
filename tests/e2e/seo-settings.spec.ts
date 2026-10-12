@@ -1,0 +1,157 @@
+import { test, expect } from '@playwright/test';
+
+const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'Admin!234';
+
+// Helper to login and navigate to settings
+async function loginAndGoToSeoSettings(page) {
+  await page.goto('/admin/login');
+  await page.getByLabel(/Username|Benutzername|用户名/i).fill(ADMIN_USERNAME);
+  await page.getByRole('textbox', { name: /Password|Passwort|密码/i }).fill(ADMIN_PASSWORD);
+  await page.getByRole('button', { name: /^(Sign In|登录|Log in|Anmelden)$/i }).click();
+  await expect(page.getByRole('heading', { name: /Dashboard|Übersicht|概览/i })).toBeVisible({ timeout: 20000 });
+
+  // Deep link rather than clicking the tab: /SEO|Robots/ also matches other
+  // buttons on the settings page.
+  await page.goto('/admin/settings?tab=seo');
+  await expect(page.getByRole('heading', { name: /Search Engine Indexing|Suchmaschinen-Indexierung|搜索引擎索引/i })).toBeVisible({ timeout: 10000 });
+}
+
+test.describe('SEO Settings Tab', () => {
+  test('SEO tab renders all sections correctly', async ({ page }, testInfo) => {
+    if (testInfo.project.name === 'mobile-chrome') {
+      test.skip('SEO settings UI validated on desktop viewport');
+    }
+
+    await loginAndGoToSeoSettings(page);
+
+    // Verify all three cards are visible
+    await expect(page.getByRole('heading', { name: /Search Engine Indexing|Suchmaschinen-Indexierung|搜索引擎索引/i })).toBeVisible();
+    await expect(page.getByRole('heading', { name: /AI & Bot Blocking|KI- & Bot-Blockierung|AI 爬虫限制/i })).toBeVisible();
+    await expect(page.getByRole('heading', { name: /Meta Tags|Meta-Tags|元标记自定义规则/i })).toBeVisible();
+
+    // Verify key form elements
+    await expect(page.getByLabel(/Allow search engine indexing|Suchmaschinen-Indexierung erlauben|允许搜索引擎索引/i)).toBeVisible();
+    await expect(page.getByLabel(/Block AI\/LLM crawlers|KI-\/LLM-Crawler blockieren|屏蔽 AI\/LLM 爬行器/i)).toBeVisible();
+    await expect(page.getByLabel(/Add noindex meta tag|noindex-Meta-Tag hinzufügen|添加无索引元标记/i)).toBeVisible();
+  });
+
+  test('can toggle indexing and save settings', async ({ page }, testInfo) => {
+    if (testInfo.project.name === 'mobile-chrome') {
+      test.skip('SEO settings UI validated on desktop viewport');
+    }
+
+    await loginAndGoToSeoSettings(page);
+
+    const indexingToggle = page.getByLabel(/Allow search engine indexing|Suchmaschinen-Indexierung erlauben|允许搜索引擎索引/i);
+    const initialState = await indexingToggle.isChecked();
+
+    // Toggle the setting
+    await indexingToggle.click();
+
+    // Save
+    const saveButton = page.getByRole('button', { name: /Save SEO Settings|SEO-Einstellungen speichern|保存搜索引擎设置/i });
+    await saveButton.click();
+
+    // Wait for success toast
+    await expect(page.locator('.Toastify__toast--success')).toBeVisible({ timeout: 10000 });
+
+    // Verify toggle state changed
+    const newState = await indexingToggle.isChecked();
+    expect(newState).toBe(!initialState);
+
+    // Revert to original state
+    await indexingToggle.click();
+    await saveButton.click();
+    await expect(page.locator('.Toastify__toast--success')).toBeVisible({ timeout: 10000 });
+  });
+
+  test('robots.txt preview updates based on settings', async ({ page }, testInfo) => {
+    if (testInfo.project.name === 'mobile-chrome') {
+      test.skip('SEO settings UI validated on desktop viewport');
+    }
+
+    await loginAndGoToSeoSettings(page);
+
+    // Click show preview button
+    const previewButton = page.getByRole('button', { name: /Show robots\.txt preview|robots\.txt-Vorschau anzeigen|显示 robots\.txt 预览/i });
+    await previewButton.click();
+
+    // Verify preview content is visible
+    const previewContent = page.locator('pre');
+    await expect(previewContent).toBeVisible();
+
+    // Verify it contains expected content
+    const previewText = await previewContent.textContent();
+    expect(previewText).toContain('User-agent');
+    expect(previewText).toContain('Disallow');
+  });
+
+  test('can add blocked AI agents', async ({ page }, testInfo) => {
+    if (testInfo.project.name === 'mobile-chrome') {
+      test.skip('SEO settings UI validated on desktop viewport');
+    }
+
+    await loginAndGoToSeoSettings(page);
+
+    // Find the blocked agents section
+    const agentInput = page.getByPlaceholder(/Enter agent name|Agentenname eingeben|输入代理名称/i);
+    await expect(agentInput).toBeVisible();
+
+    // Add a new agent
+    const testAgent = 'TestBot-' + Date.now();
+    await agentInput.fill(testAgent);
+    await agentInput.press('Enter');
+
+    // Verify the agent tag appears in the list
+    await expect(page.getByText(testAgent)).toBeVisible();
+
+    // Save and verify it persists
+    const saveButton = page.getByRole('button', { name: /Save SEO Settings|SEO-Einstellungen speichern|保存搜索引擎设置/i });
+    await saveButton.click();
+
+    // Wait for success toast
+    await expect(page.locator('.Toastify__toast--success')).toBeVisible({ timeout: 10000 });
+
+    // Refresh and verify it's still there
+    // The URL keeps ?tab=seo, so the reload lands on the same tab.
+    await page.reload();
+    await expect(page.getByText(testAgent)).toBeVisible({ timeout: 10000 });
+  });
+});
+
+test.describe('robots.txt Endpoint', () => {
+  test('returns valid robots.txt from backend @smoke', async ({ request }) => {
+    const response = await request.get('/robots.txt');
+
+    expect(response.status()).toBe(200);
+    expect(response.headers()['content-type']).toContain('text/plain');
+
+    const body = await response.text();
+    expect(body).toContain('User-agent');
+    expect(body).toContain('Disallow: /admin');
+    expect(body).toContain('Disallow: /api');
+  });
+
+  test('robots.txt blocks AI crawlers by default', async ({ request }) => {
+    const response = await request.get('/robots.txt');
+    const body = await response.text();
+
+    // Check for some of the default blocked AI agents
+    expect(body).toContain('GPTBot');
+    expect(body).toContain('Claude-Web');
+    expect(body).toContain('Google-Extended');
+  });
+});
+
+test.describe('SEO Meta Tags', () => {
+  test('public settings include SEO meta flags', async ({ request }) => {
+    const response = await request.get('/api/public/settings');
+    expect(response.status()).toBe(200);
+
+    const settings = await response.json();
+    expect(settings).toHaveProperty('seo_meta_noindex');
+    expect(settings).toHaveProperty('seo_meta_nofollow');
+    expect(settings).toHaveProperty('seo_meta_noai');
+  });
+});

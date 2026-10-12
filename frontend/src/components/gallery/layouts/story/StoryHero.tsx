@@ -1,0 +1,87 @@
+import { useTranslation } from 'react-i18next';
+import React from 'react';
+import { motion } from 'framer-motion';
+import { ChevronDown } from 'lucide-react';
+import { AuthenticatedImage } from '../../../common';
+import type { Photo } from '../../../../types';
+
+interface StoryHeroProps {
+  title: string;
+  date?: string | null;
+  stats: string;
+  photo?: Photo | null;
+  slug: string;
+  allowDownloads?: boolean;
+  useEnhancedProtection?: boolean;
+}
+
+export const StoryHero: React.FC<StoryHeroProps> = ({
+  title,
+  date,
+  stats,
+  photo,
+  slug,
+}) => {
+  const { t: tAudit } = useTranslation();
+  const formattedDate = date
+    ? new Date(date).toLocaleDateString('en-US', {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric'
+      })
+    : null;
+
+  return (
+    <div className="story-hero">
+      {/* Background */}
+      <div className="story-hero-bg">
+        {photo && (photo.hero_url || photo.url || photo.thumbnail_url) ? (
+          <AuthenticatedImage
+            // hero_url, which is what it is for (#1166): a 1920x1080 cover crop,
+            // and this is a full-bleed object-cover background. It rendered
+            // photo.url — a full original on the critical path for first paint
+            // of every Story gallery. Emitted unconditionally for every photo
+            // (gallery.js:1139), so the fallbacks below are belt-and-braces.
+            src={photo.hero_url || photo.url || photo.thumbnail_url || ''}
+            alt={tAudit("ui.hero")}
+            className="w-full h-full object-cover"
+            isGallery={true}
+            slug={slug}
+          />
+        ) : (
+          <div className="w-full h-full bg-gray-900" />
+        )}
+        <div className="story-hero-gradient" />
+      </div>
+
+      {/* Content */}
+      <div className="story-hero-content">
+        <motion.div
+          initial={{ opacity: 0, y: 30 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.8, ease: 'easeOut' }}
+          className="space-y-6"
+        >
+          {formattedDate && (
+            <p className="story-hero-date">{formattedDate}</p>
+          )}
+          <h1 className="story-hero-title">{title}</h1>
+          <div className="story-hero-stats">
+            <span className="story-hero-stats-divider" />
+            <span className="gallery-numeric">{stats}</span>
+            <span className="story-hero-stats-divider" />
+          </div>
+        </motion.div>
+      </div>
+
+      {/* Scroll Indicator */}
+      <motion.div
+        className="story-scroll-indicator"
+        animate={{ y: [0, 10, 0] }}
+        transition={{ duration: 2, repeat: Infinity }}
+      >
+        <ChevronDown size={32} strokeWidth={1} />
+      </motion.div>
+    </div>
+  );
+};

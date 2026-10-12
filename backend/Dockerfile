@@ -1,0 +1,115 @@
+FROM node:22-alpine AS builder
+
+# Add build arguments
+ARG CACHEBUST=1
+ARG BUILD_DATE
+ARG VCS_REF
+ARG VERSION
+
+# Add labels for GitHub Container Registry
+LABEL org.opencontainers.image.source="https://github.com/Aanlik/Picflow"
+LABEL org.opencontainers.image.description="Picflow Backend Service"
+LABEL org.opencontainers.image.licenses="MIT"
+
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+
+# Install dependencies (--omit=dev replaces deprecated --only=production)
+RUN npm ci --omit=dev
+
+# Copy application files
+COPY . .
+
+# Production stage
+FROM node:22-alpine
+
+WORKDIR /app
+
+# knexfile.js picks its config block by NODE_ENV, and the `development` block
+# defaults to sqlite3. Leaving NODE_ENV unset here meant every deployment that
+# doesn't go through our compose files — Kubernetes, Helm, plain `docker run` —
+# silently ran on SQLite and ignored DB_HOST/DB_USER/DB_PASSWORD, while
+# wait-for-db.sh (shell, reads DB_HOST directly) reported "PostgreSQL is up" in
+# the same log. The compose files still override this, so nothing changes for
+# compose users. See #1038.
+ENV NODE_ENV=production
+
+# Redeclare CACHEBUST — ARGs don't cross stage boundaries, so the builder
+# stage's declaration never reached this stage. Consuming it in the RUN below
+# busts that layer's cache every CI run (CACHEBUST=github.run_number), so the
+# image always picks up current Alpine security updates instead of reusing a
+# stale cached upgrade layer.
+ARG CACHEBUST=1
+
+# Upgrade all packages to fix security vulnerabilities (OpenSSL, libexpat, BusyBox CVEs)
+RUN echo "cachebust=${CACHEBUST}" && apk upgrade --no-cache
+
+# Remove the npm CLI from the final image. Nothing runs npm here: the
+# entrypoint is node, runtime deps are COPY'd from the builder stage, and
+# wait-for-db.sh invokes the migration runners via node directly. npm's
+# bundled node_modules kept tripping Trivy (sigstore, tar 7.5.19,
+# brace-expansion 5.0.7 — even npm 12.0.1 still ships the vulnerable
+# copies), so shipping no npm ends that alert class instead of chasing
+# per-release patches. Note: `docker exec … npm run <script>` no longer
+# works in the container — use `node migrations/run-migrations-safe.js`
+# and friends instead.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
+
+# Install dumb-init for proper signal handling, postgresql-client for database
+# checks, ffmpeg for video upload support, and su-exec for the root → nodejs
+# privilege drop in wait-for-db.sh (see #484: container starts as root so it
+# can chown bind-mounted host volumes to UID 1001, then re-execs as nodejs
+# before running the app). Alpine's ffmpeg package ships both `ffmpeg` and
+# `ffprobe` built natively against musl libc — the npm
+# `@ffmpeg-installer/ffmpeg` binary is glibc-built and (a) doesn't reliably
+# run on Alpine and (b) only includes ffmpeg, not ffprobe (which the video
+# pipeline calls via fluent-ffmpeg.ffprobe()).
+# fontconfig is required so `sharp` (librsvg) can rasterise SVG logos that
+# contain live <text>. DejaVu/Liberation provide a broad Unicode fallback;
+# Bundled brand fonts are registered below for SVG assets.
+# exiftool extracts the embedded full-res JPEG preview from RAW/DNG uploads
+# (Apple ProRAW etc.) — sharp's libvips has no raw loader, so the pipeline
+# thumbnails/displays that preview while keeping the original for download.
+RUN apk add --no-cache dumb-init postgresql-client ffmpeg su-exec \
+    fontconfig ttf-dejavu ttf-liberation exiftool && \
+    fc-cache -f
+
+# Create non-root user
+RUN addgroup -g 1001 -S nodejs && adduser -S nodejs -u 1001
+
+# Copy from builder
+COPY --from=builder --chown=nodejs:nodejs /app/node_modules ./node_modules
+COPY --chown=nodejs:nodejs . .
+
+# Ensure all source files are readable and wait script is executable
+RUN chmod -R a+r /app && chmod +x wait-for-db.sh
+
+# Register picpeak's bundled brand fonts (assets/fonts/<Family>/*.ttf — the
+# same files PDFKit and the web UI use) with fontconfig, so when sharp/librsvg
+# rasterises an SVG logo its <text> renders in the actual brand typeface
+# rather than a DejaVu/Liberation fallback. fontconfig indexes by each font's
+# internal family name and recurses into the per-family subdirectories.
+RUN printf '<?xml version="1.0"?>\n<!DOCTYPE fontconfig SYSTEM "fonts.dtd">\n<fontconfig>\n  <dir>/app/assets/fonts</dir>\n</fontconfig>\n' > /etc/fonts/conf.d/99-picflow-fonts.conf && \
+    fc-cache -f /app/assets/fonts
+
+# Create necessary directories
+RUN mkdir -p storage/events/active storage/events/archived storage/thumbnails data logs && \
+    chown -R nodejs:nodejs storage data logs
+
+# No USER directive — the container starts as root so wait-for-db.sh can
+# chown bind-mounted host directories to UID 1001 before dropping privs
+# via su-exec. See #484 for the fresh-install restart loop this avoids.
+
+EXPOSE 3000
+
+# Healthcheck hits the same /health endpoint already used by the e2e
+# runner and by the docker-compose `depends_on: condition: service_healthy`
+# checks. wget is part of the Alpine base image. Long start-period covers
+# the wait-for-db.sh delay before the Node process starts listening.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://localhost:3000/health || exit 1
+
+ENTRYPOINT ["dumb-init", "--"]
+CMD ["./wait-for-db.sh", "node", "server.js"]

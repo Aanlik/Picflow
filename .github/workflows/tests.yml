@@ -1,0 +1,82 @@
+name: Tests
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: picflow
+          POSTGRES_PASSWORD: testpass
+          POSTGRES_DB: picflow_test
+        options: >-
+          --health-cmd "pg_isready -U picflow -d picflow_test"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 30
+        ports:
+          - 5432:5432
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: backend/package-lock.json
+      - name: Install backend dependencies
+        working-directory: ./backend
+        run: npm ci
+      - name: Validate Unicode client names
+        working-directory: ./backend
+        run: node --test scripts/test-zh-unicode.cjs
+      - name: Run backend tests
+        working-directory: ./backend
+        env:
+          SKIP_S3_TESTS: 'true'
+          PICPEAK_PG_TEST_URL: 'postgres://picflow:testpass@127.0.0.1:5432/picflow_test'
+        run: npx jest --ci
+
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: ./frontend
+        run: npm ci --legacy-peer-deps
+      - name: Lint frontend
+        working-directory: ./frontend
+        run: npm run lint
+      - name: Run frontend tests
+        working-directory: ./frontend
+        run: npm test -- --run
+
+  nginx:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      matrix:
+        image: ['nginx:1.28-alpine', 'nginx:1.30-alpine']
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify token-safe request logging
+        env:
+          NGINX_TEST_IMAGE: ${{ matrix.image }}
+        run: python3 tests/nginx/test_request_logging.py

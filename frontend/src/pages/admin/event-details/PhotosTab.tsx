@@ -1,0 +1,246 @@
+import { PHOTO_WORKFLOW_MODE } from '../../../config/photography';
+import { NasFolderSelection } from '../../../components/admin/NasFolderSelection';
+import React, { useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import { useQueryClient } from '@tanstack/react-query';
+import { toast } from 'react-toastify';
+import { AlertCircle, Upload, X } from 'lucide-react';
+import type { Event } from '../../../types';
+import { Button, Card, Loading } from '../../../components/common';
+import { AdminPhotoGrid, AdminPhotoViewer, PhotoFilters, PhotoUploadModal, PhotoFilterPanel, PhotoExportMenu } from '../../../components/admin';
+import { PermissionGate } from '../../../components/admin/PermissionGate';
+import { externalMediaService } from '../../../services/externalMedia.service';
+import { AdminPhoto, type PhotoFilters as PhotoFilterParams, type FeedbackFilters, type FilterSummary } from '../../../services/photos.service';
+import { ExternalFolderPicker } from './ExternalFolderPicker';
+
+interface PhotosTabProps {
+  event: Event;
+  id: string | undefined;
+  photos: AdminPhoto[];
+  photosLoading: boolean;
+  photosError: boolean;
+  refetchPhotos: () => void;
+  categories: Array<{ id: number; name: string; slug: string; is_folder?: boolean }>;
+  photoFilters: PhotoFilterParams;
+  setPhotoFilters: React.Dispatch<React.SetStateAction<PhotoFilterParams>>;
+  feedbackFilters: FeedbackFilters;
+  setFeedbackFilters: React.Dispatch<React.SetStateAction<FeedbackFilters>>;
+  filterSummary: FilterSummary | undefined;
+  showMediaFilter: boolean;
+}
+
+export const PhotosTab: React.FC<PhotosTabProps> = ({
+  event,
+  id,
+  photos,
+  photosLoading,
+  photosError,
+  refetchPhotos,
+  categories,
+  photoFilters,
+  setPhotoFilters,
+  feedbackFilters,
+  setFeedbackFilters,
+  filterSummary,
+  showMediaFilter
+}) => {
+  const { t } = useTranslation();
+  const queryClient = useQueryClient();
+
+  const [showPhotoUpload, setShowPhotoUpload] = useState(false);
+  const [showExternalImport, setShowExternalImport] = useState(false);
+  const [externalPath, setExternalPath] = useState<string>('');
+  const [externalWatch, setExternalWatch] = useState(event.source_mode === 'reference' ? Boolean(event.external_watch) : true);
+  const [importing, setImporting] = useState<boolean>(false);
+  const [selectedPhoto, setSelectedPhoto] = useState<{ photo: AdminPhoto; index: number } | null>(null);
+  const [selectedPhotoIds, setSelectedPhotoIds] = useState<number[]>([]);
+
+  return (
+    <div>
+      {/* Photo Upload Modal */}
+      <PhotoUploadModal
+        isOpen={showPhotoUpload}
+        onClose={() => setShowPhotoUpload(false)}
+        eventId={parseInt(id!)}
+        onUploadComplete={() => {
+          // Refresh-only. PhotoUpload fires this as bytes land AND again when
+          // processing finishes — including runs where every file was rejected
+          // — so a success toast here claimed "Upload completed successfully"
+          // over the top of the rejection warning (QA P4-B.05 / 7.05). The
+          // outcome toast belongs to PhotoUpload, which knows the counts.
+          queryClient.invalidateQueries({ queryKey: ['admin-event', id] });
+          queryClient.invalidateQueries({ queryKey: ['admin-event-photos', id] });
+          refetchPhotos();
+        }}
+      />
+
+      {/* Photo Filters */}
+      <PhotoFilters
+        categories={categories}
+        selectedCategory={photoFilters.category_id}
+        searchTerm={photoFilters.search ?? ''}
+        sortBy={photoFilters.sort ?? 'date'}
+        sortOrder={photoFilters.order ?? 'desc'}
+        onCategoryChange={(categoryId) => setPhotoFilters(prev => ({ ...prev, category_id: categoryId }))}
+        onSearchChange={(search) => setPhotoFilters(prev => ({ ...prev, search }))}
+        onSortChange={(sort, order) => setPhotoFilters(prev => ({ ...prev, sort, order }))}
+        mediaType={photoFilters.media_type || 'all'}
+        onMediaTypeChange={(mediaType) => setPhotoFilters(prev => ({
+          ...prev,
+          media_type: mediaType === 'all' ? undefined : mediaType
+        }))}
+        showMediaFilter={showMediaFilter}
+      />
+
+      {/* Feedback Filter Panel for Export */}
+      <PhotoFilterPanel
+        filters={feedbackFilters}
+        onChange={setFeedbackFilters}
+        summary={filterSummary || null}
+        isLoading={photosLoading}
+      />
+
+      {/* Actions Bar */}
+      <div className="mb-4 flex flex-wrap justify-between items-center gap-4">
+        <div className="flex items-center gap-3">
+          <PermissionGate permission="photos.upload">
+            <Button
+              variant="primary"
+              size="sm"
+              leftIcon={<Upload className="w-4 h-4" />}
+              onClick={() => setShowPhotoUpload(true)}
+            >
+              {t('events.uploadPhotos')}
+            </Button>
+          </PermissionGate>
+          {(PHOTO_WORKFLOW_MODE || event.source_mode === 'reference') && (
+            <PermissionGate permission="photos.upload">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => { setExternalPath(event.external_path || ''); setExternalWatch(event.source_mode === 'reference' ? Boolean(event.external_watch) : true); setShowExternalImport(true); }}
+              >
+                {PHOTO_WORKFLOW_MODE ? t('nasFolder.linkOrRescan') : t('events.importExternal', 'Import from External Folder')}
+              </Button>
+            </PermissionGate>
+          )}
+        </div>
+        <PermissionGate permission="photos.download">
+          <PhotoExportMenu
+            eventId={parseInt(id!)}
+            selectedPhotoIds={selectedPhotoIds}
+            filters={feedbackFilters}
+          />
+        </PermissionGate>
+      </div>
+
+      {/* Photo Grid */}
+      {photosLoading ? (
+        <div className="flex items-center justify-center py-12">
+          <Loading size="lg" text={t('events.loadingPhotos')} />
+        </div>
+      ) : photosError ? (
+        // Without this branch a failed fetch (offline, 5xx) fell through to the
+        // grid's "no media uploaded yet" empty state, which reads as "your
+        // photos are gone" rather than "we couldn't load them" (QA follow-up).
+        <Card padding="lg">
+          <div className="flex items-start gap-3 text-amber-700 dark:text-amber-400">
+            <AlertCircle className="w-5 h-5 flex-shrink-0 mt-0.5" />
+            <div>
+              <p className="font-medium">{t('gallery.failedToLoad')}</p>
+              <Button variant="outline" size="sm" onClick={() => refetchPhotos()} className="mt-3">
+                {t('common.retry')}
+              </Button>
+            </div>
+          </div>
+        </Card>
+      ) : (
+        <AdminPhotoGrid
+          photos={photos}
+          eventId={parseInt(id!)}
+          onPhotoClick={(photo, index) => setSelectedPhoto({ photo, index })}
+          onPhotosDeleted={() => {
+            refetchPhotos();
+            queryClient.invalidateQueries({ queryKey: ['admin-event', id] });
+          }}
+          onSelectionChange={setSelectedPhotoIds}
+          categories={categories}
+        />
+      )}
+
+      {/* Photo Viewer */}
+      {selectedPhoto && (
+        <AdminPhotoViewer
+          photos={photos}
+          initialIndex={selectedPhoto.index}
+          eventId={parseInt(id!)}
+          onClose={() => setSelectedPhoto(null)}
+          onPhotoDeleted={() => {
+            refetchPhotos();
+            queryClient.invalidateQueries({ queryKey: ['admin-event', id] });
+            setSelectedPhoto(null);
+          }}
+          categories={categories}
+        />
+      )}
+
+      {/* External Import Modal */}
+      {showExternalImport && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <Card className="max-w-2xl w-full">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xl font-semibold text-neutral-900 dark:text-neutral-100">{PHOTO_WORKFLOW_MODE ? t('nasFolder.linkOrRescan') : t('events.importExternal', 'Import from External Folder')}</h2>
+              <button onClick={() => setShowExternalImport(false)} className="text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {PHOTO_WORKFLOW_MODE ? <NasFolderSelection value={externalPath} onChange={setExternalPath} watch={externalWatch} onWatchChange={setExternalWatch} /> : <>
+            <div className="mb-3 text-sm text-neutral-700 dark:text-neutral-300">
+              {t('events.externalImportInfo', 'All pictures from the selected folder will be imported.')}
+            </div>
+            <div className="mb-2 text-sm text-neutral-700 dark:text-neutral-300">
+              {t('events.selectExternalFolder', 'Select external folder under /external-media')}
+            </div>
+            <ExternalFolderPicker value={externalPath} onChange={setExternalPath} />
+            </>}
+
+            <div className="mt-4 flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setShowExternalImport(false)}>
+                {t('common.cancel')}
+              </Button>
+              <Button
+                variant="primary"
+                isLoading={importing}
+                onClick={async () => {
+                  try {
+                    setImporting(true);
+                    const selected = externalPath;
+                    if (!selected) {
+                      toast.error(t('errors.somethingWentWrong', 'Something went wrong'));
+                      return;
+                    }
+                    const result = PHOTO_WORKFLOW_MODE
+                      ? await externalMediaService.linkEvent(parseInt(id!), selected, externalWatch)
+                      : await externalMediaService.importEvent(parseInt(id!), selected, { recursive: true });
+                    if (PHOTO_WORKFLOW_MODE) toast.success(t('nasFolder.linkedSuccess', { imported: result.imported, skipped: result.skipped }));
+                    else toast.success(t('toast.saveSuccess'));
+                    queryClient.invalidateQueries({ queryKey: ['admin-event', id] });
+                    queryClient.invalidateQueries({ queryKey: ['admin-event-photos', id] });
+                    setShowExternalImport(false);
+                  } catch {
+                    toast.error(t('nasFolder.importFailed'));
+                  } finally {
+                    setImporting(false);
+                  }
+                }}
+              >
+                {PHOTO_WORKFLOW_MODE ? t('nasFolder.linkAndImport') : t('events.importFromSelectedFolder', 'Import from selected folder')}
+              </Button>
+            </div>
+          </Card>
+        </div>
+      )}
+    </div>
+  );
+};

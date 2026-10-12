@@ -1,0 +1,10 @@
+# docker compose -f compose.yaml -f compose.nas-camera.yaml up -d
+services:
+  picflow:
+    environment:
+      BRIDGE_UID: ${BRIDGE_UID:-1000}
+      BRIDGE_GID: ${BRIDGE_GID:-1000}
+      NAS_CAMERA_UID: ${NAS_CAMERA_UID:-1000}
+      NAS_CAMERA_GID: ${NAS_CAMERA_GID:-1000}
+      PICPEAK_UID: ${PICFLOW_UID:-${PHOFLOW_UID:-${PICPEAK_UID:-${NAS_CAMERA_UID:-1000}}}}
+      PICPEAK_GID: ${PICFLOW_GID:-${PHOFLOW_GID:-${PICPEAK_GID:-${NAS_CAMERA_GID:-1000}}}}

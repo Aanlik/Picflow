@@ -1,0 +1,41 @@
+import { test, expect } from '@playwright/test';
+
+const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'Admin!234';
+
+function randomSuffix() {
+  return Math.random().toString(36).slice(2, 8);
+}
+
+test('admin can create event via UI @smoke', async ({ page }) => {
+  const eventName = `UI Playwright ${randomSuffix()}`;
+  // Login
+  await page.goto('/admin/login');
+  await page.getByLabel(/Username|用户名/i).fill(ADMIN_USERNAME);
+  await page.getByRole('textbox', { name: /Password|密码/i }).fill(ADMIN_PASSWORD);
+  await page.getByRole('button', { name: /^(Sign In|登录|Log in|Anmelden)$/i }).click();
+  await expect(page.getByRole('heading', { name: /Dashboard|概览/i })).toBeVisible({ timeout: 20000 });
+
+  // Navigate to create event page
+  const createButton = page.getByRole('button', { name: /Create Event|创建项目/i });
+  if (await createButton.count()) {
+    await createButton.first().click();
+  } else {
+    await page.goto('/admin/events/new');
+  }
+
+  await expect(page.getByRole('heading', { name: /^(Create|创建)$/i })).toBeVisible({ timeout: 10000 });
+
+  await page.getByLabel(/Event Name|项目名称/i).fill(eventName);
+  await page.getByLabel(/Customer Name|客户姓名/i).fill('Host User');
+  // The date picker prefills today in the display format (dd/mm/yyyy), and its
+  // calendar button carries the same label, so check the textbox has a value.
+  await expect(page.getByRole('textbox', { name: /Event Date|拍摄日期/i })).not.toHaveValue('');
+  await page.getByRole('textbox', { name: /Gallery Password|访问密码/i }).fill('UiPlay123!');
+  await page.getByRole('textbox', { name: /Confirm Password|确认密码/i }).fill('UiPlay123!');
+
+  await page.getByRole('button', { name: /Create Event|创建项目/i }).click();
+
+  await expect(page).toHaveURL(/\/admin\/events\//, { timeout: 20000 });
+  await expect(page.getByRole('heading', { name: eventName })).toBeVisible();
+});

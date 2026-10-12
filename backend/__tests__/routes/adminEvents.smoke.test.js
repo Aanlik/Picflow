@@ -1,0 +1,315 @@
+/**
+ * HTTP smoke tests for the core admin event CRUD endpoints:
+ *   POST   /api/admin/events           (create)
+ *   GET    /api/admin/events           (list + pagination)
+ *   GET    /api/admin/events/:id       (detail + photo count)
+ *   PUT    /api/admin/events/:id       (update)
+ *   DELETE /api/admin/events/:id       (cascade delete)
+ *
+ * Safety net ahead of the adminEvents.js god-file decomposition —
+ * pins the request/response contracts of the main CRUD paths using
+ * the same real-SQLite harness as slideshowAdmin.test.js.
+ */
+const path = require('path');
+const fs = require('fs');
+const os = require('os');
+
+process.env.NODE_ENV = 'test';
+process.env.TEST_DATABASE_PATH = path.join(
+  fs.mkdtempSync(path.join(os.tmpdir(), 'picpeak-events-smoke-')), 'db.sqlite'
+);
+process.env.JWT_SECRET = process.env.JWT_SECRET || 'admin-events-test-secret';
+
+const express = require('express');
+const cookieParser = require('cookie-parser');
+const request = require('supertest');
+const { bootTestDb, seedMinimal, assignAdminRole, mintAdminToken } = require('../integration/helpers/sqliteTestDb');
+
+async function insertEvent(db, adminId, over = {}) {
+  const base = {
+    slug: `ev-${Math.random().toString(16).slice(2)}`,
+    event_type: 'project',
+    event_name: 'Test Wedding',
+    event_date: '2026-05-29',
+    password_hash: 'x',
+    share_link: `/gallery/share-${Math.random().toString(16).slice(2)}`,
+    share_token: `st-${Math.random().toString(16).slice(2)}`,
+    expires_at: new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString(),
+    is_active: 1, is_archived: 0, is_draft: 0,
+    created_by: adminId,
+    created_at: new Date().toISOString(),
+    ...over,
+  };
+  const r = await db('events').insert(base).returning('id');
+  return r[0]?.id ?? r[0];
+}
+
+describe('admin events CRUD endpoints (smoke)', () => {
+  let db; let cleanup; let app; let adminId; let token;
+
+  // bootTestDb's full migration run intermittently exceeds Jest's default
+  // 5s beforeAll timeout on slower CI runners; raise it.
+  beforeAll(async () => {
+    ({ db, cleanup } = await bootTestDb());
+    ({ adminId } = await seedMinimal(db));
+    await assignAdminRole(db, adminId, 'super_admin');
+    token = mintAdminToken(adminId);
+
+    app = express();
+    app.use(express.json());
+    app.use(cookieParser());
+    app.use('/api/admin/events', require('../../src/routes/adminEvents'));
+    // eslint-disable-next-line no-unused-vars
+    app.use((err, req, res, next) => {
+      res.status(err.statusCode || err.status || 500).json({ error: err.message, code: err.code });
+    });
+  }, 120000);
+
+  afterAll(async () => { await cleanup(); });
+
+  beforeEach(async () => {
+    await db('events').del();
+  });
+
+  const auth = (req) => req.set('Authorization', `Bearer ${token}`);
+
+  it('401s without an admin token', async () => {
+    const res = await request(app).get('/api/admin/events');
+    expect(res.status).toBe(401);
+  });
+
+  describe('POST /', () => {
+    it('creates an event, mints slug + share link and persists the row', async () => {
+      const res = await auth(request(app).post('/api/admin/events')).send({
+        event_type: 'project',
+        event_name: 'Smoke Wedding',
+        event_date: '2026-09-01',
+        customer_name: 'Client Person',
+        require_password: false,
+        is_draft: true,
+      });
+
+      expect(res.status).toBe(200);
+      expect(res.body.id).toBeDefined();
+      expect(res.body.slug).toBe('smoke-wedding-2026-09-01');
+      expect(typeof res.body.share_link).toBe('string');
+      expect(res.body.is_draft).toBe(true);
+
+      const row = await db('events').where({ id: res.body.id }).first();
+      expect(row).toBeDefined();
+      expect(row.event_name).toBe('Smoke Wedding');
+      expect(row.created_by).toBe(adminId);
+
+      // Folder structure is created under STORAGE_PATH/events/active/<slug>.
+      const eventDir = path.join(process.env.STORAGE_PATH, 'events/active', res.body.slug);
+      expect(fs.existsSync(path.join(eventDir, 'collages'))).toBe(true);
+      expect(fs.existsSync(path.join(eventDir, 'individual'))).toBe(true);
+
+    });
+
+    it('409s (not 500) when the slug uniqueness race is lost', async () => {
+      // The route mints the slug with a read-then-insert, so two concurrent
+      // creates for the same name + date both clear the existence check and
+      // the loser's INSERT trips events_slug_unique. Reproduce it without a
+      // timer: slip the colliding row in the instant that existence SELECT is
+      // issued — the route then spends a bcrypt hash before its own INSERT.
+      const { slugify } = require('../../src/utils/slug');
+      const collidingSlug = `${slugify('Race Wedding')}-2026-09-02`;
+      let injected = null;
+      const onQuery = (q) => {
+        if (injected) return;
+        if (!/from\s+.?events.?\s+where\s+.?slug.?\s*=/i.test(q.sql)) return;
+        injected = insertEvent(db, adminId, { slug: collidingSlug, event_name: 'Race Wedding' });
+      };
+      db.on('query', onQuery);
+
+      try {
+        const res = await auth(request(app).post('/api/admin/events')).send({
+          event_type: 'project',
+          event_name: 'Race Wedding',
+          event_date: '2026-09-02',
+          customer_name: 'Client Person',
+          require_password: false,
+          is_draft: true,
+        });
+
+        expect(injected).not.toBeNull(); // the race was actually injected
+        await injected;
+        expect(res.status).toBe(409);
+        expect(res.body.code).toBe('EVENT_SLUG_TAKEN');
+        expect(res.body.error).toMatch(/already exists/i);
+        // Only the injected row survives — no half-created duplicate.
+        expect(await db('events').where({ slug: collidingSlug })).toHaveLength(1);
+      } finally {
+        db.removeListener('query', onQuery);
+      }
+    });
+
+    it('400s on an invalid event type', async () => {
+      const res = await auth(request(app).post('/api/admin/events')).send({
+        event_type: 'not-a-real-type',
+        event_name: 'Broken',
+        require_password: false,
+      });
+      expect(res.status).toBe(400);
+      expect(Array.isArray(res.body.errors)).toBe(true);
+    });
+  });
+
+  describe('GET /', () => {
+    it('lists events with pagination metadata and photo counts', async () => {
+      await insertEvent(db, adminId, { event_name: 'Alpha' });
+      await insertEvent(db, adminId, { event_name: 'Beta' });
+
+      const res = await auth(request(app).get('/api/admin/events'));
+      expect(res.status).toBe(200);
+      expect(res.body.events).toHaveLength(2);
+      expect(res.body.pagination).toMatchObject({ page: 1, total: 2, totalPages: 1 });
+      expect(res.body.events.map((ev) => ev.event_name).sort()).toEqual(['Alpha', 'Beta']);
+      for (const ev of res.body.events) {
+        expect(Number.isInteger(ev.id)).toBe(true);
+        expect(ev.photo_count).toBe(0);
+      }
+    });
+  });
+
+  describe('GET /:id', () => {
+    it('returns the event with photo count and recent photos', async () => {
+      const id = await insertEvent(db, adminId, { event_name: 'Detail Event' });
+      const res = await auth(request(app).get(`/api/admin/events/${id}`));
+      expect(res.status).toBe(200);
+      expect(res.body.event_name).toBe('Detail Event');
+      expect(res.body.photo_count).toBe(0);
+      expect(Array.isArray(res.body.recent_photos)).toBe(true);
+    });
+
+    it('404s for an unknown event id', async () => {
+      const res = await auth(request(app).get('/api/admin/events/999999'));
+      expect(res.status).toBe(404);
+    });
+  });
+
+  describe('PUT /:id', () => {
+    it('updates mutable fields and persists them', async () => {
+      const id = await insertEvent(db, adminId, { event_name: 'Before' });
+      const res = await auth(request(app).put(`/api/admin/events/${id}`)).send({ event_name: 'After' });
+      expect(res.status).toBe(200);
+      const row = await db('events').where({ id }).first();
+      expect(row.event_name).toBe('After');
+    });
+
+    // #1296 — express-validator runs isInt/isIn/isBoolean element-wise on
+    // arrays, so a single-element array satisfies its field validator and
+    // survives into `updates`, which is spread into .update() with no column
+    // allow-list. That put an array into a scalar column (a PG insert error),
+    // and formatBoolean([false]) read as true. Guarded for every field, not
+    // just the ones that prompted it.
+    it.each([
+      ['image_quality', [72]],
+      ['protection_level', ['basic']],
+      ['use_canvas_rendering', [false]],
+      // Not a protection field: the guard is not scoped to that block.
+      ['event_name', ['Arrayed']],
+      ['allow_downloads', [false]],
+    ])('400s on an array value for %s', async (field, value) => {
+      const id = await insertEvent(db, adminId, { event_name: 'Unchanged' });
+      const res = await auth(request(app).put(`/api/admin/events/${id}`))
+        .send({ [field]: value });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(field);
+      // And nothing was written.
+      const row = await db('events').where({ id }).first();
+      expect(row.event_name).toBe('Unchanged');
+    });
+
+    it('404s when updating a missing event', async () => {
+      const res = await auth(request(app).put('/api/admin/events/999999')).send({
+        event_name: 'Ghost',
+      });
+      expect(res.status).toBe(404);
+    });
+
+    // #822 — hero_logo_visible/position are nullable (null = "inherit the global
+    // branding toggle"), but the validator used .optional() without
+    // { nullable: true }, so an explicit null was rejected with 400.
+    it('accepts hero_logo_visible: null and stores NULL (inherit)', async () => {
+      const id = await insertEvent(db, adminId, { hero_logo_visible: 1 });
+      const res = await auth(request(app).put(`/api/admin/events/${id}`)).send({
+        hero_logo_visible: null,
+      });
+      expect(res.status).toBe(200);
+      const row = await db('events').where({ id }).first();
+      expect(row.hero_logo_visible).toBeNull();
+    });
+
+    it('still rejects a non-boolean hero_logo_visible', async () => {
+      const id = await insertEvent(db, adminId);
+      const res = await auth(request(app).put(`/api/admin/events/${id}`)).send({
+        hero_logo_visible: 'maybe',
+      });
+      expect(res.status).toBe(400);
+    });
+
+    // #894 — per-event password-page logo toggle: false hides, null
+    // restores the default (show).
+    it('stores login_logo_visible: false and clears it back to NULL', async () => {
+      const id = await insertEvent(db, adminId);
+      const hide = await auth(request(app).put(`/api/admin/events/${id}`)).send({
+        login_logo_visible: false,
+      });
+      expect(hide.status).toBe(200);
+      let row = await db('events').where({ id }).first();
+      expect([false, 0]).toContain(row.login_logo_visible);
+
+      const clear = await auth(request(app).put(`/api/admin/events/${id}`)).send({
+        login_logo_visible: null,
+      });
+      expect(clear.status).toBe(200);
+      row = await db('events').where({ id }).first();
+      expect(row.login_logo_visible).toBeNull();
+
+      // The string "false" passes isBoolean() validation — it must be
+      // parsed, not treated as a truthy string (would store 1 = show).
+      const hideStr = await auth(request(app).put(`/api/admin/events/${id}`)).send({
+        login_logo_visible: 'false',
+      });
+      expect(hideStr.status).toBe(200);
+      row = await db('events').where({ id }).first();
+      expect([false, 0]).toContain(row.login_logo_visible);
+    });
+  });
+
+  describe('DELETE /:id', () => {
+    it('cascade-deletes the event row', async () => {
+      const id = await insertEvent(db, adminId);
+      const res = await auth(request(app).delete(`/api/admin/events/${id}`));
+      expect(res.status).toBe(200);
+      expect(res.body.message).toMatch(/deleted/i);
+      const row = await db('events').where({ id }).first();
+      expect(row).toBeUndefined();
+    });
+
+    it('404s when deleting a missing event', async () => {
+      const res = await auth(request(app).delete('/api/admin/events/999999'));
+      expect(res.status).toBe(404);
+    });
+
+    it('removes feedback_rate_limits rows for the deleted event (#1585)', async () => {
+      // feedback_rate_limits.event_id declares ON DELETE CASCADE, but SQLite
+      // only honours that with PRAGMA foreign_keys = ON, which Picflow does
+      // not set — so on the SQLite path the cascade is inert and these rows
+      // would otherwise outlive the event. deleteEventCascade() must delete
+      // them explicitly so the deleted event leaves no rate-limit records.
+      const id = await insertEvent(db, adminId);
+      await db('feedback_rate_limits').insert({
+        event_id: id, action_type: 'like', action_count: 1,
+        identifier: 'guest-1', window_start: new Date().toISOString(),
+      });
+      const res = await auth(request(app).delete(`/api/admin/events/${id}`));
+      expect(res.status).toBe(200);
+      const remaining = await db('feedback_rate_limits').where({ event_id: id });
+      expect(remaining).toHaveLength(0);
+    });
+  });
+});

@@ -1,0 +1,73 @@
+import { api } from '../config/api';
+
+export type ExternalMediaErrorKey = 'readPermissionDenied' | 'folderUnavailable' | 'readError';
+
+export function externalMediaErrorKey(error: unknown): ExternalMediaErrorKey {
+  const response = (error as { response?: { status?: number; data?: { code?: string } } } | null)?.response;
+  if (response?.data?.code === 'EXTERNAL_FOLDER_PERMISSION_DENIED') {
+    return 'readPermissionDenied';
+  }
+  if (response?.data?.code === 'EXTERNAL_FOLDER_NOT_FOUND') {
+    return 'folderUnavailable';
+  }
+  return 'readError';
+}
+
+export interface ExternalEntry {
+  name: string;
+  type: 'dir' | 'file';
+  size?: number;
+  mtime?: string;
+}
+
+export interface ExternalMediaListResponse {
+  path: string;
+  entries: ExternalEntry[];
+  canNavigateUp: boolean;
+}
+
+export interface ExternalMediaImportOptions {
+  recursive?: boolean;
+  map?: { individual?: string; collages?: string };
+}
+
+export interface ExternalMediaImportResult {
+  imported: number;
+  skipped: number;
+  thumbnailsQueued: number;
+}
+
+export const externalMediaService = {
+  async list(pathRel: string = ''): Promise<ExternalMediaListResponse> {
+    const params = new URLSearchParams();
+    if (pathRel) params.set('path', pathRel);
+    const res = await api.get<ExternalMediaListResponse>(`/admin/external-media/list?${params.toString()}`);
+    return res.data;
+  },
+
+  async linkEvent(eventId: number, externalPath: string, watch: boolean): Promise<ExternalMediaImportResult> {
+    const imported = await this.importEvent(eventId, externalPath, { recursive: true });
+    try {
+      await api.put(`/admin/events/${eventId}`, { external_watch: watch });
+    } catch {
+      throw new Error('NAS_AUTO_IMPORT_SETTING_SAVE_FAILED');
+    }
+    return imported;
+  },
+
+  async importEvent(
+    eventId: number,
+    externalPath: string,
+    options?: ExternalMediaImportOptions
+  ): Promise<ExternalMediaImportResult> {
+    const res = await api.post<ExternalMediaImportResult>(
+      `/admin/external-media/events/${eventId}/import-external`,
+      {
+        external_path: externalPath,
+        recursive: options?.recursive ?? true,
+        map: options?.map
+      }
+    );
+    return res.data;
+  }
+};

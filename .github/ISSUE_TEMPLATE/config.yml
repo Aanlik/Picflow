@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 📚 Documentation
+    url: https://github.com/Aanlik/Picflow#readme
+    about: Picflow installation, configuration and feature guides
+  - name: 💬 使用帮助
+    url: https://github.com/Aanlik/Picflow/issues
+    about: Ask questions about installing and using Picflow
+  - name: 🔒 Security Issues
+    url: https://github.com/Aanlik/Picflow/blob/main/SECURITY.md
+    about: Review the Picflow security policy

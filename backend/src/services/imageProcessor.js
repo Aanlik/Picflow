@@ -1,0 +1,1703 @@
+const sharp = require('sharp');
+const exifr = require('exifr');
+const path = require('path');
+const fsp = require('fs').promises;
+const os = require('os');
+const crypto = require('crypto');
+const logger = require('../utils/logger');
+const { db } = require('../database/db');
+const { getStorage } = require('./storage');
+const { isStorageUnavailableError } = require('./storage/storageErrors');
+const { heroAnchorPoint, normalizeHeroAnchor, heroRenditionName } = require('../utils/heroAnchor');
+const { execFile } = require('child_process');
+const { promisify } = require('util');
+const execFileAsync = promisify(execFile);
+
+// Configure sharp for better memory management with large batches
+sharp.cache(false); // Disable cache to prevent memory buildup
+sharp.concurrency(2); // Limit concurrent operations
+
+// Camera RAW / DNG formats. Sharp's bundled libvips has no raw loader, so these
+// can't be fed to sharp() directly — instead we extract the full-resolution JPEG
+// preview that every RAW file embeds (via exiftool) and process THAT. Gated
+// strictly by extension, so nothing here runs for ordinary jpg/png/webp photos.
+const RAW_EXTENSIONS = new Set([
+  'dng', 'cr2', 'cr3', 'nef', 'nrw', 'arw', 'sr2', 'srf',
+  'raf', 'rw2', 'orf', 'pef', 'srw', 'raw', '3fr', 'dcr', 'kdc'
+]);
+
+function isRawFilename(name) {
+  if (!name || typeof name !== 'string') return false;
+  const ext = path.extname(name).toLowerCase().replace(/^\./, '');
+  return RAW_EXTENSIONS.has(ext);
+}
+
+/**
+ * Extract the embedded full-resolution JPEG preview from a RAW/DNG file to a
+ * temp .jpg and return its path. Tries the largest previews first
+ * (JpgFromRaw → PreviewImage → ThumbnailImage). Throws if none can be extracted
+ * or the result isn't a valid image — the caller treats that as a processing
+ * failure (photo → 'failed'), same as any unreadable upload.
+ */
+async function extractRawPreview(rawPath) {
+  const outDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'picpeak-raw-'));
+  const outPath = path.join(outDir, `${crypto.randomBytes(4).toString('hex')}.jpg`);
+  const tags = ['-JpgFromRaw', '-PreviewImage', '-ThumbnailImage'];
+  let lastErr;
+  for (const tag of tags) {
+    try {
+      // `-b` writes the raw tag bytes to stdout; -w isn't reliable across tags,
+      // so capture stdout as a buffer and write it ourselves.
+      const { stdout } = await execFileAsync('exiftool', ['-b', tag, rawPath], {
+        encoding: 'buffer',
+        maxBuffer: 256 * 1024 * 1024,
+      });
+      if (stdout && stdout.length > 0) {
+        await fsp.writeFile(outPath, stdout);
+        // Validate it's a real, decodable image before handing it to the pipeline.
+        const meta = await sharp(outPath).metadata();
+        if (meta.width && meta.height) {
+          return { path: outPath, cleanup: () => fsp.rm(outDir, { recursive: true, force: true }).catch(() => {}) };
+        }
+      }
+    } catch (err) {
+      lastErr = err;
+      // exiftool missing is a DEPLOYMENT fault, not a bad file, and it fails
+      // identically for every tag — so stop rather than retrying the same
+      // spawn twice more and reporting the last one as if it described the
+      // photo.
+      if (err && err.code === 'ENOENT') break;
+    }
+  }
+  await fsp.rm(outDir, { recursive: true, force: true }).catch(() => {});
+
+  // Distinguish "the tool isn't installed" from "this file has no preview".
+  // Both used to surface as `No usable embedded preview in RAW file X:
+  // spawn exiftool ENOENT`, which reads as a corrupt photo and sends people
+  // hunting through their RAWs instead of installing a package. RAW upload is
+  // the only feature that needs exiftool, so an install can be missing it and
+  // not find out until someone uploads a CR3.
+  if (lastErr && lastErr.code === 'ENOENT') {
+    throw new Error(
+      'exiftool is not installed on the server, and it is required to read '
+      + `RAW files (${path.basename(rawPath)}). Install it (Debian/Ubuntu: `
+      + 'apt-get install libimage-exiftool-perl, Alpine: apk add exiftool, '
+      + 'macOS: brew install exiftool) and retry. JPEG and other ordinary '
+      + 'images do not need it.'
+    );
+  }
+
+  throw new Error(`No usable embedded preview in RAW file ${path.basename(rawPath)}: ${lastErr ? lastErr.message : 'no preview tag returned data'}`);
+}
+
+/**
+ * Give a Sharp-processable local image path for `localPath`. For ordinary
+ * images it's a pass-through (no cost). For RAW/DNG (by `sourceName` extension)
+ * it extracts the embedded JPEG preview and returns that, plus the basename to
+ * use for generated outputs so thumbnails/previews stay named after the source
+ * rather than the random temp file. Always call `cleanup()` when done.
+ */
+async function withProcessableImage(localPath, sourceName) {
+  if (!isRawFilename(sourceName)) {
+    return { path: localPath, outputBasename: undefined, cleanup: () => {} };
+  }
+  const { path: previewPath, cleanup } = await extractRawPreview(localPath);
+  return { path: previewPath, outputBasename: path.basename(sourceName), cleanup };
+}
+
+// Default thumbnail settings
+const DEFAULT_THUMBNAIL_WIDTH = 300;
+const DEFAULT_THUMBNAIL_HEIGHT = 300;
+// Largest video pulled off a remote backend for a poster frame (#1414 review).
+const DEFAULT_VIDEO_THUMBNAIL_MAX_SOURCE_BYTES = 512 * 1024 * 1024;
+// 'inside' preserves the source aspect ratio (output ≤ width × height).
+// This is the right default for masonry / mosaic / justified layouts —
+// the gallery sizes each card from photo.width/height and renders the
+// thumbnail with object-cover, so a thumb that already matches the
+// source aspect doesn't get re-cropped (#447). Admins who want
+// uniform 1:1 grid tiles can switch to 'cover' in the thumbnail settings.
+const DEFAULT_THUMBNAIL_FIT = 'inside';
+const DEFAULT_THUMBNAIL_QUALITY = 85;
+const DEFAULT_THUMBNAIL_FORMAT = 'jpeg';
+
+// Hero image settings - optimized for large displays
+const DEFAULT_HERO_WIDTH = 1920;
+const DEFAULT_HERO_HEIGHT = 1080;
+const DEFAULT_HERO_QUALITY = 85;
+
+// Preview tier (#492). Aspect-preserved downscale for the lightbox so
+// guests don't pay the full 5–12 MB original on every photo open.
+// Same long edge as the hero (admins are already sizing for it) and
+// quality 85 — JPEG artefacts at this size are imperceptible to clients
+// browsing on phones / Retina laptops, and storage cost stays modest
+// (~200–500 KB per photo vs originals at multi-MB).
+const DEFAULT_PREVIEW_LONG_EDGE = 1920;
+const DEFAULT_PREVIEW_QUALITY = 85;
+
+// Responsive tiers (#1095). A whitelist, not a free-form ?w=: an open
+// parameter lets anyone fill the disk with renditions nobody asked for, and
+// every distinct value is a permanent cache entry.
+//
+// 1920 stays the default so existing preview_path rows keep their meaning and
+// nothing regenerates on upgrade. The smaller tiers exist because a phone can
+// show ~1170px at most, so the 1920 tier ships roughly twice the bytes it can
+// use on every lightbox swipe.
+const PREVIEW_WIDTHS = [640, 1280, 1920];
+const THUMBNAIL_WIDTHS = [300, 600, 900];
+
+/** Whitelist a requested width, or null. Callers treat null as "use default". */
+function normalizeTierWidth(requested, allowed) {
+  const n = parseInt(requested, 10);
+  return Number.isFinite(n) && allowed.includes(n) ? n : null;
+}
+
+// Helper to parse setting value (handles both JSON-encoded and plain values)
+function parseSettingValue(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  // Try to parse as JSON first (in case it's a JSON-encoded string like '"cover"')
+  try {
+    return JSON.parse(value);
+  } catch (e) {
+    // If it's not valid JSON, return the raw value
+    return value;
+  }
+}
+
+// Validate that fit value is valid for Sharp
+function validateFitValue(fit) {
+  const validFitValues = ['cover', 'contain', 'fill', 'inside', 'outside'];
+  if (fit && validFitValues.includes(fit)) {
+    return fit;
+  }
+  return DEFAULT_THUMBNAIL_FIT;
+}
+
+// Get thumbnail settings from database
+async function getThumbnailSettings() {
+  try {
+    const settings = await db('app_settings')
+      .whereIn('setting_key', [
+        'thumbnail_width',
+        'thumbnail_height',
+        'thumbnail_fit',
+        'thumbnail_quality',
+        'thumbnail_format'
+      ])
+      .select('setting_key', 'setting_value');
+
+    const settingsMap = {};
+    settings.forEach(s => {
+      settingsMap[s.setting_key] = parseSettingValue(s.setting_value);
+    });
+
+    // Parse and validate fit value
+    const fitValue = validateFitValue(settingsMap.thumbnail_fit);
+
+    return {
+      width: parseInt(settingsMap.thumbnail_width) || DEFAULT_THUMBNAIL_WIDTH,
+      height: parseInt(settingsMap.thumbnail_height) || DEFAULT_THUMBNAIL_HEIGHT,
+      fit: fitValue,
+      quality: parseInt(settingsMap.thumbnail_quality) || DEFAULT_THUMBNAIL_QUALITY,
+      format: settingsMap.thumbnail_format || DEFAULT_THUMBNAIL_FORMAT
+    };
+  } catch (error) {
+    // If database is not ready or settings don't exist, use defaults
+    logger.warn('Could not fetch thumbnail settings, using defaults:', error.message);
+    return {
+      width: DEFAULT_THUMBNAIL_WIDTH,
+      height: DEFAULT_THUMBNAIL_HEIGHT,
+      fit: DEFAULT_THUMBNAIL_FIT,
+      quality: DEFAULT_THUMBNAIL_QUALITY,
+      format: DEFAULT_THUMBNAIL_FORMAT
+    };
+  }
+}
+
+const contentTypeFor = (format) => {
+  if (format === 'png') return 'image/png';
+  if (format === 'webp') return 'image/webp';
+  return 'image/jpeg';
+};
+
+/**
+ * Generate a thumbnail from a local source image path. The output is written
+ * to the storage backend (local fs or S3) under `thumbnails/thumb_<filename>`
+ * and the relative storage key is returned for DB persistence.
+ *
+ * Callers must ensure the source is on the local filesystem. For S3 mode
+ * regeneration flows, fetch via `withLocalCopy(storage, sourceKey, fn)` first.
+ *
+ * options.outputBasename — override the basename portion of the thumbnail
+ * filename (default: basename of imagePath). Used for external/reference
+ * photos where the source basename can collide across events (#423) — the
+ * import path passes a per-photo unique basename so two events both
+ * referencing `IMG_0001.jpg` don't clobber each other's thumbnail.
+ */
+async function generateThumbnail(imagePath, options = {}) {
+  const sourceBasename = path.basename(imagePath);
+  const outputBasename = options.outputBasename || sourceBasename;
+  const storage = getStorage();
+
+  // Get thumbnail settings
+  const settings = await getThumbnailSettings();
+
+  // Tag against the CONFIGURED canonical width, not the 300 default — the tag
+  // has to agree with the key ensureThumbnailAtWidth probed for. On an install
+  // with thumbnail_width=600 a w=300 request used to write `thumb_<name>` while
+  // the caller looked for `thumb_w300_<name>`: the cache never hit, so every
+  // single request re-downloaded the original and ran Sharp, and the file it
+  // left behind was in no cleanup list.
+  const canonicalWidth = settings.width || DEFAULT_THUMBNAIL_WIDTH;
+  const widthTag = options.width && options.width !== canonicalWidth
+    ? `w${options.width}_`
+    : '';
+  const thumbnailFilename = `thumb_${widthTag}${outputBasename}`;
+  const thumbnailRelKey = path.posix.join('thumbnails', thumbnailFilename);
+
+  // `options.regenerate` deliberately does NOT delete the existing object
+  // first (#1129).
+  //
+  // It used to, and the delete ran BEFORE sharp had even opened the source —
+  // so a source that could not be read (a NAS mount that blipped, a corrupt
+  // file) left the old thumbnail already gone and returned null, with the
+  // database still pointing at it. One bulk regeneration during a mount outage
+  // could therefore strip every canonical thumbnail in a reference gallery and
+  // leave the whole library serving 404s.
+  //
+  // Nothing is lost by dropping it: LocalFsStorage.put stages to a temp file
+  // and renames over the target, which replaces atomically, and an S3 put
+  // overwrites by key. So the write replaces the old rendition either way —
+  // the only thing the delete added was a window in which there was no
+  // thumbnail at all.
+
+  try {
+    // First, verify the source image is complete and valid
+    const metadata = await sharp(imagePath).metadata();
+
+    if (!metadata.width || !metadata.height) {
+      throw new Error('Invalid image metadata - file may be incomplete');
+    }
+
+    let sharpInstance = sharp(imagePath, {
+      limitInputPixels: 268402689, // ~16k x 16k max
+      sequentialRead: true,
+      failOn: 'none'
+    });
+
+    // Apply EXIF orientation before resizing (#1185). Without this a photo
+    // whose Orientation tag is not 1 — routine for portrait shots on bodies
+    // that tag rather than rotate the sensor data — is resized from the raw
+    // pixels and comes out sideways. `.withMetadata(false)` below then strips
+    // the tag, so the browser has no hint left to correct it either, which is
+    // why this cannot be left to the client.
+    //
+    // Unconditional, unlike resizeToBox and generatePreviewImage. Those open
+    // multi-frame sources with `animated: true` and must not rotate them,
+    // because `.rotate()` flattens to the first frame. This one never passes
+    // that option, so it already produces a still — guarding on `pages` here
+    // would protect an animation that was being discarded anyway, and leave
+    // the thumbnail in raw orientation while the stored dimensions describe
+    // the rotated one.
+    sharpInstance = sharpInstance.rotate();
+
+    // Strip EXIF/metadata from thumbnails (privacy: prevent GPS leak etc.)
+    sharpInstance = sharpInstance.withMetadata(false);
+
+    // options.width/height override the admin setting for responsive tiers
+    // (#1095). The configured `fit` is kept deliberately: the grid renders
+    // with object-cover, so every tier must be cropped the same way or the
+    // browser would swap between differently-framed images as the viewport
+    // changes.
+    sharpInstance = sharpInstance.resize(options.width || settings.width, options.height || settings.height, {
+      withoutEnlargement: true,
+      fit: settings.fit,
+      position: 'center'
+    });
+
+    if (settings.format === 'jpeg') {
+      sharpInstance = sharpInstance.jpeg({
+        quality: settings.quality,
+        progressive: true,
+        mozjpeg: true
+      });
+    } else if (settings.format === 'png') {
+      sharpInstance = sharpInstance.png({
+        quality: settings.quality,
+        compressionLevel: 9,
+        progressive: true
+      });
+    } else if (settings.format === 'webp') {
+      sharpInstance = sharpInstance.webp({
+        quality: settings.quality,
+        effort: 4
+      });
+    }
+
+    const buffer = await sharpInstance.toBuffer();
+    if (!buffer || buffer.length === 0) {
+      throw new Error('Generated thumbnail is empty');
+    }
+
+    await storage.put(thumbnailRelKey, buffer, { contentType: contentTypeFor(settings.format) });
+
+    return thumbnailRelKey;
+  } catch (error) {
+    const msg = (error && error.message) ? error.message : String(error);
+    logger.error(`Failed to generate thumbnail for ${sourceBasename}: ${msg}`);
+
+    // No cleanup delete here either, for the same reason as above (#1129).
+    // This was "clean up any partially uploaded object", but there cannot be
+    // one: `storage.put` is the last statement in the try, every throw above
+    // it happens before anything is written, and put itself stages to a temp
+    // file and only renames on success. So the only object this delete could
+    // ever have removed is the PREVIOUS, perfectly good rendition — which is
+    // exactly the thumbnail a failed regeneration must leave alone.
+    return null;
+  }
+}
+
+/**
+ * Check if a thumbnail exists and is valid. For local-fs storage we open the
+ * file with sharp to confirm it parses; for S3 we trust the byte-integrity
+ * checks built into the protocol and only verify size > 0.
+ *
+ * Throws when the storage backend cannot be reached (issue 1785): that says
+ * nothing about the thumbnail, and answering false would regenerate a healthy
+ * one from the original through the backend that is failing. isHeroValid and
+ * isPreviewValid follow the same rule.
+ */
+async function isThumbnailValid(thumbnailPath) {
+  const storage = getStorage();
+  try {
+    const stat = await storage.stat(thumbnailPath);
+    if (!stat || stat.size === 0) {
+      return false;
+    }
+    if (storage.kind() === 'local') {
+      const localPath = storage.resolveLocalPath(thumbnailPath);
+      await sharp(localPath).metadata();
+    }
+    return true;
+  } catch (error) {
+    if (isStorageUnavailableError(error)) throw error;
+    return false;
+  }
+}
+
+/**
+ * The dimensions a viewer actually sees, given EXIF orientation (#1185).
+ *
+ * sharp reports `metadata.width`/`height` as the pixels are stored, not as
+ * they are displayed. Orientation values 5-8 carry a 90° rotation, so for
+ * those the two are swapped — which is why a portrait photo from a body that
+ * tags rather than rotates was landing in the database as landscape, and why
+ * masonry and justified layouts sized its tile with the wrong aspect ratio on
+ * top of the image itself being unrotated.
+ *
+ * Everything that renders these photos now applies `.rotate()`, so the stored
+ * numbers have to describe the rotated result to match.
+ *
+ * @param {Object} metadata - a sharp metadata object
+ * @returns {{ width: number|null, height: number|null }}
+ */
+/**
+ * Does this image's EXIF orientation mean `.rotate()` will move its pixels?
+ * (#1198)
+ *
+ * Distinct from orientedDimensions, and the distinction matters. Orientations
+ * 2, 3 and 4 are a mirror, a 180° turn and a mirrored 180° turn: every pixel
+ * moves, but width and height are unchanged. A square image with 5-8 is the
+ * same story. So "did the dimensions change?" is not the same question as "was
+ * this image transformed", and anything keyed to derived data — face bounding
+ * boxes, cached previews — has to ask the second one or it silently skips
+ * exactly those cases.
+ *
+ * 1 means no transform. Absent means no tag, which is also no transform.
+ *
+ * @param {Object} metadata - a sharp metadata object
+ * @returns {boolean}
+ */
+function hasOrientationTransform(metadata) {
+  const o = metadata && metadata.orientation;
+  return typeof o === 'number' && o >= 2 && o <= 8;
+}
+
+function orientedDimensions(metadata) {
+  if (!metadata || !metadata.width || !metadata.height) return { width: null, height: null };
+  const swap = metadata.orientation >= 5 && metadata.orientation <= 8;
+  return {
+    width: swap ? metadata.height : metadata.width,
+    height: swap ? metadata.width : metadata.height,
+  };
+}
+
+/**
+ * Wraps a callback that needs the source image as a local file. In local-fs
+ * mode the storage path is used directly (no copy); in S3 mode the object is
+ * streamed to a tmp file which is removed afterwards.
+ */
+async function withLocalCopy(sourceKey, fn) {
+  const storage = getStorage();
+  if (storage.kind() === 'local') {
+    return fn(storage.resolveLocalPath(sourceKey));
+  }
+  const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'picpeak-src-'));
+  const tmpPath = path.join(tmpDir, `${crypto.randomBytes(4).toString('hex')}_${path.basename(sourceKey)}`);
+  try {
+    await storage.getToFile(sourceKey, tmpPath);
+    return await fn(tmpPath);
+  } finally {
+    await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+/**
+ * Process-local single-flight for lazy rendition generation (#1020).
+ *
+ * Every ensure* function below is check-then-generate: look for the
+ * rendition, run Sharp if it is missing or invalid. The check reads the path
+ * off the photo row the caller already fetched, so N simultaneous requests
+ * for a cold photo — several viewers opening the same lightbox slide, two
+ * kiosks starting the same slideshow (#1018), a grid mounting one tile per
+ * photo — all hold a snapshot where the path is still null, all miss, and
+ * all run the same resize. The output key is deterministic, so they leave no
+ * orphans; they multiply CPU, memory and source reads (a full download on
+ * S3, a full read off the NAS for a reference photo) at exactly the moment
+ * the system is already cold.
+ *
+ * Only a MISS enters the flight. The validity check on the caller's own
+ * snapshot runs outside it, lock-free, so a request that already has a good
+ * rendition never joins anything — and, the other way round, a forced rebuild
+ * (the admin regenerate endpoints pass a row with the path nulled) can never
+ * be satisfied by joining a viewer's hot-path flight and being handed the
+ * very rendition it was asked to replace. Inside the flight, everything is
+ * a regeneration.
+ *
+ * A forced rebuild (`force: true`) goes one step further: if a flight is
+ * already GENERATING for the key it does not join that either, it runs after
+ * it. The older flight read the thumbnail settings when it started, so after
+ * a settings change it is producing exactly the rendition the admin's
+ * regenerate was invoked to replace — adopting its result would count a
+ * success while the old size stays cached, and the validity check never
+ * notices because it only asks whether the file parses. Lazy misses that
+ * arrive while the forced flight is pending join it, so the map always
+ * points at the newest work.
+ *
+ * One map for every rendition, keyed by rendition, photo id AND source
+ * rather than by storage key: a preview's key is only known after the
+ * source has been probed, and the canonical thumbnail ensureThumbnailAtWidth
+ * falls back to must be guarded by the same mechanism as the tier it missed.
+ * The source is part of the key because replacePhoto keeps the id and
+ * changes the path — a request carrying the replacement row must not join a
+ * flight still rendering the file it replaced and cache that for 30 minutes. The entry is
+ * cleared in a finally, on success and failure alike, so a rejection cannot
+ * poison the key for the lifetime of the process — the next request
+ * re-attempts rather than adopting a failure.
+ *
+ * Deliberately no re-read of the photo row inside the flight. A request
+ * whose snapshot was taken while a previous flight was generating, and that
+ * reaches the map only after that flight has cleared, generates once more:
+ * one extra pass, not N. A re-read would close even that, but the admin
+ * regenerate endpoints force a rebuild precisely by passing a row with the
+ * path nulled (adminThumbnails.js), and a re-read would find the persisted
+ * rendition valid and hand it back untouched.
+ *
+ * Per-process only. Two replicas still generate independently, which is
+ * harmless: LocalFsStorage.put renames atomically and an S3 put overwrites
+ * by key, so they converge on the same output. Cross-replica coordination
+ * would need a storage-level lock and is not justified by the impact.
+ */
+const inFlightRenditions = new Map();
+
+function flightKey(rendition, photo, width) {
+  const isExternal = photo.source_origin === 'external' || photo.source_origin === 'reference';
+  const source = (isExternal ? (photo.external_relpath || photo.filename) : photo.path) || '';
+  return `${rendition}:${photo.id}:${source}${width ? `:w${width}` : ''}`;
+}
+
+function singleFlight(key, fn, { force = false } = {}) {
+  const pending = inFlightRenditions.get(key);
+  if (pending && !force) return pending;
+  // Forced: start once the older flight has settled, whichever way it went.
+  const start = pending ? pending.then(fn, fn) : Promise.resolve().then(fn);
+  const work = start.finally(() => {
+    // Only drop our own entry: an older flight settling later than the forced
+    // one that superseded it must not evict the newer work from the map.
+    if (inFlightRenditions.get(key) === work) inFlightRenditions.delete(key);
+  });
+  inFlightRenditions.set(key, work);
+  return work;
+}
+
+/**
+ * Whether a photo row is a video.
+ *
+ * Both columns are checked because `media_type` was only backfilled for rows
+ * created after the video support landed; older rows carry nothing but the
+ * mime type.
+ */
+function isVideoPhoto(photo) {
+  return photo.media_type === 'video' || String(photo.mime_type || '').startsWith('video/');
+}
+
+/**
+ * Regenerate thumbnail if it's broken or missing.
+ *
+ * Works for both managed photos (stored via the storage backend, possibly
+ * S3) and external/reference photos (#423 — sourced from a local mount
+ * outside the managed storage tree, e.g. NAS over SMB/NFS). External
+ * photos historically had thumbnail_path=null, which forced the gallery
+ * to fall back to streaming the full original on every tile — minutes of
+ * load time for a 100-photo NAS-mounted gallery.
+ */
+async function ensureThumbnail(photo, { force = false, boundVideoSource = true } = {}) {
+  // Check if thumbnail exists and is valid (works for any source).
+  if (!force && photo.thumbnail_path) {
+    const isValid = await isThumbnailValid(photo.thumbnail_path);
+    if (isValid) {
+      return photo.thumbnail_path;
+    }
+    logger.warn(`Invalid thumbnail detected for photo ${photo.id}, regenerating...`);
+  }
+
+  return singleFlight(flightKey('thumbnail', photo), () => regenerateThumbnail(photo, { boundVideoSource }), { force });
+}
+
+async function regenerateThumbnail(photo, { boundVideoSource = true } = {}) {
+  const { resolvePhotoStorageKey, resolvePhotoFilePath } = require('./photoResolver');
+
+  const event = await db('events').where('id', photo.event_id).first();
+  if (!event) {
+    logger.error(`ensureThumbnail: event ${photo.event_id} not found for photo ${photo.id}`);
+    return null;
+  }
+
+  const isExternal = photo.source_origin === 'external' || photo.source_origin === 'reference';
+
+  let newThumbnailPath;
+  if (isVideoPhoto(photo)) {
+    // A video's thumbnail is a poster frame, not a Sharp resize of the stored
+    // file (#1414). Without this branch the generic path below hands the mp4
+    // to Sharp, which throws, so every video whose row reached here with no
+    // usable thumbnail_path — uploaded before the upload pipeline learned to
+    // fall back to a placeholder, or with its rendition since lost — stayed
+    // thumbnail-less forever, however many times it was viewed or the admin
+    // pressed regenerate.
+    newThumbnailPath = await regenerateVideoThumbnail(event, photo, isExternal, { boundSource: boundVideoSource });
+  } else if (isExternal) {
+    // External: source is on a local mount path. No withLocalCopy needed
+    // (storage-backend abstraction doesn't apply — this is a direct fs
+    // read). Use a per-photo unique outputBasename so two events both
+    // referencing the same NAS basename can't clobber each other's thumb.
+    let localPath;
+    try {
+      localPath = resolvePhotoFilePath(event, photo);
+    } catch (e) {
+      logger.error(`Failed to resolve external file for thumbnail (photo ${photo.id}): ${e.message}`);
+      return null;
+    }
+    const sourceBasename = path.basename(photo.external_relpath || photo.filename || `photo-${photo.id}`);
+    const outputBasename = `ext${photo.id}_${sourceBasename}`;
+    logger.info(`Ensuring thumbnail for external photo ${photo.id} from ${localPath}`);
+    newThumbnailPath = await generateThumbnail(localPath, { regenerate: true, outputBasename });
+  } else {
+    let sourceKey;
+    try {
+      sourceKey = resolvePhotoStorageKey(event, photo);
+    } catch (e) {
+      logger.error(`Failed to resolve original key for thumbnail (photo ${photo.id}): ${e.message}`);
+      return null;
+    }
+    logger.info(`Ensuring thumbnail for photo ${photo.id} from key: ${sourceKey}`);
+    newThumbnailPath = await withLocalCopy(sourceKey, async (localPath) => {
+      const proc = await withProcessableImage(localPath, sourceKey);
+      try {
+        return await generateThumbnail(proc.path, { regenerate: true, outputBasename: proc.outputBasename });
+      } finally {
+        await proc.cleanup();
+      }
+    });
+  }
+
+  if (newThumbnailPath) {
+    await db('photos')
+      .where({ id: photo.id })
+      .update({ thumbnail_path: newThumbnailPath });
+
+    logger.info(`Regenerated thumbnail for photo ${photo.id}`);
+    return newThumbnailPath;
+  }
+
+  return null;
+}
+
+/**
+ * Rebuild a video's thumbnail from the source video.
+ *
+ * Same contract as the image branch of regenerateThumbnail: return the new
+ * storage key, or null when nothing could be produced. processUploadedVideo
+ * is the same routine the upload pipeline uses, so a regenerated thumbnail is
+ * byte-for-byte the one a fresh upload of that file would have got — a real
+ * poster frame, degrading to the ffmpeg-free SVG placeholder when ffmpeg
+ * cannot read the file, and throwing only when even that fails.
+ *
+ * The key mirrors the upload pipeline's (`thumbnails/thumb_<name>.jpg`) so a
+ * regeneration overwrites the previous rendition instead of orphaning it. The
+ * external branch keeps regenerateThumbnail's `ext<id>_` prefix, which is what
+ * stops two events that reference the same NAS basename from clobbering each
+ * other's thumbnail.
+ *
+ * On a remote backend the source is bounded by VIDEO_THUMBNAIL_MAX_SOURCE_BYTES
+ * (default 512 MB): withLocalCopy materialises the whole object on the request
+ * path of the gallery thumbnail route, which an unauthenticated visitor can
+ * reach, and a poster frame is not worth a multi-GB download. Over the limit
+ * the row gets the placeholder after a single HEAD. Local and external sources
+ * are exempt: nothing is copied for them.
+ *
+ * `boundSource: false` lifts that bound. It is for the admin regenerate job
+ * only (adminThumbnails.js): an admin asked, it runs in the background one
+ * video at a time, and bounded it could never give a large video whose
+ * thumbnail is missing anything but the placeholder.
+ */
+async function regenerateVideoThumbnail(event, photo, isExternal, { boundSource = true } = {}) {
+  const { resolvePhotoStorageKey, resolvePhotoFilePath } = require('./photoResolver');
+  const { processUploadedVideo } = require('./videoProcessor');
+
+  const sourceBasename = path.basename(
+    (isExternal ? (photo.external_relpath || photo.filename) : photo.filename) || `video-${photo.id}`
+  );
+  const outputBasename = isExternal ? `ext${photo.id}_${sourceBasename}` : sourceBasename;
+  const thumbnailKey = path.posix.join('thumbnails', `thumb_${outputBasename.replace(/\.[^.]+$/, '.jpg')}`);
+
+  const generate = async (localPath) => {
+    const result = await processUploadedVideo(localPath, thumbnailKey);
+    return result?.thumbnailKey || null;
+  };
+
+  try {
+    if (isExternal) {
+      // Direct fs read off the mount, exactly like the external image branch.
+      const localPath = resolvePhotoFilePath(event, photo);
+      logger.info(`Ensuring thumbnail for external video ${photo.id} from ${localPath}`);
+      return await generate(localPath);
+    }
+    const sourceKey = resolvePhotoStorageKey(event, photo);
+    const storage = getStorage();
+    if (boundSource && storage.kind() !== 'local') {
+      // Read at call time, as restoreService reads RESTORE_MAX_DECOMPRESSED_BYTES.
+      const configured = Number(process.env.VIDEO_THUMBNAIL_MAX_SOURCE_BYTES);
+      const maxBytes = Number.isFinite(configured) && configured > 0
+        ? configured
+        : DEFAULT_VIDEO_THUMBNAIL_MAX_SOURCE_BYTES;
+      const stat = await storage.stat(sourceKey);
+      if (stat && stat.size > maxBytes) {
+        logger.warn(`Video ${photo.id} is ${stat.size} bytes, over the ${maxBytes} byte limit; using the placeholder`);
+        // Same filename derivation and explicit dimensions as
+        // processUploadedVideo's own fallback, so this lands under
+        // thumbnailKey and skips the settings lookup.
+        const placeholderName = path.basename(thumbnailKey).replace(/^thumb_/, '');
+        return await generateVideoPlaceholder(placeholderName, {
+          width: DEFAULT_THUMBNAIL_WIDTH,
+          height: DEFAULT_THUMBNAIL_HEIGHT
+        });
+      }
+    }
+    logger.info(`Ensuring thumbnail for video ${photo.id} from key: ${sourceKey}`);
+    return await withLocalCopy(sourceKey, generate);
+  } catch (e) {
+    logger.error(`Failed to regenerate thumbnail for video ${photo.id}: ${e.message}`);
+    return null;
+  }
+}
+
+async function generateVideoPlaceholder(originalFilename, options = {}) {
+  const parsed = path.parse(originalFilename || '');
+  const baseName = parsed.name || 'video';
+  const thumbnailFilename = `thumb_${baseName}.jpg`;
+  const thumbnailRelKey = path.posix.join('thumbnails', thumbnailFilename);
+  const storage = getStorage();
+
+  // Skip the settings lookup when the caller already supplies dimensions.
+  // This can run from inside an open per-file SQLite transaction (chunked
+  // video upload's fallback path in videoProcessor.js) — a second,
+  // un-transacted db() query for settings there deadlocks against SQLite's
+  // single-connection pool until acquireConnectionTimeout (60s), reproduced
+  // directly against an isolated SQLite db (codex review of #1371/#1372).
+  const settings = (options.width && options.height) ? {} : await getThumbnailSettings();
+  const width = options.width || settings.width || DEFAULT_THUMBNAIL_WIDTH;
+  const height = options.height || settings.height || DEFAULT_THUMBNAIL_HEIGHT;
+
+  if (options.regenerate) {
+    await storage.delete(thumbnailRelKey).catch(() => {});
+  }
+
+  try {
+    const svg = `
+      <svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#0f172a" stop-opacity="0.9"/>
+            <stop offset="100%" stop-color="#1e293b" stop-opacity="0.9"/>
+          </linearGradient>
+        </defs>
+        <rect width="${width}" height="${height}" rx="18" fill="url(#grad)"/>
+        <circle cx="${width / 2}" cy="${height / 2}" r="${Math.min(width, height) / 6}" fill="rgba(255,255,255,0.85)"/>
+        <polygon points="${width / 2 - 10},${height / 2 - 14} ${width / 2 - 10},${height / 2 + 14} ${width / 2 + 16},${height / 2}" fill="#0f172a"/>
+        <text x="50%" y="${height - 18}" font-family="Arial, sans-serif" font-size="16" fill="rgba(255,255,255,0.9)" text-anchor="middle">
+          VIDEO
+        </text>
+      </svg>
+    `;
+
+    const buffer = await sharp(Buffer.from(svg))
+      .resize(width, height, { fit: 'cover' })
+      .jpeg({ quality: settings.quality || DEFAULT_THUMBNAIL_QUALITY })
+      .toBuffer();
+
+    await storage.put(thumbnailRelKey, buffer, { contentType: 'image/jpeg' });
+
+    return thumbnailRelKey;
+  } catch (error) {
+    logger.error('Failed to generate video placeholder thumbnail:', error.message);
+    return null;
+  }
+}
+
+/**
+ * Generate a hero-optimized image for gallery headers
+ * Outputs a 1920x1080 image suitable for full-width hero sections
+ */
+async function generateHeroImage(imagePath, options = {}) {
+  const filename = options.outputBasename || path.basename(imagePath);
+  // One file per focal point (issue 1737): see heroRenditionName.
+  const heroFilename = heroRenditionName(filename, options.anchor);
+  const heroRelKey = path.posix.join('heroes', heroFilename);
+  const storage = getStorage();
+
+  // `options.regenerate` does not delete the existing object first, and the
+  // catch below does not clean up either — same reasoning as generateThumbnail
+  // (#1129, #1020). `storage.put` is the last statement in the try, so nothing
+  // partial can exist for the catch to remove; LocalFsStorage.put stages and
+  // renames atomically and an S3 put overwrites by key, so the write replaces
+  // the old rendition on its own. All the delete added was a window with no
+  // hero at all — in which a concurrent reader was redirected to the full
+  // original — and a source that could not be read left the old hero gone
+  // with the row still pointing at it.
+
+  try {
+    const metadata = await sharp(imagePath).metadata();
+
+    if (!metadata.width || !metadata.height) {
+      throw new Error('Invalid image metadata - file may be incomplete');
+    }
+
+    const heroWidth = options.width || DEFAULT_HERO_WIDTH;
+    const heroHeight = options.height || DEFAULT_HERO_HEIGHT;
+    const quality = options.quality || DEFAULT_HERO_QUALITY;
+
+    let sharpInstance = sharp(imagePath, {
+      limitInputPixels: 268402689,
+      sequentialRead: true,
+      failOn: 'none'
+    });
+
+    // EXIF orientation, same reasoning as generateThumbnail (#1185) — and
+    // unconditional for the same reason: no `animated: true` on the input, so
+    // this output is a still whatever the source was.
+    sharpInstance = sharpInstance.rotate();
+
+    // Strip EXIF/metadata from hero images (privacy: prevent GPS leak etc.)
+    sharpInstance = sharpInstance.withMetadata(false);
+
+    // Cover-crop at the event's focal point (issue 1737). This used to be
+    // `fit: 'cover', position: 'center'`, and the anchor only reached the
+    // gallery as CSS object-position — which can move within the centre
+    // crop but never reach the top or bottom of a portrait source. sharp's
+    // `position` takes compass gravities and the entropy/attention
+    // strategies, not a point, so the rectangle is computed here: scale so
+    // the shorter side fills the frame, then cut the frame out with the
+    // slack distributed by the anchor (0% = start edge, 100% = end edge).
+    // Oriented dimensions: .rotate() above swaps them for EXIF 5-8.
+    const [anchorX, anchorY] = heroAnchorPoint(options.anchor);
+    const swapped = metadata.orientation >= 5;
+    const srcWidth = swapped ? metadata.height : metadata.width;
+    const srcHeight = swapped ? metadata.width : metadata.height;
+    const scale = Math.max(heroWidth / srcWidth, heroHeight / srcHeight);
+    const scaledWidth = Math.max(heroWidth, Math.round(srcWidth * scale));
+    const scaledHeight = Math.max(heroHeight, Math.round(srcHeight * scale));
+    sharpInstance = sharpInstance
+      .resize(scaledWidth, scaledHeight, { withoutEnlargement: false, fit: 'fill' })
+      .extract({
+        left: Math.round((scaledWidth - heroWidth) * anchorX / 100),
+        top: Math.round((scaledHeight - heroHeight) * anchorY / 100),
+        width: heroWidth,
+        height: heroHeight
+      });
+
+    sharpInstance = sharpInstance.jpeg({
+      quality: quality,
+      progressive: true,
+      mozjpeg: true
+    });
+
+    const buffer = await sharpInstance.toBuffer();
+    if (!buffer || buffer.length === 0) {
+      throw new Error('Generated hero image is empty');
+    }
+
+    await storage.put(heroRelKey, buffer, { contentType: 'image/jpeg' });
+
+    logger.info(`Generated hero image for ${filename} → ${heroRelKey}`);
+    return heroRelKey;
+  } catch (error) {
+    const msg = (error && error.message) ? error.message : String(error);
+    logger.error(`Failed to generate hero image for ${filename}: ${msg}`);
+    return null;
+  }
+}
+
+/**
+ * Check if a hero image exists and is valid
+ */
+async function isHeroValid(heroPath) {
+  const storage = getStorage();
+  try {
+    const stat = await storage.stat(heroPath);
+    if (!stat || stat.size === 0) {
+      return false;
+    }
+    if (storage.kind() === 'local') {
+      const localPath = storage.resolveLocalPath(heroPath);
+      await sharp(localPath).metadata();
+    }
+    return true;
+  } catch (error) {
+    if (isStorageUnavailableError(error)) throw error;
+    return false;
+  }
+}
+
+/**
+ * Ensure a hero image exists for a photo, regenerate if needed
+ */
+async function ensureHeroImage(photo, { anchor } = {}) {
+  if (photo.hero_path) {
+    const isValid = await isHeroValid(photo.hero_path);
+    // A readable rendition cut at another focal point is stale too (issue
+    // 1737). A caller that does not know the event's anchor (undefined)
+    // keeps whatever is stored; a NULL hero_anchor is the pre-237 centre crop.
+    const anchorMatches = anchor === undefined
+      || normalizeHeroAnchor(photo.hero_anchor) === normalizeHeroAnchor(anchor);
+    if (isValid && anchorMatches) {
+      return photo.hero_path;
+    }
+    logger.warn(isValid
+      ? `Hero image for photo ${photo.id} was cut at another focal point, regenerating...`
+      : `Invalid hero image detected for photo ${photo.id}, regenerating...`);
+  }
+
+  // Per anchor: a request for the new focal point must not join a flight that
+  // is still cutting the old one and be handed that rendition.
+  const flight = `${flightKey('hero', photo)}:${anchor === undefined ? 'stored' : normalizeHeroAnchor(anchor)}`;
+  return singleFlight(flight, () => regenerateHeroImage(photo, anchor));
+}
+
+// The rendition of a previous focal point is a different file (see
+// heroRenditionName); once the row points at the new one, drop it. Deleting
+// only what the row pointed at means a concurrent flight for another anchor
+// loses nothing it still needs.
+async function dropSupersededHero(photo, newHeroPath) {
+  if (!photo.hero_path || photo.hero_path === newHeroPath) return;
+  // Managed hero names derive from the source basename, so another photo
+  // row can point at the same key; deleteEventCascade (adminEvents/helpers)
+  // makes the same check before it deletes. When in doubt, keep the file.
+  try {
+    const shared = await db('photos')
+      .where({ hero_path: photo.hero_path })
+      .whereNot({ id: photo.id })
+      .first();
+    if (shared) return;
+  } catch (e) {
+    logger.warn(`Could not check whether hero ${photo.hero_path} is shared; keeping it: ${e.message}`);
+    return;
+  }
+  await getStorage().delete(photo.hero_path).catch(() => {});
+}
+
+async function regenerateHeroImage(photo, anchor) {
+  const { resolvePhotoStorageKey, resolvePhotoFilePath } = require('./photoResolver');
+
+  let event;
+  try {
+    event = await db('events').where('id', photo.event_id).first();
+  } catch (e) {
+    logger.error(`Failed to load event for hero image (photo ${photo.id}): ${e.message}`);
+    return null;
+  }
+
+  // The route passes the anchor it authorised against; anyone else gets the
+  // event's. Stored alongside hero_path so the next request can tell whether
+  // the file still matches the event.
+  const heroAnchor = normalizeHeroAnchor(anchor !== undefined ? anchor : event?.hero_image_anchor);
+
+  // External sources never reach the managed backend, so resolvePhotoStorageKey
+  // returns null for them by design — and this function used to feed that null
+  // straight to withLocalCopy, which throws, so the hero route fell back to
+  // redirecting at the full original. #1078 fixed exactly this for
+  // ensurePreviewImage and nobody carried it across; it only became visible
+  // when the Story hero started asking for hero_url instead of the original
+  // (#1166), which on a reference-mode gallery quietly changed nothing.
+  const isExternal = photo.source_origin === 'external' || photo.source_origin === 'reference';
+
+  let newHeroPath;
+  if (isExternal) {
+    // Mirrors the external branch in ensurePreviewImage: a direct fs read off
+    // the mount, so no withLocalCopy, and a per-photo outputBasename so two
+    // events referencing the same NAS basename cannot clobber each other.
+    let localPath;
+    try {
+      localPath = resolvePhotoFilePath(event, photo);
+    } catch (e) {
+      logger.error(`Failed to resolve external file for hero image (photo ${photo.id}): ${e.message}`);
+      return null;
+    }
+    const sourceBasename = path.basename(photo.external_relpath || photo.filename || `photo-${photo.id}`);
+    newHeroPath = await generateHeroImage(localPath, {
+      regenerate: true,
+      outputBasename: `ext${photo.id}_${sourceBasename}`,
+      anchor: heroAnchor,
+    });
+    if (newHeroPath) {
+      await db('photos').where({ id: photo.id }).update({ hero_path: newHeroPath, hero_anchor: heroAnchor });
+      await dropSupersededHero(photo, newHeroPath);
+    }
+    return newHeroPath;
+  }
+
+  let sourceKey;
+  try {
+    sourceKey = resolvePhotoStorageKey(event, photo);
+    logger.info(`Ensuring hero image for photo ${photo.id} from key: ${sourceKey}`);
+  } catch (e) {
+    const msg = (e && e.message) ? e.message : String(e);
+    logger.error(`Failed to resolve original key for hero image (photo ${photo.id}): ${msg}`);
+    return null;
+  }
+  if (!sourceKey) {
+    // Reference-mode event holding a row with no source_origin: the mode falls
+    // back to the event's and resolvePhotoStorageKey returns null. Honour the
+    // null-on-failure contract rather than feeding it to withLocalCopy.
+    logger.warn(`No managed storage key for hero image (photo ${photo.id}); skipping generation`);
+    return null;
+  }
+
+  newHeroPath = await withLocalCopy(sourceKey, async (localPath) => {
+    const proc = await withProcessableImage(localPath, sourceKey);
+    try {
+      return await generateHeroImage(proc.path, { regenerate: true, outputBasename: proc.outputBasename, anchor: heroAnchor });
+    } finally {
+      await proc.cleanup();
+    }
+  });
+
+  if (newHeroPath) {
+    await db('photos')
+      .where({ id: photo.id })
+      .update({ hero_path: newHeroPath, hero_anchor: heroAnchor });
+    await dropSupersededHero(photo, newHeroPath);
+
+    logger.info(`Regenerated hero image for photo ${photo.id}`);
+    return newHeroPath;
+  }
+
+  return null;
+}
+
+/**
+ * Generate a lightbox preview image (#492).
+ *
+ * Aspect-preserving downscale (`fit: 'inside'`) capped at
+ * DEFAULT_PREVIEW_LONG_EDGE. Distinct from generateHeroImage:
+ *   - hero  → 1920x1080 cover-cropped (gallery hero header banner)
+ *   - preview → ≤1920px long edge, aspect preserved (lightbox tile)
+ *
+ * Output to `previews/preview_<filename>` so an admin who flips the
+ * setting back off can wipe the folder cleanly without touching
+ * thumbnails or heroes.
+ *
+ * ENCODING follows the source, it is not always JPEG. JPEG has no alpha
+ * channel and no second frame, so encoding everything as JPEG flattened a
+ * transparent PNG onto a solid background and reduced an animated GIF to its
+ * first frame — for every consumer of this tier: the lightbox, the slideshow,
+ * admin previews, face avatars. Sources with alpha or more than one page are
+ * encoded as WebP instead, which carries both and is still far smaller than
+ * the original.
+ *
+ * The output extension is rewritten to match what was actually written.
+ * Previously the source basename was kept verbatim, so a PNG source produced
+ * `preview_foo.png` holding JPEG bytes — harmless while the route hard-coded
+ * image/jpeg, and actively wrong now that the encoding varies. Old keys keep
+ * working: they are still JPEG and still served as such.
+ */
+async function generatePreviewImage(imagePath, options = {}) {
+  const filename = options.outputBasename || path.basename(imagePath);
+  // Non-default tiers get their own key so they cannot collide with the
+  // canonical preview the DB column points at.
+  const widthTag = options.longEdge && options.longEdge !== DEFAULT_PREVIEW_LONG_EDGE
+    ? `w${options.longEdge}_`
+    : '';
+  const storage = getStorage();
+
+  // Probed BEFORE the key is built: the extension has to match the encoding,
+  // and the encoding depends on what the source turns out to be.
+  let probe;
+  try {
+    probe = await sharp(imagePath).metadata();
+  } catch (error) {
+    const msg = (error && error.message) ? error.message : String(error);
+    logger.error(`Failed to read metadata for preview of ${filename}: ${msg}`);
+    return null;
+  }
+  const isAnimated = (probe.pages || 1) > 1;
+  const needsWebp = isAnimated || probe.hasAlpha === true;
+
+  const base = filename.replace(/\.[^./\\]+$/, '');
+  const previewFilename = `preview_${widthTag}${base}.${needsWebp ? 'webp' : 'jpg'}`;
+  const previewRelKey = path.posix.join('previews', previewFilename);
+
+  // No delete on `options.regenerate` and none in the catch below — see
+  // generateHeroImage; the reasoning (#1129, #1020) is identical.
+
+  try {
+    const metadata = probe;
+    if (!metadata.width || !metadata.height) {
+      throw new Error('Invalid image metadata - file may be incomplete');
+    }
+
+    const longEdge = options.longEdge || DEFAULT_PREVIEW_LONG_EDGE;
+    const quality = options.quality || DEFAULT_PREVIEW_QUALITY;
+
+    let sharpInstance = sharp(imagePath, {
+      limitInputPixels: 268402689, // ~16k x 16k max
+      sequentialRead: true,
+      failOn: 'none',
+      // Without this an animated source is opened as its first frame only, and
+      // every later frame is discarded before the resize ever sees it.
+      // limitInputPixels still applies, and sharp counts an animated input as
+      // width x (height x pages) — so a pathological GIF is rejected rather
+      // than decoded, and the caller falls back to the original.
+      animated: isAnimated,
+    });
+
+    // EXIF orientation (#1185). Guarded here and not in the thumbnail/hero
+    // generators because this one DOES open multi-frame sources with
+    // `animated: true` above, and `.rotate()` would flatten them to a single
+    // frame — trading an animation for an orientation.
+    //
+    // Which leaves one corner unsolved: a multi-frame source that also carries
+    // an orientation tag keeps its raw orientation here while the thumbnail
+    // and the stored dimensions describe the rotated one. GIF has no EXIF at
+    // all and animated WebP effectively never sets it, so this is a real gap
+    // rather than a common one, and closing it properly means rotating frame
+    // by frame rather than dropping the animation.
+    if (!isAnimated) {
+      sharpInstance = sharpInstance.rotate();
+    }
+
+    // Strip EXIF — same privacy reasoning as thumbnails/heroes.
+    sharpInstance = sharpInstance.withMetadata(false);
+
+    // fit: 'inside' + withoutEnlargement keeps small originals at
+    // their native size (no upscaling artefacts) and shrinks larger
+    // ones until both dimensions fit inside longEdge×longEdge.
+    sharpInstance = sharpInstance.resize(longEdge, longEdge, {
+      withoutEnlargement: true,
+      fit: 'inside',
+    });
+
+    sharpInstance = needsWebp
+      ? sharpInstance.webp({ quality })
+      : sharpInstance.jpeg({ quality, progressive: true, mozjpeg: true });
+
+    const buffer = await sharpInstance.toBuffer();
+    if (!buffer || buffer.length === 0) {
+      throw new Error('Generated preview image is empty');
+    }
+
+    await storage.put(previewRelKey, buffer, {
+      contentType: needsWebp ? 'image/webp' : 'image/jpeg',
+    });
+
+    logger.info(`Generated preview image for ${filename} → ${previewRelKey}`);
+    return previewRelKey;
+  } catch (error) {
+    const msg = (error && error.message) ? error.message : String(error);
+    logger.error(`Failed to generate preview image for ${filename}: ${msg}`);
+    // A write the storage backend could not take is not a photo that has no
+    // preview (issue 1785): null would send the guest to the original and
+    // mark a face scan failed for good. Callers retry or answer 503.
+    if (isStorageUnavailableError(error)) throw error;
+    return null;
+  }
+}
+
+/**
+ * Validate an existing preview file is non-empty + readable by Sharp.
+ * Mirrors isHeroValid / isThumbnailValid.
+ */
+async function isPreviewValid(previewPath) {
+  const storage = getStorage();
+  try {
+    const stat = await storage.stat(previewPath);
+    if (!stat || stat.size === 0) return false;
+    if (storage.kind() === 'local') {
+      const localPath = storage.resolveLocalPath(previewPath);
+      await sharp(localPath).metadata();
+    }
+    return true;
+  } catch (error) {
+    if (isStorageUnavailableError(error)) throw error;
+    return false;
+  }
+}
+
+/**
+ * Lazy-generate the preview image for a photo if missing or invalid.
+ * Returns the storage key or null on failure (callers fall back to
+ * the original URL so the lightbox never shows a broken image).
+ *
+ * Handles both managed photos (via the storage backend, possibly S3) and
+ * external/reference photos (#1078 — sourced from a local mount outside the
+ * managed storage tree). Externals used to have no branch here at all:
+ * resolvePhotoStorageKey returns null for them by design, that null reached
+ * withLocalCopy, and the throw put every lightbox open back on the full-size
+ * original — the exact cost the preview tier (#492) exists to avoid.
+ */
+/**
+ * A preview at a specific tier width (#1095).
+ *
+ * Deliberately separate from ensurePreviewImage rather than a parameter on it.
+ * That function owns photos.preview_path — one column, one canonical rendition
+ * — and threading a width through it would either overwrite that column with
+ * whatever size was asked for last, or need a column per tier. Extra tiers are
+ * pure cache instead: keyed by width, looked up in storage, generated on miss,
+ * never written to the row.
+ *
+ * Returns null on anything unexpected so callers fall back to the default
+ * tier, which is always the honest thing to serve.
+ */
+/**
+ * Storage keys for every responsive tier of a photo (#1095).
+ *
+ * Tiers live outside photos.preview_path deliberately — that column owns the
+ * canonical rendition — but that also means nothing else knows they exist.
+ * Delete, bulk-delete, archive and regenerate all operate on preview_path
+ * alone, so without this the tiers survive their own photo: orphaned on disk
+ * forever after a delete, and served stale forever after a regenerate.
+ *
+ * Derived rather than tracked: the key scheme is deterministic, so there is
+ * nothing to keep in sync and no migration.
+ */
+function previewTierKeys(photo) {
+  if (!photo) return [];
+  return PREVIEW_WIDTHS
+    .filter((w) => w !== DEFAULT_PREVIEW_LONG_EDGE)
+    .flatMap((w) => previewTierKeyCandidates(photo, w));
+}
+
+/**
+ * The output basename every preview tier of a photo is written under.
+ *
+ * ALWAYS scoped by photo id, managed rows included. Basenames are not unique
+ * across events — two galleries can each hold an IMG_0001.jpg — and because a
+ * tier is served straight from a cache hit without re-reading the source, a
+ * collision hands one gallery's photo to another. Scoping by id is what makes
+ * the cache safe to trust; it is not a tidiness choice.
+ */
+function previewTierBasename(photo) {
+  const isExternal = photo.source_origin === 'external' || photo.source_origin === 'reference';
+  const sourceBasename = path.basename(
+    (isExternal ? (photo.external_relpath || photo.filename) : photo.path) || `photo-${photo.id}`
+  );
+  return `p${photo.id}_${sourceBasename}`;
+}
+
+/**
+ * Every storage key one preview tier of a photo can live under, most likely
+ * first.
+ *
+ * generatePreviewImage rewrites the extension to match the encoding it chose
+ * — `.jpg`, or `.webp` for a source with alpha or more than one frame — and
+ * which one that is cannot be known without probing the source, which is the
+ * work the cache exists to skip. The lookup used to probe a single key that
+ * kept the SOURCE extension, so for anything but a lowercase `.jpg` source
+ * (`.png`, `.JPG`, `.heic`, RAW) it never matched what had been written: every
+ * tier request re-ran Sharp, and cleanup, deriving the same key, never found
+ * the files it left behind.
+ *
+ * The source-extension key stays in the list, last: previews written before
+ * the extension rewrite carry it (JPEG bytes under a `.png` name, still
+ * served as JPEG), and they have to be found by cleanup as well as lookup.
+ */
+function previewTierKeyCandidates(photo, width) {
+  const outputBasename = previewTierBasename(photo);
+  const stem = `preview_w${width}_`;
+  const base = outputBasename.replace(/\.[^./\\]+$/, '');
+  const keys = [`${stem}${base}.jpg`, `${stem}${base}.webp`];
+  const legacy = `${stem}${outputBasename}`;
+  if (!keys.includes(legacy)) keys.push(legacy);
+  return keys.map((k) => path.posix.join('previews', k));
+}
+
+/** Best-effort removal of every responsive tier for a photo. */
+async function deletePreviewTiers(photo) {
+  const storage = getStorage();
+  await Promise.all(previewTierKeys(photo).map((k) => storage.delete(k).catch(() => {})));
+}
+
+/**
+ * Thumbnail storage keys for every responsive tier of a photo (#1095).
+ * Mirrors previewTierKeys — see there for why they are derived rather than
+ * tracked.
+ *
+ * Every width is listed, the canonical one included, and deliberately: which
+ * width is canonical depends on the thumbnail_width setting, so on a
+ * 600-configured install it is w300 that exists as a tier file. Reading the
+ * setting here would make the whole cleanup path async for no gain — deleting
+ * a key that was never written is already a swallowed no-op, so the inclusive
+ * list is both simpler and the one that cannot strand a file.
+ */
+function thumbnailTierKeys(photo) {
+  if (!photo) return [];
+  const isExternal = photo.source_origin === 'external' || photo.source_origin === 'reference';
+  const sourceBasename = path.basename(
+    (isExternal ? (photo.external_relpath || photo.filename) : photo.path) || `photo-${photo.id}`
+  );
+  const outputBasename = `p${photo.id}_${sourceBasename}`;
+  return THUMBNAIL_WIDTHS
+    .map((w) => path.posix.join('thumbnails', `thumb_w${w}_${outputBasename}`));
+}
+
+async function deleteThumbnailTiers(photo) {
+  const storage = getStorage();
+  await Promise.all(thumbnailTierKeys(photo).map((k) => storage.delete(k).catch(() => {})));
+}
+
+/**
+ * A thumbnail at a specific tier width (#1095).
+ *
+ * Same contract as ensurePreviewImageAtWidth: pure cache, keyed by width,
+ * never written to photos.thumbnail_path. The key is scoped by photo id for
+ * every source type — basenames are not unique across events, and a tier is
+ * served from a cache hit without re-reading the source, so an unscoped key
+ * would hand one gallery's photo to another.
+ */
+async function ensureThumbnailAtWidth(photo, width) {
+  if (!width) return ensureThumbnail(photo);
+
+  // Against the CONFIGURED canonical width, not the 300 default. An install
+  // that set thumbnail_width to 600 already has a 600px thumbnail; generating
+  // a w600 tier for it would download the original and run Sharp to produce a
+  // byte-equivalent duplicate, once per photo.
+  const settings = await getThumbnailSettings();
+  const canonicalWidth = settings.width || DEFAULT_THUMBNAIL_WIDTH;
+  if (width === canonicalWidth) return ensureThumbnail(photo);
+
+  // Videos never take the tier path. Their thumbnail is a poster frame from
+  // videoProcessor, not a resize of the stored file, so the code below would
+  // hand the video itself to Sharp — after withLocalCopy has downloaded the
+  // whole thing on an S3 backend. Nothing caches that failure, so a crawler
+  // walking ?w= over a gallery of videos repeats the download every request.
+  if (isVideoPhoto(photo)) {
+    return ensureThumbnail(photo);
+  }
+
+  // One generation per tier, however many tiles ask for it (#1128, #1020).
+  //
+  // A grid issues one request per tile simultaneously, and on a cold gallery
+  // every one of them misses the stat inside. Without this each would run its
+  // own Sharp pass over the same source — and for an external photo, re-read
+  // the whole original off the NFS mount to do it. 79 tiles meant 79 decodes
+  // of the same file, which is also what made the delete race easy to hit.
+  //
+  // The stat lives INSIDE the flight so a request that arrives just as the
+  // previous flight clears finds the freshly written tier instead of missing
+  // on a stale probe and starting another pass.
+  return singleFlight(
+    flightKey('thumbnail', photo, width),
+    () => ensureThumbnailTierUnguarded(photo, width, settings, canonicalWidth)
+  );
+}
+
+async function ensureThumbnailTierUnguarded(photo, width, settings, canonicalWidth) {
+  const { resolvePhotoStorageKey, resolvePhotoFilePath } = require('./photoResolver');
+  const storage = getStorage();
+
+  let event;
+  try {
+    event = await db('events').where('id', photo.event_id).first();
+  } catch (e) {
+    return null;
+  }
+  if (!event) return null;
+
+  const isExternal = photo.source_origin === 'external' || photo.source_origin === 'reference';
+  const sourceBasename = path.basename(
+    (isExternal ? (photo.external_relpath || photo.filename) : photo.path) || `photo-${photo.id}`
+  );
+  const outputBasename = `p${photo.id}_${sourceBasename}`;
+  const key = path.posix.join('thumbnails', `thumb_w${width}_${outputBasename}`);
+
+  try {
+    if (await storage.stat(key)) return key;
+  } catch (e) {
+    // Unreachable storage is not a cache miss (issue 1785).
+    if (isStorageUnavailableError(e)) throw e;
+    // regenerate below
+  }
+
+  // Scale the height from the configured aspect ratio rather than forcing a
+  // square. Thumbnails are square on a default install, but the settings API
+  // accepts any width/height in 50..1000 — and with fit:'cover' a 300x200
+  // canonical next to a 600x600 tier are two different crops, so the photo
+  // would visibly reframe as the tile size changes.
+  const height = Math.round(width * (settings.height / canonicalWidth));
+
+  try {
+    // NOT `regenerate: true` (#1128). This path is only reached on a cache
+    // MISS, so there is nothing to regenerate — but that flag used to make
+    // generateThumbnail open by DELETING the target. Request A publishes the
+    // tier, B stats it and heads for storage.get(), and C — still inside
+    // generation from its own earlier miss — unlinks the file B is about to
+    // open. B's lazy ReadStream then raised an ENOENT nothing was listening
+    // for and Node exited.
+    //
+    // Without the flag the write is a plain put: LocalFsStorage stages to a
+    // temp file and renames, which is atomic, so a concurrent reader sees
+    // either the old file or the new one and never a hole.
+    if (isExternal) {
+      const localPath = resolvePhotoFilePath(event, photo);
+      return await generateThumbnail(localPath, { outputBasename, width, height });
+    }
+    const sourceKey = resolvePhotoStorageKey(event, photo);
+    if (!sourceKey) return null;
+    return await withLocalCopy(sourceKey, async (localPath) => {
+      const proc = await withProcessableImage(localPath, sourceKey);
+      try {
+        return await generateThumbnail(proc.path, { outputBasename, width, height });
+      } finally {
+        proc.cleanup();
+      }
+    });
+  } catch (e) {
+    logger.warn(`Thumbnail tier w${width} failed for photo ${photo.id}: ${e.message}`);
+    return null;
+  }
+}
+
+async function ensurePreviewImageAtWidth(photo, width) {
+  if (!width || width === DEFAULT_PREVIEW_LONG_EDGE) return ensurePreviewImage(photo);
+  return singleFlight(
+    flightKey('preview', photo, width),
+    () => ensurePreviewImageAtWidthUnguarded(photo, width)
+  );
+}
+
+async function ensurePreviewImageAtWidthUnguarded(photo, width) {
+  const { resolvePhotoStorageKey, resolvePhotoFilePath } = require('./photoResolver');
+  const storage = getStorage();
+
+  let event;
+  try {
+    event = await db('events').where('id', photo.event_id).first();
+  } catch (e) {
+    return null;
+  }
+  if (!event) return null;
+
+  const isExternal = photo.source_origin === 'external' || photo.source_origin === 'reference';
+  const outputBasename = previewTierBasename(photo);
+
+  // Cache hit: nothing to do. This is the common path once a gallery has been
+  // browsed at a given size. Every key the tier can have been written under
+  // is probed — see previewTierKeyCandidates for why there is more than one.
+  for (const key of previewTierKeyCandidates(photo, width)) {
+    try {
+      if (await storage.stat(key)) return key;
+    } catch (e) {
+      // Unreachable storage is not a cache miss (issue 1785).
+      if (isStorageUnavailableError(e)) throw e;
+      // fall through to the next candidate, then regenerate
+    }
+  }
+
+  try {
+    if (isExternal) {
+      const localPath = resolvePhotoFilePath(event, photo);
+      return await generatePreviewImage(localPath, {
+        regenerate: true, outputBasename, longEdge: width,
+      });
+    }
+    const sourceKey = resolvePhotoStorageKey(event, photo);
+    if (!sourceKey) return null;
+    return await withLocalCopy(sourceKey, async (localPath) => {
+      const proc = await withProcessableImage(localPath, sourceKey);
+      try {
+        // outputBasename, not proc.outputBasename: the RAW path returns the
+        // source basename, which would drop the photo-id scoping above and
+        // reintroduce the cross-gallery collision.
+        return await generatePreviewImage(proc.path, {
+          regenerate: true,
+          outputBasename,
+          longEdge: width,
+        });
+      } finally {
+        proc.cleanup();
+      }
+    });
+  } catch (e) {
+    logger.warn(`Preview tier w${width} failed for photo ${photo.id}: ${e.message}`);
+    return null;
+  }
+}
+
+async function ensurePreviewImage(photo, { force = false } = {}) {
+  if (!force && photo.preview_path) {
+    const ok = await isPreviewValid(photo.preview_path);
+    if (ok) return photo.preview_path;
+    logger.warn(`Invalid preview detected for photo ${photo.id}, regenerating…`);
+  }
+
+  return singleFlight(flightKey('preview', photo), () => regeneratePreviewImage(photo), { force });
+}
+
+async function regeneratePreviewImage(photo) {
+  const { resolvePhotoStorageKey, resolvePhotoFilePath } = require('./photoResolver');
+
+  let event;
+  try {
+    event = await db('events').where('id', photo.event_id).first();
+  } catch (e) {
+    const msg = (e && e.message) ? e.message : String(e);
+    logger.error(`Failed to load event for preview (photo ${photo.id}): ${msg}`);
+    return null;
+  }
+  if (!event) {
+    logger.error(`ensurePreviewImage: event ${photo.event_id} not found for photo ${photo.id}`);
+    return null;
+  }
+
+  const isExternal = photo.source_origin === 'external' || photo.source_origin === 'reference';
+
+  let newPreviewPath;
+  if (isExternal) {
+    // Mirrors ensureThumbnail's external branch: the source is a direct fs
+    // read off the mount, so no withLocalCopy. The per-photo outputBasename
+    // keeps two events that reference the same NAS basename from clobbering
+    // each other's preview.
+    let localPath;
+    try {
+      localPath = resolvePhotoFilePath(event, photo);
+    } catch (e) {
+      logger.error(`Failed to resolve external file for preview (photo ${photo.id}): ${e.message}`);
+      return null;
+    }
+    const sourceBasename = path.basename(photo.external_relpath || photo.filename || `photo-${photo.id}`);
+    const outputBasename = `ext${photo.id}_${sourceBasename}`;
+    logger.info(`Ensuring preview for external photo ${photo.id} from ${localPath}`);
+    newPreviewPath = await generatePreviewImage(localPath, { regenerate: true, outputBasename });
+  } else {
+    let sourceKey;
+    try {
+      sourceKey = resolvePhotoStorageKey(event, photo);
+    } catch (e) {
+      const msg = (e && e.message) ? e.message : String(e);
+      logger.error(`Failed to resolve original key for preview (photo ${photo.id}): ${msg}`);
+      return null;
+    }
+    if (!sourceKey) {
+      // Reference-mode event holding a row with no source_origin: the mode
+      // falls back to the event's and resolvePhotoStorageKey returns null.
+      // Honour the documented null-on-failure contract instead of feeding
+      // null into withLocalCopy, which throws out of this function.
+      logger.warn(`No managed storage key for preview (photo ${photo.id}); skipping preview generation`);
+      return null;
+    }
+    newPreviewPath = await withLocalCopy(sourceKey, async (localPath) => {
+      const proc = await withProcessableImage(localPath, sourceKey);
+      try {
+        return await generatePreviewImage(proc.path, { regenerate: true, outputBasename: proc.outputBasename });
+      } finally {
+        await proc.cleanup();
+      }
+    });
+  }
+
+  if (newPreviewPath) {
+    await db('photos').where({ id: photo.id }).update({ preview_path: newPreviewPath });
+    return newPreviewPath;
+  }
+
+  return null;
+}
+
+/**
+ * Extract capture date from EXIF metadata
+ */
+async function extractCaptureDate(imagePath) {
+  try {
+    const exif = await exifr.parse(imagePath, {
+      pick: ['DateTimeOriginal', 'CreateDate', 'DateTimeDigitized', 'ModifyDate']
+    });
+
+    if (!exif) {
+      return null;
+    }
+
+    const captureDate = exif.DateTimeOriginal ||
+                        exif.CreateDate ||
+                        exif.DateTimeDigitized ||
+                        exif.ModifyDate;
+
+    if (captureDate) {
+      if (captureDate instanceof Date) {
+        const now = new Date();
+        const minDate = new Date('1990-01-01');
+        if (captureDate > minDate && captureDate <= now) {
+          return captureDate;
+        }
+      }
+      if (typeof captureDate === 'string') {
+        const parsed = new Date(captureDate);
+        if (!isNaN(parsed.getTime())) {
+          return parsed;
+        }
+      }
+    }
+
+    return null;
+  } catch (error) {
+    logger.debug(`Could not extract EXIF date from ${path.basename(imagePath)}:`, error.message);
+    return null;
+  }
+}
+
+/**
+ * Downscale to fit inside a box, for the download-resolution feature (#858).
+ *
+ * `fit: 'inside'` + `withoutEnlargement` is exactly the "up to" semantic the
+ * requester asked for on #858: the box is a maximum, aspect ratio is kept
+ * (so a 3:2 box leaves a 4:3 photo slightly smaller than the box on one
+ * edge), and an image already smaller than the box is returned untouched
+ * rather than upscaled into mush.
+ *
+ * Takes and returns a Buffer so callers can chain resize → watermark without
+ * a tmp file. Returns the input unchanged when `box` is null ('original').
+ * Never throws: on a corrupt/undecodable source it logs and returns the input,
+ * because failing a download outright is worse than serving the full size.
+ */
+async function resizeToBox(inputBuffer, box, options = {}) {
+  if (!box || !box.width || !box.height) return inputBuffer;
+  try {
+    const probe = sharp(inputBuffer, { limitInputPixels: 268402689, failOn: 'none' });
+    const metadata = await probe.metadata();
+    // Animated sources must be re-opened with `animated: true`, otherwise
+    // sharp keeps only the first frame and the download silently loses its
+    // animation. `.rotate()` would flatten an animated source, so it is
+    // applied only to stills (where EXIF orientation actually exists).
+    const animated = (metadata.pages || 1) > 1;
+
+    // Already inside the box — hand back the original bytes rather than
+    // re-encoding, which would only cost quality and CPU. Measured on the
+    // dimensions the output would have: a still is rotated below, so for
+    // EXIF orientation 5-8 its width and height are transposed — a raw
+    // 2000x1000 tagged 6 (shown as 1000x2000) would otherwise "fit" a
+    // 2048x1024 box and come back twice as tall as asked (issue 1639). An
+    // animation is never rotated, so its raw dimensions are the ones that
+    // count. metadata.height of an animation spans every frame; pageHeight
+    // is one frame.
+    const fit = animated
+      ? { width: metadata.width, height: metadata.pageHeight || metadata.height }
+      : orientedDimensions(metadata);
+    if (fit.width && fit.height && fit.width <= box.width && fit.height <= box.height) {
+      return inputBuffer;
+    }
+
+    const format = (metadata.format || '').toLowerCase();
+    const image = animated
+      ? sharp(inputBuffer, { limitInputPixels: 268402689, failOn: 'none', animated: true })
+      : probe.rotate();
+
+    // A download keeps the photo's EXIF, XMP and IPTC (issue 1649): the
+    // photographer's Artist and Copyright belong on the file the guest takes
+    // away, and the original — the default download — ships with them anyway.
+    // sharp strips everything unless told otherwise, and this path used to
+    // leave it at that. Only the renditions (thumbnails, previews, heroes)
+    // strip on purpose. keepMetadata() after rotate() resets the Orientation
+    // tag to 1, so the corrected pixels are not rotated a second time.
+    let pipeline = image
+      .resize(box.width, box.height, { fit: 'inside', withoutEnlargement: true })
+      .keepMetadata();
+
+    // Re-encode in the SOURCE format. The download routes keep the original
+    // filename and mime type, so emitting JPEG for a .gif would ship
+    // mislabelled bytes. GIF is an accepted upload format (multerConfig.photos).
+    //
+    // HEIC/HEIF is the exception: sharp builds generally cannot ENCODE it, and
+    // the browser can't display the original anyway (see originalNeedsPreview
+    // in gallery.js). Rather than emit JPEG bytes under a .heic name, leave
+    // those downloads at original size — correct-but-larger beats
+    // mislabelled-and-broken.
+    if (format === 'heif' || format === 'heic') {
+      return inputBuffer;
+    }
+    if (format === 'png') {
+      pipeline = pipeline.png({ compressionLevel: 6 });
+    } else if (format === 'webp') {
+      pipeline = pipeline.webp({ quality: options.quality || 90 });
+    } else if (format === 'gif') {
+      pipeline = pipeline.gif();
+    } else {
+      pipeline = pipeline.jpeg({ quality: options.quality || 90, mozjpeg: true });
+    }
+    return await pipeline.toBuffer();
+  } catch (e) {
+    logger.warn(`resizeToBox failed (${box.width}x${box.height}), serving original: ${e.message}`);
+    return inputBuffer;
+  }
+}
+
+module.exports = {
+  orientedDimensions,
+  hasOrientationTransform,
+  ensurePreviewImageAtWidth,
+  ensureThumbnailAtWidth,
+  thumbnailTierKeys,
+  deleteThumbnailTiers,
+  previewTierKeys,
+  deletePreviewTiers,
+  PREVIEW_WIDTHS,
+  THUMBNAIL_WIDTHS,
+  normalizeTierWidth,
+  resizeToBox,
+  generateThumbnail,
+  isThumbnailValid,
+  ensureThumbnail,
+  generateVideoPlaceholder,
+  generateHeroImage,
+  isHeroValid,
+  ensureHeroImage,
+  generatePreviewImage,
+  isPreviewValid,
+  ensurePreviewImage,
+  extractCaptureDate,
+  withLocalCopy,
+  isRawFilename,
+  extractRawPreview,
+  withProcessableImage,
+  RAW_EXTENSIONS,
+  DEFAULT_THUMBNAIL_WIDTH,
+  DEFAULT_THUMBNAIL_HEIGHT,
+};

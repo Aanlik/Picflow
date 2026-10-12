@@ -1,0 +1,114 @@
+/**
+ * Permanent archive delete clears every row the event owns before the events
+ * row goes (issue 1733). activity_logs and access_logs reference events
+ * without ON DELETE CASCADE, so on PostgreSQL the events delete failed
+ * on the foreign key; SQLite never enforces the keys, which is why the
+ * explicit deletes are what this test can observe.
+ */
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const express = require('express');
+const request = require('supertest');
+
+describe('DELETE /admin/archives/:id', () => {
+  let tmpDir; let db; let cleanup; let app;
+
+  beforeAll(async () => {
+    tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'picpeak-archive-delete-'));
+    process.env.NODE_ENV = 'test';
+    process.env.TEST_DATABASE_PATH = path.join(tmpDir, 'data', 'test.db');
+    process.env.STORAGE_PATH = path.join(tmpDir, 'storage');
+    await fs.promises.mkdir(path.dirname(process.env.TEST_DATABASE_PATH), { recursive: true });
+
+    jest.resetModules();
+    jest.doMock('../../src/middleware/auth', () => ({
+      adminAuth: (req, _res, next) => { req.admin = { id: 1, username: 'tester' }; next(); },
+    }));
+    jest.doMock('../../src/middleware/permissions', () => ({
+      requirePermission: () => (_req, _res, next) => next(),
+    }));
+    jest.doMock('../../src/middleware/ownership', () => ({
+      requireEventOwnership: (_req, _res, next) => next(),
+    }));
+
+    ({ db, cleanup } = await require('./helpers/sqliteTestDb').bootTestDb());
+    await fs.promises.mkdir(path.join(process.env.STORAGE_PATH, 'archives'), { recursive: true });
+
+    app = express();
+    app.use(express.json());
+    app.use('/admin/archives', require('../../src/routes/adminArchives'));
+  }, 180000);
+
+  afterAll(async () => {
+    if (cleanup) await cleanup();
+    await fs.promises.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+  });
+
+  it('removes the event and every child row that references it', async () => {
+    const [ev] = await db('events').insert({
+      slug: 'perm-delete', event_type: 'project', event_name: 'Perm Delete', event_date: '2026-01-01',
+      password_hash: 'x',
+      share_link: '/gallery/perm-delete/tok', share_token: 'perm-delete-tok',
+      is_active: 0, is_archived: 1, is_draft: 0, archive_path: 'archives/perm-delete.zip',
+      created_at: new Date().toISOString(),
+    }).returning('id');
+    const eventId = typeof ev === 'object' ? ev.id : ev;
+    const now = new Date().toISOString();
+    await db('photos').insert({ event_id: eventId, filename: 'a.jpg', path: 'events/perm/a.jpg', type: 'individual', uploaded_at: now });
+    await db('activity_logs').insert({ event_id: eventId, activity_type: 'event_created', actor_type: 'admin', actor_id: 1, created_at: now });
+    await db('access_logs').insert({ event_id: eventId, action: 'view', ip_address: '127.0.0.1', timestamp: now });
+
+    const res = await request(app).delete(`/admin/archives/${eventId}`);
+    expect(res.status).toBe(200);
+
+    for (const table of ['photos', 'activity_logs', 'access_logs']) {
+      const [{ n }] = await db(table).where('event_id', eventId).count('* as n');
+      expect({ table, n: Number(n) }).toEqual({ table, n: 0 });
+    }
+    expect(await db('events').where('id', eventId).first()).toBeUndefined();
+    // The route's own audit row is written after the delete and has no event FK.
+    const [{ audits }] = await db('activity_logs').where('activity_type', 'archive_deleted').count('* as audits');
+    expect(Number(audits)).toBe(1);
+  });
+
+  it('asks Bridge to remove the archived project delivery folders and clears the durable intent', async () => {
+    const [ev] = await db('events').insert({
+      slug: 'bridge-delete', event_type: 'project', event_name: 'Bridge Delete', event_date: '2026-01-01',
+      password_hash: 'x', share_link: '/gallery/bridge-delete/tok', share_token: 'bridge-delete-tok',
+      is_active: 0, is_archived: 1, is_draft: 0, created_at: new Date().toISOString(),
+    }).returning('id');
+    const eventId = typeof ev === 'object' ? ev.id : ev;
+    const previousBridgeUrl = process.env.PIXCAKE_BRIDGE_URL;
+    const previousFetch = global.fetch;
+    process.env.PIXCAKE_BRIDGE_URL = 'http://pixcake-bridge:8080';
+    global.fetch = jest.fn(async () => ({
+      status: 503,
+      json: async () => ({ success: true, delivery_deleted: true }),
+      headers: { get: () => null },
+    }));
+
+    try {
+      const res = await request(app).delete(`/admin/archives/${eventId}`);
+      expect(res.status).toBe(200);
+      expect(res.body.deliveryCleanupPending).toBe(true);
+      const cleanupCall = global.fetch.mock.calls.find(([url]) => String(url).includes(`/api/projects/${eventId}?delete_delivery=true`));
+      expect(cleanupCall).toBeTruthy();
+      const [url, options] = cleanupCall;
+      expect(String(url)).toContain(`/api/projects/${eventId}?delete_delivery=true`);
+      expect(options.method).toBe('DELETE');
+
+      global.fetch.mockImplementation(async () => ({
+        status: 200,
+        json: async () => ({ success: true, delivery_deleted: true }),
+        headers: { get: () => null },
+      }));
+      await require('../../src/services/photographyWorkflowBridge').flushUnbindIntent(eventId);
+      expect(await db('workflow_unbind_intents').where({ event_id: eventId })).toHaveLength(0);
+    } finally {
+      if (previousBridgeUrl === undefined) delete process.env.PIXCAKE_BRIDGE_URL;
+      else process.env.PIXCAKE_BRIDGE_URL = previousBridgeUrl;
+      global.fetch = previousFetch;
+    }
+  });
+});

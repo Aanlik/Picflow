@@ -1,0 +1,184 @@
+import { test, expect } from '@playwright/test';
+import type { Page } from '@playwright/test';
+import fs from 'fs';
+import path from 'path';
+import { adminApiToken, publishEvent, waitForPhotosProcessed } from './_helpers/admin';
+import { passGalleryPasswordPrompt } from './_helpers/gallery';
+
+const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
+const GALLERY_PASSWORD = process.env.GALLERY_PASSWORD || 'PlaywrightGallery123!';
+
+interface GallerySetupResult {
+  shareLink: string;
+  slug: string;
+  allPhotosData: {
+    event: any;
+    categories?: any;
+    photos: Array<{ id: number; filename: string; comment_count?: number }>;
+  };
+}
+
+async function createGalleryWithComments(page: Page): Promise<GallerySetupResult> {
+  const token = await adminApiToken(page.request);
+
+  const eventName = `Playwright Feedback Filter ${Date.now()}`;
+  const eventDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+    .toISOString()
+    .slice(0, 10);
+
+  const createResponse = await page.request.post('/api/admin/events', {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    data: {
+      event_type: 'wedding',
+      event_name: eventName,
+      event_date: eventDate,
+      customer_name: 'Playwright Host',
+      password: GALLERY_PASSWORD,
+      expiration_days: 30,
+      allow_user_uploads: false,
+      allow_downloads: true,
+      disable_right_click: false,
+      watermark_downloads: false,
+      feedback_enabled: true,
+      allow_ratings: true,
+      allow_likes: true,
+      allow_comments: true,
+      allow_favorites: true,
+      require_name_email: false,
+      show_feedback_to_guests: true,
+    },
+    failOnStatusCode: false,
+  });
+
+  expect(createResponse.ok()).toBeTruthy();
+  const createdEvent = await createResponse.json();
+  expect(createdEvent?.id).toBeTruthy();
+  await publishEvent(page.request, token, createdEvent.id);
+
+  const imagePaths = ['img1.png', 'img2.png'];
+  const photoIds: number[] = [];
+
+  for (const file of imagePaths) {
+    const imagePath = path.join(process.cwd(), 'test-assets', file);
+    const buffer = fs.readFileSync(imagePath);
+    const uploadResponse = await page.request.post(
+      `/api/admin/events/${createdEvent.id}/upload`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+        multipart: {
+          photos: {
+            name: path.basename(imagePath),
+            mimeType: 'image/png',
+            buffer,
+          },
+          category_id: 'individual',
+        },
+        failOnStatusCode: false,
+      }
+    );
+    expect(uploadResponse.ok()).toBeTruthy();
+    const uploadJson = await uploadResponse.json();
+    const uploaded = uploadJson?.photos?.[0];
+    expect(uploaded?.id).toBeTruthy();
+    photoIds.push(uploaded.id);
+  }
+
+  expect(photoIds.length).toBeGreaterThanOrEqual(2);
+  // Guests only see processed photos, so a pending one would drop out of the
+  // photo list below along with its comment count.
+  await waitForPhotosProcessed(page.request, token, createdEvent.id);
+
+  const galleryAuthResponse = await page.request.post('/api/auth/gallery/verify', {
+    data: {
+      slug: createdEvent.slug,
+      password: GALLERY_PASSWORD,
+    },
+    failOnStatusCode: false,
+  });
+  expect(galleryAuthResponse.ok()).toBeTruthy();
+  const { token: galleryToken } = await galleryAuthResponse.json();
+  expect(galleryToken).toBeTruthy();
+
+  // Submit a comment; comments are immediately visible without moderation.
+  const approvedCommentResponse = await page.request.post(
+    `/api/gallery/${createdEvent.slug}/photos/${photoIds[0]}/feedback`,
+    {
+      headers: {
+        Authorization: `Bearer ${galleryToken}`,
+        'Content-Type': 'application/json',
+      },
+      data: {
+        feedback_type: 'comment',
+        comment_text: 'Approved comment',
+        guest_name: 'Approved Guest',
+      },
+      failOnStatusCode: false,
+    }
+  );
+  expect(approvedCommentResponse.ok()).toBeTruthy();
+  const submittedComment = await approvedCommentResponse.json();
+  expect(submittedComment?.id).toBeTruthy();
+
+  const allPhotosResponse = await page.request.get(`/api/gallery/${createdEvent.slug}/photos`, {
+    headers: {
+      Authorization: `Bearer ${galleryToken}`,
+    },
+    failOnStatusCode: false,
+  });
+  expect(allPhotosResponse.ok()).toBeTruthy();
+  const allPhotosData = await allPhotosResponse.json();
+  expect(Array.isArray(allPhotosData?.photos)).toBeTruthy();
+
+  return {
+    shareLink: createdEvent.share_link,
+    slug: createdEvent.slug,
+    allPhotosData,
+  };
+}
+
+test.describe('Gallery feedback filter', () => {
+  test('Commented filter hides photos without comments', async ({ page }) => {
+    const { shareLink, slug, allPhotosData } = await createGalleryWithComments(page);
+
+    const commentedPhotos = allPhotosData.photos.filter((photo) => (photo.comment_count || 0) > 0);
+    expect(commentedPhotos.length).toBeGreaterThan(0);
+
+    await page.route(`**/api/gallery/${slug}/photos**`, async (route) => {
+      const url = new URL(route.request().url());
+      if (url.searchParams.get('filter') === 'commented') {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(allPhotosData),
+        });
+        await page.unroute(`**/api/gallery/${slug}/photos**`);
+      } else {
+        await route.continue();
+      }
+    });
+
+    await page.goto(shareLink);
+    await page.waitForLoadState('domcontentloaded');
+
+    await passGalleryPasswordPrompt(page, GALLERY_PASSWORD);
+
+    await page.waitForLoadState('networkidle');
+
+    const tiles = page.locator('.relative.group');
+    await expect(tiles.first()).toBeVisible({ timeout: 20000 });
+    await expect(tiles).toHaveCount(allPhotosData.photos.length);
+
+    await page.getByRole('button', { name: /Commented|有评论/i }).click();
+
+    await expect(tiles).toHaveCount(commentedPhotos.length, { timeout: 20000 });
+
+    for (const uncommented of allPhotosData.photos.filter((photo) => (photo.comment_count || 0) === 0)) {
+      await expect(page.getByAltText(uncommented.filename)).not.toBeVisible({ timeout: 1000 });
+    }
+  });
+});

@@ -1,0 +1,373 @@
+// Event/Gallery types
+export interface Event {
+  id: number;
+  slug: string;
+  event_name: string;
+  event_date: string | null;
+  customer_name?: string;
+  customer_phone?: string | null;
+  color_theme?: string;
+  share_link: string;
+  created_at: string;
+  expires_at: string | null;
+  is_active: boolean;
+  is_archived: boolean;
+  archive_path?: string;
+  archived_at?: string;
+  require_password?: boolean;
+  photo_count?: number;
+  total_size?: number;
+  recent_photos?: Array<{
+    filename: string;
+    type: string;
+    size_bytes: number;
+    uploaded_at: string;
+  }>;
+  allow_user_uploads?: boolean;
+  // Reveal mode (#838)
+  reveal_mode?: boolean;
+  reveal_at?: string | null;
+  revealed_at?: string | null;
+  upload_category_id?: number | null;
+  hero_photo_id?: number | null;
+  source_mode?: 'managed' | 'reference' | string;
+  external_path?: string | null;
+  // Folder watcher opt-in (issue 1187). SQLite hands back 0/1, Postgres a boolean.
+  external_watch?: boolean | number | null;
+  // Download protection fields
+  allow_downloads?: boolean;
+  protection_level?: 'basic' | 'standard' | 'enhanced' | 'maximum';
+  disable_right_click?: boolean;
+  watermark_downloads?: boolean;
+  enable_devtools_protection?: boolean;
+  use_canvas_rendering?: boolean;
+  // Hero logo customization fields
+  hero_logo_visible?: boolean | null;
+  hero_logo_size?: 'small' | 'medium' | 'large' | 'xlarge' | null;
+  hero_logo_position?: 'top' | 'center' | 'bottom';
+  hero_logo_url?: string | null;
+  // Hide the branding logo on the gallery password page (#894).
+  // null = default (show); only an explicit false hides it.
+  login_logo_visible?: boolean | null;
+  // Per-event opt-in for using the hero photo as the social-share
+  // preview image (#474). When false, og:image falls back to the
+  // brand logo. Defaults false on existing rows until an admin enables it.
+  og_image_share_enabled?: boolean;
+  // Header style settings (decoupled from layout)
+  header_style?: 'hero' | 'standard' | 'minimal' | 'none';
+  hero_divider_style?: 'wave' | 'straight' | 'angle' | 'curve' | 'none';
+  // Hero image anchor position (#162) – keyword or "X% Y%" focal point
+  hero_image_anchor?: string;
+  // CSS Template
+  css_template_id?: number | null;
+  // Photo cap
+  photo_cap?: number | null;
+  // Draft mode
+  is_draft?: boolean;
+  // Client access (#172)
+  client_access_enabled?: boolean;
+  client_share_token?: string;
+  // Set when the API withheld the gallery links because the admin sees this
+  // event but cannot act on it (another owner's gallery).
+  share_secrets_hidden?: boolean;
+  // Live Slideshow / "Diashow" (migration 138). Token-only fullscreen kiosk
+  // link minted on demand; null token = disabled. Settings drive the running
+  // projector and can be changed live.
+  show_share_token?: string | null;
+  show_interval_ms?: number;
+  show_transition?: 'crossfade' | 'cut' | 'slide' | 'kenburns' | 'dipwhite' | 'dipblack';
+  show_transition_ms?: number;
+  // Watermark MODE only (null=inherit global / true / false). The look lives
+  // globally in Settings → Slideshow, not per event.
+  show_watermark?: boolean | null;
+  // QR overlay MODE (#837) — same tri-state semantics as show_watermark.
+  show_qr?: boolean | null;
+  show_colorfilter?: 'none' | 'bw' | 'sepia' | 'warm' | 'cool' | 'vignette';
+  // Default photo sort order
+  default_photo_sort?: string;
+  // Pre-event reminder override (migration 143)
+  event_reminder_disabled?: boolean;
+  event_reminder_offset_days?: number | null;
+  event_reminder_body_override?: string | null;
+  event_reminder_sent_at?: string | null;
+}
+
+export type GalleryAccessLevel = 'guest' | 'client';
+
+export interface GalleryInfo {
+  event_name: string;
+  event_date: string | null;
+  expires_at: string | null;
+  is_active: boolean;
+  is_expired: boolean;
+  requires_password?: boolean;
+  color_theme?: string;
+  default_photo_sort?: string;
+  allow_downloads?: boolean;
+  allow_user_uploads?: boolean;
+  // Resolved server-side (#894): false only when the admin hid the logo
+  // on this gallery's password page.
+  login_logo_visible?: boolean;
+}
+
+export interface Photo {
+  id: number;
+  filename: string;
+  // Original camera filename (e.g. DSC_1234.jpg) — populated for uploads
+  // post migration 062. Null for legacy rows. Surfaced in the lightbox
+  // when the admin toggles `use_original_filenames` on (#508).
+  original_filename?: string | null;
+  url: string;
+  thumbnail_url?: string;
+  hero_url?: string; // Hero-optimized image URL (1920x1080) for full-width hero sections
+  // Lightbox preview URL (#492). Set only when the admin has flipped
+  // lightbox_preview_enabled in Settings → Thumbnails. Aspect-preserved
+  // ≤1920px JPEG.
+  preview_url?: string | null;
+  // Aspect-preserved ≤1920px source for the fullscreen slideshow (#1015).
+  // Always set for image photos, unlike `preview_url` — the slideshow must
+  // never fall back to `hero_url`, which is a 16:9 centre crop and makes
+  // the "Black Bars (No crop)" fit letterbox an already-cropped frame.
+  //
+  // The lightbox takes it as its second choice for the same reason (#1166):
+  // the same /preview/:id URL, so an install that never flipped the toggle
+  // stops serving multi-megabyte originals to display a photo on screen.
+  slideshow_url?: string | null;
+  secure_url_template?: string;
+  download_url_template?: string;
+  requires_token?: boolean;
+  type: 'collage' | 'individual' | 'video';
+  category_id?: number | string | null;
+  category_name?: string;
+  category_slug?: string;
+  // Per-category download permission (#640). Defaults true for uncategorised
+  // photos and for categories that pre-date migration 135. The frontend hides
+  // the lightbox download button when this is false (event-level allow_downloads
+  // also has to be true — they AND together).
+  category_allow_downloads?: boolean;
+  size: number;
+  uploaded_at: string;
+  captured_at?: string; // EXIF capture date (if available)
+  // Media type fields
+  media_type?: 'photo' | 'video' | 'image';
+  mime_type?: string;
+  duration?: number; // Duration in seconds for videos
+  video_codec?: string;
+  audio_codec?: string;
+  width?: number;
+  height?: number;
+  // Visibility (#172)
+  visibility?: 'visible' | 'hidden';
+  // Feedback fields
+  has_feedback?: boolean;
+  average_rating?: number;
+  total_ratings?: number;
+  comment_count?: number;
+  like_count?: number;
+  // Per-viewer flag (#590 follow-up). True when the requesting viewer has
+  // an active like row for this photo, false otherwise. Computed server-side
+  // by gallery.js using the same identity model as galleryFeedback.js
+  // (guest_id when a guest token is present, else IP+UA hash fallback).
+  // Used to seed the lifted likedPhotoIds Set in grid layouts on mount.
+  is_liked?: boolean;
+  favorite_count?: number;
+  // Colour labels (#1044). `color_label_count` is aggregate data and follows
+  // show_feedback_to_guests; `my_color_label` is the requesting viewer's own
+  // label and is always present, so the grid badge survives a refresh even in
+  // galleries where feedback isn't shared between guests.
+  color_label_count?: number;
+  my_color_label?: string | null;
+  // Present when the integrated Bridge workflow is bound to this gallery.
+  // These guest-safe fields distinguish the original proof from delivered
+  // retouched versions without changing the Picflow photo identity.
+  retouch_state?: 'proof' | 'selected' | 'editing' | 'delivered' | 'cancelled';
+  retouch_selected?: boolean;
+  retouch_selection_cancelled?: boolean;
+  retouch_version?: number;
+  retouch_added_during_editing?: boolean;
+  retouch_workflow_enabled?: boolean;
+  retouch_withdraw_pending?: boolean;
+  // Distinct colours OTHER viewers gave this photo (#1178). The lightbox has
+  // always shown these as per-colour tallies; without this field the grid
+  // could only ever render the viewer's own label, so a colour set by someone
+  // else was visible in fullscreen and invisible on the tile. Empty when the
+  // gallery has show_feedback_to_guests off — it is other people's feedback.
+  other_color_labels?: string[];
+}
+
+// Download resolutions (#858).
+export type DownloadJobStatus = 'pending' | 'building' | 'ready' | 'failed';
+
+export interface DownloadResolutionChoice {
+  id: string; // 'original' | '<width>x<height>'
+  label: string;
+  width: number | null;
+  height: number | null;
+}
+
+export interface DownloadJobState {
+  status: DownloadJobStatus;
+  resolution: string;
+  photo_count: number;
+  size_bytes: number | null;
+  error?: string;
+}
+
+export interface PhotoCategory {
+  id: number | string;
+  name: string;
+  slug: string;
+  is_global: boolean;
+  hero_photo_id?: number | null;
+  // Per-category download opt-out (#640). false hides the download affordance
+  // for this category — including a folder's own "download folder" button.
+  allow_downloads?: boolean;
+  // Folder vs filter (#1160). A filter category leaves its photos in the root
+  // grid and narrows it when picked; a folder CONTAINS them — they are absent
+  // from the root grid and only render once the guest opens the folder.
+  is_folder?: boolean;
+}
+
+export interface GalleryData {
+  pagination?: { page: number; limit: number; total: number; has_more: boolean };
+  event: {
+    id: number;
+    event_name: string;
+    event_date: string | null;
+    // Download resolutions (#858). `choices` is empty when the picker is off,
+    // so the UI never offers a size the server would reject.
+    download_resolution?: {
+      standard: string;
+      picker_enabled: boolean;
+      choices: DownloadResolutionChoice[];
+    };
+    color_theme?: string;
+    expires_at: string | null;
+    allow_user_uploads?: boolean;
+    upload_category_id?: number | null;
+    hero_photo_id?: number | null;
+    allow_downloads?: boolean;
+    /** True when a pre-built download zip is on disk, so "download all" can skip the build. */
+    download_zip_ready?: boolean;
+    disable_right_click?: boolean;
+    watermark_downloads?: boolean;
+    watermark_text?: string;
+    require_password?: boolean;
+    protection_level?: 'basic' | 'standard' | 'enhanced' | 'maximum';
+    image_quality?: number;
+    use_canvas_rendering?: boolean;
+    enable_devtools_protection?: boolean;
+    overlay_protection?: boolean;
+    // Hero logo customization fields
+    hero_logo_visible?: boolean | null;
+    hero_logo_size?: 'small' | 'medium' | 'large' | 'xlarge' | null;
+    hero_logo_position?: 'top' | 'center' | 'bottom';
+    hero_logo_url?: string | null;
+    // Resolved server-side (#894): false only when the admin hid the
+    // logo on this gallery's password page.
+    login_logo_visible?: boolean;
+    // Header style settings (decoupled from layout)
+    header_style?: 'hero' | 'standard' | 'minimal' | 'none';
+    hero_divider_style?: 'wave' | 'straight' | 'angle' | 'curve' | 'none';
+    // Hero image anchor position (#162) – keyword or "X% Y%" focal point
+    hero_image_anchor?: string;
+    // Default photo sort order
+    default_photo_sort?: string;
+    // Mirror of admin's `general_use_original_filenames_for_downloads`.
+    // When true, the lightbox surfaces each photo's `original_filename`
+    // alongside the position counter (#508).
+    use_original_filenames?: boolean;
+  };
+  categories?: PhotoCategory[];
+  photos: Photo[];
+  // Reveal mode (#838): the server returns the event shell with photos: []
+  // and this flag while the gallery is hidden from guests.
+  hidden_until_reveal?: boolean;
+  reveal_at?: string | null;
+}
+
+export interface ResolvedGalleryIdentifier {
+  slug: string;
+  token: string;
+  matchType: string;
+  share_link: string;
+  share_path: string;
+  share_url: string;
+  short_enabled: boolean;
+  requires_password: boolean;
+}
+
+// Auth types
+export interface AdminUser {
+  id: number;
+  username: string;
+  mustChangePassword?: boolean;
+  role?: {
+    name: string;
+    displayName: string;
+  };
+  roleId?: number;
+  roleName?: string;
+  roleDisplayName?: string;
+  isActive?: boolean;
+  lastLogin?: string | null;
+  lastLoginIp?: string | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  createdByUsername?: string;
+}
+
+export interface LoginResponse {
+  token: string;
+  user: AdminUser;
+}
+
+export type AdminLoginResponse = LoginResponse;
+
+export interface GalleryAuthResponse {
+  token: string;
+  event: {
+    id: number;
+    event_name: string;
+    event_date: string;
+    color_theme?: string;
+    expires_at: string;
+    allow_user_uploads?: boolean;
+    upload_category_id?: number | null;
+    require_password?: boolean;
+    photo_cap?: number | null;
+  };
+  accessLevel?: GalleryAccessLevel;
+}
+
+// API Error type
+export interface ApiError {
+  error: string;
+  errors?: Array<{
+    type: string;
+    msg: string;
+    path: string;
+    location: string;
+  }>;
+}
+
+// Role and Permission types
+export interface AdminRole {
+  id: number;
+  name: string;
+  displayName: string;
+  description?: string;
+  isSystem?: boolean;
+  priority?: number;
+}
+
+export interface AdminPermissions {
+  role: {
+    name: string;
+    displayName: string;
+  } | null;
+  permissions: string[];
+}
+
+// Export protection types
+export * from './protection';

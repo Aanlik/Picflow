@@ -1,0 +1,304 @@
+import { useTranslation } from 'react-i18next';
+import { usePhotoSelection } from '../../../hooks/usePhotoSelection';
+import React, { useState, useEffect, useRef } from 'react';
+import { ChevronLeft, ChevronRight, Download, Maximize2, Play, Pause, Heart, MessageSquare } from 'lucide-react';
+import { useTheme } from '../../../contexts/ThemeContext';
+import { AuthenticatedImage, Button } from '../../common';
+import { ColorLabelBadge } from '../ColorLabelBadge';
+import { WorkflowStatusBadge } from '../WorkflowStatusBadge';
+import type { BaseGalleryLayoutProps } from './BaseGalleryLayout';
+import { FeedbackIdentityModal } from '../../gallery/FeedbackIdentityModal';
+import { feedbackService } from '../../../services/feedback.service';
+import { useGuestIdentityOptional } from '../../../contexts/GuestIdentityContext';
+import { useViewerLikeIds } from '../../../hooks/useViewerLikeIds';
+
+export const CarouselGalleryLayout: React.FC<BaseGalleryLayoutProps> = ({
+  photos,
+  slug,
+  onPhotoClick,
+  onOpenPhotoWithFeedback,
+  onDownload,
+  allowDownloads = true,
+  feedbackEnabled = false,
+  feedbackOptions
+}) => {
+  const { t: tAudit } = useTranslation();
+  const { theme } = useTheme();
+  const { currentPhoto, currentIndex, setCurrentIndex } = usePhotoSelection(photos);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const gallerySettings = theme.gallerySettings || {};
+  const autoplay = gallerySettings.carouselAutoplay || false;
+  const interval = gallerySettings.carouselInterval || 5000;
+  const showThumbnails = gallerySettings.carouselShowThumbnails !== false;
+
+  // Auto-play functionality
+  useEffect(() => {
+    if (isPlaying && photos.length > 1) {
+      intervalRef.current = setInterval(() => {
+        setCurrentIndex((prev) => (prev + 1) % photos.length);
+      }, interval);
+    } else if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+    }
+
+    return () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+    };
+  }, [isPlaying, photos.length, interval, setCurrentIndex]);
+
+  // Start autoplay if enabled
+  useEffect(() => {
+    if (autoplay) {
+      setIsPlaying(true);
+    }
+  }, [autoplay]);
+
+  const goToPrevious = () => {
+    setCurrentIndex((prev) => (prev - 1 + photos.length) % photos.length);
+  };
+
+  const goToNext = () => {
+    setCurrentIndex((prev) => (prev + 1) % photos.length);
+  };
+
+  const togglePlayPause = () => {
+    setIsPlaying(!isPlaying);
+  };
+
+  const [showIdentityModal, setShowIdentityModal] = useState(false);
+  const [pendingAction, setPendingAction] = useState<null | { type: 'like'; photoId: number }>(null);
+  const [savedIdentity, setSavedIdentity] = useState<{ name: string } | null>(null);
+  const guestIdentity = useGuestIdentityOptional();
+  const [likedIds, setLikedIds] = useViewerLikeIds(photos);
+  const likeRequests = useRef(new Set<number>());
+  const canQuickComment = Boolean(feedbackEnabled && feedbackOptions?.allowComments && onOpenPhotoWithFeedback);
+
+  if (!currentPhoto) return null;
+
+  return (
+    <div className="photo-grid relative">
+      {/* Main Carousel */}
+      <div className="photo-card relative h-[50vh] sm:h-[60vh] lg:h-[70vh] bg-black rounded-lg overflow-hidden">
+        <AuthenticatedImage
+          src={currentPhoto.url}
+          alt={currentPhoto.filename}
+          className="w-full h-full object-contain"
+          isGallery={true}
+        />
+
+        {/* Colour labels for the photo in view (#1189). Bottom-left because it
+            is the only corner this layout leaves free — top-left carries the
+            counter and category chips, top-right the play/fullscreen buttons,
+            and both sides the prev/next controls. */}
+        <WorkflowStatusBadge photo={currentPhoto} position="top-14 left-4" />
+        <ColorLabelBadge
+          colorLabel={currentPhoto.my_color_label}
+          otherColorLabels={currentPhoto.other_color_labels}
+          position="bottom-4 left-4"
+        />
+
+        {/* Navigation Controls */}
+        <div className="absolute inset-0 flex items-center justify-between p-4">
+          <button
+            onClick={goToPrevious}
+            className="p-2 bg-black/50 text-white rounded-full hover:bg-black/70 transition-colors"
+            aria-label={tAudit("ui.previousPhoto")}
+          >
+            <ChevronLeft className="w-6 h-6" />
+          </button>
+
+          <button
+            onClick={goToNext}
+            className="p-2 bg-black/50 text-white rounded-full hover:bg-black/70 transition-colors"
+            aria-label={tAudit("ui.nextPhoto")}
+          >
+            <ChevronRight className="w-6 h-6" />
+          </button>
+        </div>
+
+        {/* Top Controls */}
+        <div className="absolute top-4 left-4 right-4 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="gallery-numeric px-3 py-1 bg-black/50 text-white rounded-full text-sm">
+              {currentIndex + 1} / {photos.length}
+            </span>
+            {currentPhoto.category_name && (
+              <span className="px-3 py-1 bg-black/50 text-white rounded-full text-sm">
+                {currentPhoto.category_name}
+              </span>
+            )}
+          </div>
+
+          <div className="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={togglePlayPause}
+              className="text-white hover:bg-white/20"
+              title={isPlaying ? tAudit('ui.pauseSlideshow') : tAudit('ui.playSlideshow')}
+            >
+              {isPlaying ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5" />}
+            </Button>
+
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => onPhotoClick(currentIndex)}
+              className="text-white hover:bg-white/20"
+              title={tAudit("ui.viewFullscreen")}
+            >
+              <Maximize2 className="w-5 h-5" />
+            </Button>
+
+            {allowDownloads && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={(e) => onDownload(currentPhoto, e)}
+                className="text-white hover:bg-white/20"
+                title={tAudit("ui.downloadPhoto")}
+              >
+                <Download className="w-5 h-5" />
+              </Button>
+            )}
+            {feedbackEnabled && feedbackOptions?.allowLikes && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={async () => {
+                  const photoId = currentPhoto.id;
+                  if (likeRequests.current.has(photoId)) return;
+                  likeRequests.current.add(photoId);
+                  let optimisticallyToggled = false;
+                  const toggleLocal = () => setLikedIds((previous) => {
+                    const next = new Set(previous);
+                    if (next.has(photoId)) next.delete(photoId);
+                    else next.add(photoId);
+                    return next;
+                  });
+                  try {
+                    if (guestIdentity?.identityMode === 'guest') {
+                      try {
+                        await guestIdentity.ensureIdentity();
+                      } catch {
+                        return;
+                      }
+                    } else if (feedbackOptions?.requireGuestName && !savedIdentity) {
+                      setPendingAction({ type: 'like', photoId });
+                      setShowIdentityModal(true);
+                      return;
+                    }
+                    toggleLocal();
+                    optimisticallyToggled = true;
+                    await feedbackService.submitFeedback(slug!, String(photoId), {
+                      feedback_type: 'like',
+                      guest_name: savedIdentity?.name,
+                    });
+                  } catch {
+                    if (optimisticallyToggled) toggleLocal();
+                  } finally {
+                    likeRequests.current.delete(photoId);
+                  }
+                }}
+                className={`bg-black/30 hover:bg-black/50 rounded-full border border-white/40 ${likedIds.has(currentPhoto.id) ? 'text-red-400' : 'text-white'}`}
+                title={tAudit("ui.likePhoto")}
+                aria-pressed={likedIds.has(currentPhoto.id)}
+              >
+                <Heart className="w-5 h-5" />
+              </Button>
+            )}
+            {canQuickComment && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => { onOpenPhotoWithFeedback?.(currentIndex); }}
+                className="text-white bg-black/30 hover:bg-black/50 rounded-full border border-white/40"
+                title={tAudit("ui.comment")}
+                aria-label={tAudit("ui.commentOnPhoto")}
+              >
+                <MessageSquare className="w-5 h-5" />
+              </Button>
+            )}
+          </div>
+        </div>
+
+        {/* Progress Bar */}
+        {isPlaying && (
+          <div className="absolute bottom-0 left-0 right-0 h-1 bg-white/20">
+            <div
+              className="h-full bg-white transition-all duration-1000 ease-linear"
+              style={{
+                width: '100%',
+                animation: `progress ${interval}ms linear infinite`
+              }}
+            />
+          </div>
+        )}
+      </div>
+
+      {/* Thumbnails */}
+      {showThumbnails && photos.length > 1 && (
+        <div className="mt-4 relative">
+          <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-thin scrollbar-thumb-neutral-400">
+            {photos.map((photo, index) => (
+              <button
+                key={photo.id}
+                onClick={() => setCurrentIndex(index)}
+                className={`relative flex-shrink-0 w-20 h-20 rounded overflow-hidden transition-all ${
+                  index === currentIndex
+                    ? 'ring-2 ring-primary-600 scale-110'
+                    : 'opacity-70 hover:opacity-100'
+                }`}
+              >
+                <AuthenticatedImage
+                  src={photo.thumbnail_url || photo.url}
+                  alt={photo.filename}
+                  className="w-full h-full object-cover"
+                  loading="lazy"
+                  isGallery={true}
+                />
+                {/* The strip is the only place this layout shows more than one
+                    photo at a time, so it is the only place a label can
+                    actually be scanned (#1189). Small variant: these tiles are
+                    80px, where the grid-sized dots cover most of the image. */}
+                <WorkflowStatusBadge photo={photo} position="top-1 left-1" compact />
+                <ColorLabelBadge
+                  colorLabel={photo.my_color_label}
+                  otherColorLabels={photo.other_color_labels}
+                  size="sm"
+                  position="top-1 left-1"
+                />
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <FeedbackIdentityModal
+        isOpen={showIdentityModal}
+        onClose={() => { setShowIdentityModal(false); setPendingAction(null); }}
+        onSubmit={async (name) => {
+          setSavedIdentity({ name });
+          setShowIdentityModal(false);
+          if (pendingAction) {
+            await feedbackService.submitFeedback(slug!, String(pendingAction.photoId), {
+              feedback_type: pendingAction.type,
+              guest_name: name,
+            });
+            setPendingAction(null);
+          }
+        }}
+        feedbackType="like"
+      />
+
+      <style>{`
+        @keyframes progress {
+          from { width: 0%; }
+          to { width: 100%; }
+        }
+      `}</style>
+    </div>
+  );
+};

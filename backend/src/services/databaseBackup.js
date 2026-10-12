@@ -1,0 +1,951 @@
+const fs = require('fs').promises;
+const path = require('path');
+const crypto = require('crypto');
+const { spawnAsync, spawnToFile } = require('../utils/safeExec');
+const zlib = require('zlib');
+const { pipeline } = require('stream/promises');
+const { createReadStream, createWriteStream, realpathSync, constants: fsConstants } = require('fs');
+const { db } = require('../database/db');
+const knexConfig = require('../../knexfile');
+const logger = require('../utils/logger');
+const packageJson = require('../../package.json');
+
+// Constants
+
+// sqlite3's `.backup` is a dot-command parsed by sqlite3's OWN tokenizer, not
+// the shell: spawn()'s argv separation does not stop a quote or a line break
+// inside the path from ending the `.backup '<path>'` argument and starting a
+// second dot-command such as `.shell`. The destination is admin-configured,
+// so the copy is written to a server-generated path in this charset and
+// moved to the destination afterwards (same rule as restoreService's
+// assertSafeSqlitePath). Only the `.backup` target is interpolated; every
+// other sqlite3 call passes the file as its own argv element.
+const SAFE_SQLITE_PATH_RE = /^[A-Za-z0-9._/-]+$/;
+function assertSafeSqlitePath(p) {
+  if (typeof p !== 'string' || !SAFE_SQLITE_PATH_RE.test(p)) {
+    throw new Error(`Refusing to run sqlite3 against an unsafe path: ${p}`);
+  }
+}
+
+// Printable, quote-free and without line breaks: what a destination path may
+// contain so that it never has to be interpolated into a dot-command, and
+// what adminDatabaseBackup refuses at save time.
+// eslint-disable-next-line no-control-regex -- intentional: refuses control chars in the path
+const DESTINATION_PATH_FORBIDDEN_RE = /["'`\\]|[\u0000-\u001f\u007f]/;
+function destinationPathProblem(value) {
+  if (typeof value !== 'string') return null;
+  if (DESTINATION_PATH_FORBIDDEN_RE.test(value)) {
+    return 'Destination path must not contain quotes, backslashes or control characters';
+  }
+  return null;
+}
+
+function getStoragePath() {
+  return process.env.STORAGE_PATH || path.join(__dirname, '../../../storage');
+}
+const { findWriteBlocker } = require('../utils/localBackupDestination');
+
+// The historical default, also what migration 030 seeds into
+// database_backup_destination_path. It only exists when something is mounted
+// there: docker-compose.yml mounts ./backup and the all-in-one image symlinks
+// it to /data/backup, but docker-compose.production.yml mounts nothing, and
+// the non-root backend cannot create /backup under a root-owned /.
+const LEGACY_DESTINATION = '/backup/database';
+
+// Writable as it stands, or creatable: the nearest existing ancestor must be
+// writable. A present-but-read-only directory is not usable.
+async function canWriteOrCreate(dir) {
+  return (await findWriteBlocker(dir)) === null;
+}
+
+async function canWriteLegacyDestination() {
+  // Only /backup/database itself or /backup: never all the way up to /.
+  for (const dir of [LEGACY_DESTINATION, path.dirname(LEGACY_DESTINATION)]) {
+    try {
+      await fs.access(dir, fsConstants.W_OK);
+      return true;
+    } catch (error) {
+      // Missing: try the parent. Present but not writable: not usable.
+      if (error.code !== 'ENOENT') return false;
+    }
+  }
+  return false;
+}
+
+function readSettingValue(row) {
+  if (!row || row.setting_value == null) return null;
+  let value = row.setting_value;
+  try { value = JSON.parse(value); } catch (_) { /* stored unquoted */ }
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+/**
+ * The file-backup directory, when the dump can share it: the file backup
+ * goes to a LOCAL destination and the backend can write there. With S3 or
+ * rsync selected, backup_destination_path is a leftover that nothing mounts
+ * (often the historical /backup/picpeak), so it is not used (issue 1641).
+ */
+async function readFileBackupDestination() {
+  const rows = await db('app_settings')
+    .whereIn('setting_key', ['backup_destination_path', 'backup_destination_type'])
+    .select('setting_key', 'setting_value');
+  const byKey = new Map(rows.map((row) => [row.setting_key, readSettingValue(row)]));
+  const type = byKey.get('backup_destination_type') || 'local';
+  const destination = byKey.get('backup_destination_path');
+  if (type !== 'local' || !destination) return null;
+  return (await canWriteOrCreate(destination)) ? destination : null;
+}
+
+/**
+ * Where a database dump goes when the caller did not pass a destination.
+ *
+ * A customised database_backup_destination_path wins. Unset, empty or still
+ * the seeded /backup/database, the dump stays at /backup/database only where
+ * that location is usable; otherwise it goes under a local, writable
+ * file-backup destination (<backup_destination_path>/database), and failing
+ * that under <storage>/backups/database. For an S3 or rsync backup the dump is
+ * only staged there: the backup run uploads it with the files.
+ *
+ * Before issue 1365, every install without a /backup mount failed with
+ * "EACCES: permission denied, mkdir '/backup'" no matter which backup
+ * destination was configured; before issue 1641, an S3 install whose stale
+ * local path pointed below /backup still did.
+ */
+async function resolveDatabaseBackupDestination(config) {
+  const configured = typeof config.database_backup_destination_path === 'string'
+    ? config.database_backup_destination_path.trim()
+    : '';
+  if (configured && path.resolve(configured) !== LEGACY_DESTINATION) return configured;
+  if (await canWriteLegacyDestination()) return LEGACY_DESTINATION;
+  const fileBackupDestination = await readFileBackupDestination();
+  return path.join(fileBackupDestination || path.join(getStoragePath(), 'backups'), 'database');
+}
+
+// Public, unauthenticated static mounts (server.js) that must never become a
+// backup destination — a dump landing there is downloadable by anyone who
+// learns or guesses the filename, GHSA-jw8m-43r2-jqrm's exact class. Before
+// #1365, `database_backup_destination_path` was silently ignored (a
+// destructuring bug always fell back to the hardcoded /backup/database), so
+// this setting being freely writable by any backup.create holder — the
+// built-in `admin` role has it without settings.edit or backup.restore — was
+// harmless. Making the setting actually take effect reopens that exact
+// exfiltration path unless it's rejected here too.
+function getPubliclyServableRoots() {
+  const storage = getStoragePath();
+  return [
+    path.join(storage, 'uploads', 'logos'),
+    path.join(storage, 'uploads', 'favicons'),
+    path.join(storage, 'fonts'),
+    // Bundled fallback fonts (server.js mounts both at /fonts, storage wins
+    // on overlap but express.static falls through to this one on a miss).
+    // COPY --chown=nodejs:nodejs in the Dockerfile makes this nodejs-owned
+    // and therefore writable at runtime, not just a read-only image layer.
+    path.resolve(__dirname, '../../assets/fonts'),
+    // The integrated image's built frontend bundle is served by server.js as
+    // the SPA itself.
+    process.env.FRONTEND_DIR || path.resolve(__dirname, '../../../frontend/dist')
+  ];
+}
+
+// Resolves symlinks in whatever prefix of candidatePath currently exists,
+// then re-appends any not-yet-created remainder literally. A plain
+// fs.realpathSync would throw ENOENT for the common case where the backup
+// destination doesn't exist yet; a plain path.resolve() would miss the
+// integrated image's `/app/storage -> /data/storage` symlink,
+// which lets `/app/storage/uploads/logos` alias the real public logos
+// directory under a name that never lexically matches it.
+function resolveRealish(candidatePath) {
+  let current = path.resolve(candidatePath);
+  const remainder = [];
+  for (;;) {
+    try {
+      const real = realpathSync(current);
+      return remainder.length ? path.join(real, ...remainder) : real;
+    } catch (error) {
+      if (error.code !== 'ENOENT') {
+        return path.resolve(candidatePath);
+      }
+      const parent = path.dirname(current);
+      if (parent === current) {
+        return path.resolve(candidatePath);
+      }
+      remainder.unshift(path.basename(current));
+      current = parent;
+    }
+  }
+}
+
+function isUnderPubliclyServableRoot(candidatePath) {
+  // Lowercased comparison: on a case-insensitive-but-preserving filesystem
+  // (default macOS APFS, NTFS, and Docker Desktop's bind-mount passthrough
+  // of either) `STORAGE_PATH/UPLOADS/logos` and `.../uploads/logos` name the
+  // same directory on disk even though path.resolve() never folds case.
+  const resolved = resolveRealish(candidatePath).toLowerCase();
+  return getPubliclyServableRoots().some((root) => {
+    const resolvedRoot = resolveRealish(root).toLowerCase();
+    return resolved === resolvedRoot || resolved.startsWith(resolvedRoot + path.sep);
+  });
+}
+
+/**
+ * Database Backup Service
+ * Supports both SQLite and PostgreSQL with proper escaping,
+ * compression, checksums, and validation
+ */
+class DatabaseBackupService {
+  constructor() {
+    this.isRunning = false;
+    this.currentProgress = null;
+    this.dbType = knexConfig.client === 'pg' ? 'postgresql' : 'sqlite';
+  }
+
+  /**
+   * Calculate checksum for a file
+   */
+  async calculateChecksum(filePath) {
+    const hash = crypto.createHash('sha256');
+    const stream = createReadStream(filePath);
+
+    return new Promise((resolve, reject) => {
+      stream.on('data', data => hash.update(data));
+      stream.on('end', () => resolve(hash.digest('hex')));
+      stream.on('error', reject);
+    });
+  }
+
+  /**
+   * Compress a file using gzip
+   */
+  async compressFile(inputPath, outputPath) {
+    const gzip = zlib.createGzip({ level: 6 }); // Balanced compression
+    const source = createReadStream(inputPath);
+    const destination = createWriteStream(outputPath);
+
+    await pipeline(source, gzip, destination);
+
+    // Get compression ratio
+    const inputStats = await fs.stat(inputPath);
+    const outputStats = await fs.stat(outputPath);
+    const ratio = (1 - outputStats.size / inputStats.size) * 100;
+
+    return {
+      originalSize: inputStats.size,
+      compressedSize: outputStats.size,
+      compressionRatio: ratio.toFixed(2)
+    };
+  }
+
+  /**
+   * Get database size
+   */
+  async getDatabaseSize() {
+    if (this.dbType === 'sqlite') {
+      const dbPath = knexConfig.connection.filename;
+      const stats = await fs.stat(dbPath);
+      return stats.size;
+    } else {
+      // PostgreSQL
+      const result = await db.raw(`
+        SELECT pg_database_size(current_database()) as size
+      `);
+      return parseInt(result.rows[0].size);
+    }
+  }
+
+  /**
+   * Get table checksums for change detection
+   */
+  async getTableChecksums() {
+    const checksums = {};
+    const tables = await this.getTables();
+
+    for (const table of tables) {
+      if (this.dbType === 'sqlite') {
+        // SQLite has no row-to-text cast: `CAST(t.* AS TEXT)` is a syntax error
+        // (near "*"), so this threw for every table and took the whole backup
+        // with it — the .backup call further down never ran. Dormant while
+        // Postgres was the only supported engine; guaranteed on every
+        // all-in-one install, where SQLite is the default (#1042).
+        //
+        // Same 'aggregate of all row data' fingerprint, built from the actual
+        // columns. COALESCE keeps a NULL from nulling the whole sum, which
+        // would let unrelated rows collide.
+        const columns = Object.keys(await db(table).columnInfo());
+        const lengthExpr = columns.length
+          ? columns.map((c) => `LENGTH(COALESCE(CAST("${c}" AS TEXT), ''))`).join(' + ')
+          : '0';
+        const result = await db.raw(`
+          SELECT
+            COUNT(*) as row_count,
+            COALESCE(SUM(${lengthExpr}), 0) as data_sum
+          FROM "${table}"
+        `);
+
+        checksums[table] = {
+          rowCount: result[0].row_count,
+          checksum: crypto
+            .createHash('md5')
+            .update(`${result[0].row_count}-${result[0].data_sum}`)
+            .digest('hex')
+        };
+      } else {
+        // PostgreSQL: Use built-in functions
+        const result = await db.raw(`
+          SELECT
+            COUNT(*) as row_count,
+            MD5(COALESCE(STRING_AGG(MD5(t::text), ''), '')) as checksum
+          FROM "${table}" t
+        `);
+
+        checksums[table] = {
+          rowCount: parseInt(result.rows[0].row_count),
+          checksum: result.rows[0].checksum || 'empty'
+        };
+      }
+    }
+
+    return checksums;
+  }
+
+  /**
+   * Get list of tables
+   */
+  async getTables() {
+    if (this.dbType === 'sqlite') {
+      const result = await db.raw(`
+        SELECT name FROM sqlite_master
+        WHERE type='table'
+        AND name NOT LIKE 'sqlite_%'
+        AND name != 'knex_migrations'
+        AND name != 'knex_migrations_lock'
+        ORDER BY name
+      `);
+      return result.map(row => row.name);
+    } else {
+      // PostgreSQL
+      const result = await db.raw(`
+        SELECT table_name
+        FROM information_schema.tables
+        WHERE table_schema = 'public'
+        AND table_type = 'BASE TABLE'
+        AND table_name NOT IN ('knex_migrations', 'knex_migrations_lock')
+        ORDER BY table_name
+      `);
+      return result.rows.map(row => row.table_name);
+    }
+  }
+
+  /**
+   * Create SQLite backup
+   */
+  async createSQLiteBackup(outputPath, _options = {}) {
+    const dbPath = knexConfig.connection.filename;
+    // `.backup` writes to a path WE generate, never to the configured
+    // destination: next to the output when that directory is already in the
+    // safe charset (same filesystem, plain rename), else in the OS temp dir.
+    const stamp = `picpeak-sqlite-backup-${crypto.randomBytes(8).toString('hex')}.tmp`;
+    const outputDir = path.dirname(outputPath);
+    let tempPath;
+    let stagingDir = null;
+    if (SAFE_SQLITE_PATH_RE.test(path.join(outputDir, stamp))) {
+      tempPath = path.join(outputDir, stamp);
+    } else {
+      // A whole copy of the database must not sit readable in a shared
+      // /tmp while it is scrubbed and verified: a private 0700 directory,
+      // not the bare tmpdir. mkdtemp's name is in the safe charset.
+      stagingDir = await fs.mkdtemp(path.join(require('os').tmpdir(), 'picpeak-sqlite-'));
+      tempPath = path.join(stagingDir, stamp);
+    }
+    assertSafeSqlitePath(tempPath);
+    const dropStaging = async () => {
+      if (stagingDir) await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
+    };
+
+    try {
+      // Use SQLite's backup API for consistency
+      await spawnAsync('sqlite3', [dbPath, `.backup '${tempPath}'`]);
+      // sqlite3 creates the copy with the process umask (commonly 0644).
+      await fs.chmod(tempPath, 0o600);
+
+      // Verify the backup
+      const verifyResult = await spawnAsync('sqlite3', [tempPath, 'PRAGMA integrity_check']);
+      if (!verifyResult.stdout.includes('ok')) {
+        throw new Error('Backup integrity check failed');
+      }
+
+      // Move temp file to final location (copy when the temp dir is on
+      // another filesystem).
+      try {
+        await fs.rename(tempPath, outputPath);
+      } catch (err) {
+        if (err.code !== 'EXDEV') throw err;
+        await fs.copyFile(tempPath, outputPath);
+        await fs.unlink(tempPath);
+      }
+
+      await dropStaging();
+      return { success: true };
+    } catch (error) {
+      // Cleanup temp file if exists
+      try {
+        await fs.unlink(tempPath);
+      } catch (e) {
+        // Ignore
+      }
+      await dropStaging();
+      throw error;
+    }
+  }
+
+  /**
+   * Create PostgreSQL backup with proper escaping
+   */
+  async createPostgreSQLBackup(outputPath, options = {}) {
+    const { host, port, user, password, database } = knexConfig.connection;
+
+    // Set PGPASSWORD environment variable for security
+    const env = { ...process.env };
+    if (password) {
+      env.PGPASSWORD = password;
+    }
+
+    // Build pg_dump command with options
+    const pgDumpOptions = [
+      '--verbose',
+      '--no-owner',
+      '--no-privileges',
+      '--clean',
+      '--if-exists',
+      '--format=plain',
+      '--encoding=UTF8'
+    ];
+
+    // NOTE: do NOT add `--single-transaction` here. It looks like
+    // the right flag for "consistent snapshot" but it isn't a pg_dump
+    // option — it belongs to pg_restore / psql and pg_dump rejects it
+    // with `unrecognized option: single-transaction` (exit code 1).
+    // pg_dump already wraps the entire export in a single REPEATABLE
+    // READ snapshot automatically (since Postgres 9.x), so consistency
+    // is built in. If we ever need stricter cross-pg-cluster snapshot
+    // sharing, use `--snapshot=<id>` — but the typical inline-dump
+    // path doesn't need it. Bug went undetected until Stage A wired
+    // this code into the user-facing "Run Backup Now" path; prior
+    // callers (scheduled cron, dedicated admin DB-backup page) hit
+    // the same failure but on installs that had never exercised them.
+
+    // Add compression if not doing it separately
+    if (options.compress && !options.separateCompression) {
+      pgDumpOptions.push('--compress=6');
+    }
+
+    const pgDumpArgs = [
+      ...pgDumpOptions,
+      '-h', host,
+      '-p', String(port),
+      '-U', user,
+      '-d', database
+    ];
+
+    try {
+      const { stderr } = await spawnToFile('pg_dump', pgDumpArgs, outputPath, { env });
+
+      // pg_dump writes progress to stderr, not an error
+      if (stderr && !stderr.includes('dump complete')) {
+        logger.warn('pg_dump warnings:', stderr);
+      }
+
+      // Verify the dump file is not empty
+      const stats = await fs.stat(outputPath);
+      if (stats.size === 0) {
+        throw new Error('Backup file is empty');
+      }
+
+      return { success: true, warnings: stderr };
+    } catch (error) {
+      throw new Error(`PostgreSQL backup failed: ${error.message}`);
+    }
+  }
+
+  /**
+   * Validate backup integrity
+   */
+  async validateBackup(backupPath, _originalChecksums) {
+    const tempDbPath = `${backupPath}.validate`;
+
+    try {
+      if (this.dbType === 'sqlite') {
+        // For SQLite, we can directly check integrity
+        const result = await spawnAsync('sqlite3', [backupPath, 'PRAGMA integrity_check']);
+        if (!result.stdout.includes('ok')) {
+          throw new Error('Backup integrity check failed');
+        }
+      } else {
+        // For PostgreSQL, we'd need to restore to a temp database
+        // This is more complex and might not be feasible in production
+        logger.info('PostgreSQL backup validation would require restore test');
+      }
+
+      return { valid: true };
+    } finally {
+      // Cleanup
+      try {
+        await fs.unlink(tempDbPath);
+      } catch (e) {
+        // Ignore
+      }
+    }
+  }
+
+  /**
+   * Main backup method
+   */
+  async backup(options = {}) {
+    if (this.isRunning) {
+      throw new Error('Backup already in progress');
+    }
+
+    this.isRunning = true;
+    const startTime = new Date();
+    let backupRun = null;
+
+    try {
+      // Get configuration. getBackupConfig() returns the raw
+      // database_backup_*-prefixed setting keys, not the unprefixed
+      // names used internally below — map them explicitly rather than
+      // spreading `config` straight into the destructure, which silently
+      // matched nothing and always fell through to the hardcoded
+      // defaults. The destination comes from
+      // resolveDatabaseBackupDestination unless a caller passed one.
+      const config = await this.getBackupConfig();
+      const {
+        destinationPath: requestedDestination,
+        compress = true,
+        validateIntegrity = true,
+        includeChecksums = true
+      } = {
+        compress: config.database_backup_compress,
+        validateIntegrity: config.database_backup_validate_integrity,
+        includeChecksums: config.database_backup_include_checksums,
+        ...options
+      };
+      const destinationPath = requestedDestination || await resolveDatabaseBackupDestination(config);
+
+      if (isUnderPubliclyServableRoot(destinationPath)) {
+        throw new Error(
+          `Refusing to write a database backup to a publicly served directory: ${destinationPath}`
+        );
+      }
+
+      // Create backup directory. A bare "EACCES ... mkdir '/backup'" did not
+      // say which path or setting was involved.
+      try {
+        await fs.mkdir(destinationPath, { recursive: true });
+      } catch (mkdirError) {
+        throw new Error(
+          `Cannot create the database backup directory ${destinationPath}: ${mkdirError.code || mkdirError.message}. ` +
+          'Set database_backup_destination_path to a directory the backend can write to, or mount a writable volume at that path.'
+        );
+      }
+
+      // Generate backup filename
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const baseName = `picpeak-db-${this.dbType}-${timestamp}`;
+      const sqlFile = path.join(destinationPath, `${baseName}.sql`);
+      const finalFile = compress ? path.join(destinationPath, `${baseName}.sql.gz`) : sqlFile;
+
+      // Get current schema version
+      const schemaVersion = await this.getCurrentSchemaVersion();
+
+      // Create backup run record with version info.
+      //
+      // Insert shape divergence between SQLite + Postgres made the old
+      // `const [runId] = await db(...).insert({...})` form throw
+      // "(intermediate value) is not iterable" on Postgres installs:
+      //
+      //   - SQLite-via-knex: insert() returns `[lastInsertId]` (array)
+      //   - Postgres-via-knex: insert() without .returning() returns an
+      //     empty object / row count — not iterable
+      //
+      // Bug went undetected until Stage A wired this method into the
+      // "Run Backup Now" inline-dump path — before that, only the
+      // scheduled-cron + dedicated-admin-page callers exercised it,
+      // and Ralf's install had never triggered either. Cure: same
+      // explicit `.returning('id')` + dual-shape coalesce pattern that
+      // `backupService.js:949` uses for its own `backup_runs` insert.
+      const insertResult = await db('database_backup_runs').insert({
+        started_at: startTime,
+        status: 'running',
+        backup_type: this.dbType,
+        destination_path: finalFile,
+        app_version: packageJson.version,
+        node_version: process.version,
+        db_schema_version: schemaVersion,
+        environment_info: JSON.stringify({
+          platform: process.platform,
+          arch: process.arch,
+          node_env: process.env.NODE_ENV || 'production',
+          db_type: this.dbType
+        })
+      }).returning('id');
+      const runId = insertResult[0]?.id || insertResult[0];
+
+      backupRun = { id: runId };
+
+      // Get initial checksums
+      let tableChecksums = null;
+      if (includeChecksums) {
+        this.updateProgress('Calculating table checksums...');
+        tableChecksums = await this.getTableChecksums();
+      }
+
+      // Get database size
+      const dbSize = await this.getDatabaseSize();
+
+      // Create the backup
+      this.updateProgress('Creating database backup...');
+      if (this.dbType === 'sqlite') {
+        await this.createSQLiteBackup(sqlFile, options);
+      } else {
+        await this.createPostgreSQLBackup(sqlFile, options);
+      }
+
+      // Compress if requested
+      let compressionStats = null;
+      if (compress) {
+        this.updateProgress('Compressing backup...');
+        compressionStats = await this.compressFile(sqlFile, finalFile);
+        await fs.unlink(sqlFile); // Remove uncompressed file
+      }
+
+      // Calculate checksum
+      this.updateProgress('Calculating backup checksum...');
+      const backupChecksum = await this.calculateChecksum(finalFile);
+
+      // Validate if requested
+      if (validateIntegrity && !compress) {
+        this.updateProgress('Validating backup integrity...');
+        await this.validateBackup(finalFile, tableChecksums);
+      }
+
+      // Get final file size
+      const finalStats = await fs.stat(finalFile);
+
+      // Calculate duration
+      const endTime = new Date();
+      const durationSeconds = Math.round((endTime - startTime) / 1000);
+
+      // Update backup run record
+      await db('database_backup_runs')
+        .where('id', runId)
+        .update({
+          completed_at: endTime,
+          status: 'completed',
+          file_path: finalFile,
+          file_size_bytes: finalStats.size,
+          original_size_bytes: dbSize,
+          duration_seconds: durationSeconds,
+          checksum: backupChecksum,
+          compression_ratio: compressionStats?.compressionRatio || null,
+          table_checksums: tableChecksums ? JSON.stringify(tableChecksums) : null,
+          statistics: JSON.stringify({
+            dbType: this.dbType,
+            compressed: compress,
+            validated: validateIntegrity,
+            compressionStats,
+            tableCount: tableChecksums ? Object.keys(tableChecksums).length : null,
+            app_version: packageJson.version,
+            node_version: process.version,
+            db_schema_version: await this.getCurrentSchemaVersion()
+          })
+        });
+
+      logger.info(`Database backup completed: ${finalFile} (${(finalStats.size / 1024 / 1024).toFixed(2)} MB) in ${durationSeconds}s`);
+
+
+      return {
+        success: true,
+        path: finalFile,
+        size: finalStats.size,
+        duration: durationSeconds,
+        checksum: backupChecksum,
+        compressionRatio: compressionStats?.compressionRatio
+      };
+
+    } catch (error) {
+      logger.error(`Database backup failed: ${error.message}`, { stack: error.stack });
+
+      // Update backup run record
+      if (backupRun) {
+        await db('database_backup_runs')
+          .where('id', backupRun.id)
+          .update({
+            completed_at: new Date(),
+            status: 'failed',
+            error_message: error.message
+          });
+      }
+
+
+      throw error;
+    } finally {
+      this.isRunning = false;
+      this.currentProgress = null;
+    }
+  }
+
+  /**
+   * Update progress
+   */
+  updateProgress(message, details = {}) {
+    this.currentProgress = {
+      message,
+      details,
+      timestamp: new Date()
+    };
+    logger.info(`Backup progress: ${message}`, details);
+  }
+
+  /**
+   * Get current progress
+   */
+  getProgress() {
+    return this.currentProgress;
+  }
+
+  /**
+   * Get backup configuration
+   */
+  async getBackupConfig() {
+    const settings = await db('app_settings')
+      .where('setting_type', 'database_backup')
+      .select('setting_key', 'setting_value');
+
+    const config = {};
+    settings.forEach(setting => {
+      try {
+        config[setting.setting_key] = JSON.parse(setting.setting_value);
+      } catch (e) {
+        config[setting.setting_key] = setting.setting_value;
+      }
+    });
+
+    return config;
+  }
+
+  /**
+   * Clean up old backups
+   */
+  async cleanupOldBackups(retentionDays = 30) {
+    // A zero/negative/non-finite value pushes the cutoff to today or the
+    // future, matching (and deleting) every completed backup — including
+    // the one a scheduled run just created. Defense in depth: PUT /config
+    // already rejects such values, but this is also reachable with
+    // whatever database_backup_retention_days happens to be persisted.
+    if (!Number.isFinite(retentionDays) || retentionDays < 1) {
+      logger.error(`Refusing to clean up backups with invalid retentionDays: ${retentionDays}`);
+      return;
+    }
+    try {
+      const cutoffDate = new Date();
+      cutoffDate.setDate(cutoffDate.getDate() - retentionDays);
+
+      // Get old backup records
+      const oldBackups = await db('database_backup_runs')
+        .where('completed_at', '<', cutoffDate)
+        .where('status', 'completed')
+        .select('id', 'file_path');
+
+      let deletedCount = 0;
+
+      for (const backup of oldBackups) {
+        try {
+          // Delete the file
+          if (backup.file_path) {
+            await fs.unlink(backup.file_path);
+          }
+
+          // Delete the record
+          await db('database_backup_runs')
+            .where('id', backup.id)
+            .delete();
+
+          deletedCount++;
+        } catch (error) {
+          logger.error(`Failed to delete old backup ${backup.file_path}:`, error);
+        }
+      }
+
+      if (deletedCount > 0) {
+        logger.info(`Cleaned up ${deletedCount} old database backups`);
+      }
+
+      // Also clean up old failed runs
+      await db('database_backup_runs')
+        .where('started_at', '<', cutoffDate)
+        .where('status', 'failed')
+        .delete();
+
+    } catch (error) {
+      logger.error('Failed to cleanup old database backups:', error);
+    }
+  }
+
+  /**
+   * Get backup history
+   */
+  async getBackupHistory(limit = 10) {
+    return await db('database_backup_runs')
+      .orderBy('started_at', 'desc')
+      .limit(limit);
+  }
+
+  /**
+   * Get current database schema version
+   */
+  async getCurrentSchemaVersion() {
+    try {
+      const result = await db('knex_migrations')
+        .orderBy('id', 'desc')
+        .first();
+      return result ? result.name : 'unknown';
+    } catch (error) {
+      logger.error('Failed to get schema version:', error);
+      return 'unknown';
+    }
+  }
+
+  /**
+   * Check version compatibility for restore
+   */
+  async checkVersionCompatibility(backupInfo) {
+    const currentAppVersion = packageJson.version;
+    const currentNodeVersion = process.version;
+    const currentSchemaVersion = await this.getCurrentSchemaVersion();
+
+    const compatibility = {
+      compatible: true,
+      warnings: [],
+      errors: []
+    };
+
+    // Check app version
+    if (backupInfo.app_version !== currentAppVersion) {
+      const backupMajor = backupInfo.app_version?.split('.')[0];
+      const currentMajor = currentAppVersion.split('.')[0];
+
+      if (backupMajor !== currentMajor) {
+        compatibility.errors.push(
+          `Major version mismatch: backup v${backupInfo.app_version}, current v${currentAppVersion}`
+        );
+        compatibility.compatible = false;
+      } else {
+        compatibility.warnings.push(
+          `Minor version difference: backup v${backupInfo.app_version}, current v${currentAppVersion}`
+        );
+      }
+    }
+
+    // Check Node.js version
+    if (backupInfo.node_version !== currentNodeVersion) {
+      const backupNodeMajor = backupInfo.node_version?.split('.')[0];
+      const currentNodeMajor = currentNodeVersion.split('.')[0];
+
+      if (backupNodeMajor !== currentNodeMajor) {
+        compatibility.warnings.push(
+          `Node.js major version difference: backup ${backupInfo.node_version}, current ${currentNodeVersion}`
+        );
+      }
+    }
+
+    // Check schema version
+    if (backupInfo.db_schema_version && backupInfo.db_schema_version !== currentSchemaVersion) {
+      compatibility.warnings.push(
+        `Database schema difference: backup migration '${backupInfo.db_schema_version}', current '${currentSchemaVersion}'`
+      );
+      compatibility.warnings.push(
+        'You may need to run migrations after restore'
+      );
+    }
+
+    return compatibility;
+  }
+
+  /**
+   * Restore from backup (with version checking)
+   */
+  async restore(backupPath, _options = {}) {
+    // This is a dangerous operation and should be used with extreme caution
+    throw new Error('Restore functionality not implemented for safety. Please use restore service or restore manually.');
+  }
+}
+
+// Create singleton instance
+const databaseBackupService = new DatabaseBackupService();
+
+// Scheduled backup runner
+let backupSchedule = null;
+
+/**
+ * Start scheduled database backups
+ */
+async function startScheduledBackups() {
+  const cron = require('node-cron');
+
+  try {
+    const config = await databaseBackupService.getBackupConfig();
+
+    if (!config.database_backup_enabled) {
+      logger.info('Database backup service is disabled');
+      return;
+    }
+
+    // Stop existing schedule
+    if (backupSchedule) {
+      backupSchedule.stop();
+    }
+
+    // Default schedule: 3 AM daily (offset from file backups at 2 AM)
+    const schedule = config.database_backup_schedule || '0 3 * * *';
+
+    backupSchedule = cron.schedule(schedule, async () => {
+      logger.info('Starting scheduled database backup');
+      try {
+        await databaseBackupService.backup();
+        // Re-read retention on every tick rather than closing over the value
+        // from schedule start — a retention-only /config update doesn't
+        // restart the schedule (only enabled/schedule changes do), so the
+        // closed-over value would otherwise run stale until next restart.
+        const latestConfig = await databaseBackupService.getBackupConfig();
+        await databaseBackupService.cleanupOldBackups(latestConfig.database_backup_retention_days || 30);
+      } catch (error) {
+        logger.error('Scheduled database backup failed:', error);
+      }
+    });
+
+    logger.info(`Database backup service started with schedule: ${schedule}`);
+  } catch (error) {
+    logger.error('Failed to start database backup service:', error);
+  }
+}
+
+/**
+ * Stop scheduled database backups
+ */
+function stopScheduledBackups() {
+  if (backupSchedule) {
+    backupSchedule.stop();
+    backupSchedule = null;
+    logger.info('Database backup service stopped');
+  }
+}
+
+module.exports = {
+  databaseBackupService,
+  startScheduledBackups,
+  stopScheduledBackups,
+  isUnderPubliclyServableRoot,
+  resolveDatabaseBackupDestination,
+  destinationPathProblem,
+  assertSafeSqlitePath,
+  DatabaseBackupService // Export class for testing
+};

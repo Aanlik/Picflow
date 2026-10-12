@@ -1,0 +1,195 @@
+import { test, expect, Page } from '@playwright/test';
+import fs from 'fs';
+import path from 'path';
+import { publishEvent, waitForPhotosProcessed } from './_helpers/admin';
+
+const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'Admin!234';
+const GALLERY_PASSWORD = process.env.GALLERY_PASSWORD || 'PlaywrightGallery123!';
+
+async function createEventWithPhotos(page: Page, adminToken?: string, attempt = 1) {
+  const api = page.request;
+  let token = adminToken;
+
+  if (!token) {
+    const loginResponse = await api.post('/api/auth/admin/login', {
+      data: {
+        username: ADMIN_USERNAME,
+        password: ADMIN_PASSWORD,
+      },
+    });
+    expect(loginResponse.ok()).toBeTruthy();
+    const cookies = await page.context().cookies();
+    token = cookies.find((c) => c.name === 'admin_token')?.value;
+    expect(token, 'admin_token cookie missing from the login response').toBeTruthy();
+  }
+
+  const eventName = `Playwright Smoke ${Date.now()}`;
+  const eventDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+    .toISOString()
+    .slice(0, 10);
+
+  if (!token) {
+    throw new Error('Failed to acquire admin token');
+  }
+
+  const eventResponse = await api.post('/api/admin/events', {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    data: {
+      event_type: 'wedding',
+      event_name: eventName,
+      event_date: eventDate,
+      customer_name: 'Playwright Host',
+      host_name: 'Playwright Host',
+      password: GALLERY_PASSWORD,
+      expiration_days: 30,
+      allow_user_uploads: false,
+      allow_downloads: true,
+      disable_right_click: false,
+      watermark_downloads: false,
+    },
+  });
+  if (!eventResponse.ok()) {
+    const message = await eventResponse.text();
+    if (
+      attempt < 3 &&
+      /UNIQUE constraint failed: events\.slug/i.test(message || '')
+    ) {
+      await page.waitForTimeout(150);
+      return createEventWithPhotos(page, token, attempt + 1);
+    }
+    throw new Error(`Event creation failed: ${eventResponse.status()} ${message}`);
+  }
+  const event = await eventResponse.json();
+  await publishEvent(api, token, event.id);
+
+  const imagePath = path.join(process.cwd(), 'test-assets', 'img1.png');
+  const buffer = fs.readFileSync(imagePath);
+  const uploadResponse = await api.post(`/api/admin/events/${event.id}/upload`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+    multipart: {
+      photos: {
+        name: path.basename(imagePath),
+        mimeType: 'image/png',
+        buffer,
+      },
+      category_id: 'individual',
+    },
+  });
+  expect(uploadResponse.ok()).toBeTruthy();
+  await waitForPhotosProcessed(api, token, event.id);
+
+  return {
+    event,
+    shareLink: event.share_link,
+    slug: event.slug,
+    adminToken: token,
+  };
+}
+
+async function updateShortGallerySetting(page: Page, adminToken: string, enabled: boolean) {
+  const response = await page.request.put('/api/admin/settings/general', {
+    headers: {
+      Authorization: `Bearer ${adminToken}`,
+      'Content-Type': 'application/json',
+    },
+    data: {
+      general_short_gallery_urls: enabled,
+    },
+  });
+  expect(response.ok()).toBeTruthy();
+}
+
+async function openGalleryShareLink(page: Page, shareLink: string) {
+  await page.context().clearCookies();
+  await page.goto(shareLink);
+  await page.waitForLoadState('domcontentloaded');
+
+  try {
+    await page.getByText(/Enter Gallery Password|请输入相册密码/i).first().waitFor({ timeout: 5000 });
+  } catch {
+    // No password prompt shown (public gallery)
+  }
+
+  // Only a real password input. The old fallbacks ended at "the first input on
+  // the page", which on a gallery that needs no password is the photo search
+  // box: the password became a filter and the grid showed "No photos found".
+  const passwordField = page.locator('input[type="password"]').first();
+  if (await passwordField.count()) {
+    await passwordField.fill(GALLERY_PASSWORD);
+  }
+
+  const viewButton = page.getByRole('button', { name: /View Gallery|查看相册/i });
+  if (await viewButton.count()) {
+    try {
+      await viewButton.click({ noWaitAfter: true, timeout: 2000 });
+    } catch {
+      // Already navigated into gallery view.
+    }
+  }
+
+  const tiles = page.locator('.relative.group');
+  await expect(tiles.first()).toBeVisible({ timeout: 20000 });
+  return tiles;
+}
+
+test('admin login and gallery viewing smoke test @smoke', async ({ page }) => {
+  const { shareLink, adminToken } = await createEventWithPhotos(page);
+
+  // Admin UI login. Remove the API provisioning cookie so this smoke test
+  // exercises the real login page instead of racing its auth redirect.
+  await page.context().clearCookies();
+  await page.goto('/admin/login');
+  const usernameField = page.getByLabel(/Username|用户名/i);
+  const dashboard = page.getByRole('heading', { name: /Dashboard|概览/i });
+  await expect(usernameField.or(dashboard).first()).toBeVisible({ timeout: 20000 });
+  if (await usernameField.isVisible()) {
+    await usernameField.fill(ADMIN_USERNAME);
+    await page.getByRole('textbox', { name: /Password|密码/i }).fill(ADMIN_PASSWORD);
+    await page.getByRole('button', { name: /^(Sign In|登录|Log in|Anmelden)$/i }).click();
+  }
+  await expect(page.getByRole('heading', { name: /Dashboard|概览/i })).toBeVisible({ timeout: 20000 });
+  await expect(page.getByText('暂无已连接精修流程的项目。')).toBeVisible({ timeout: 20000 });
+  await expect(page.getByText('精修同步服务暂时不可用，无法读取项目进度。')).toHaveCount(0);
+
+  let resetToken = adminToken;
+  try {
+    // Verify long-form share link works
+    const tiles = await openGalleryShareLink(page, shareLink);
+    await tiles.first().hover();
+    await tiles.first().getByRole('button', { name: /View full size|查看大图/i }).click();
+    await expect(page.getByRole('button', { name: /Close|关闭/i })).toBeVisible();
+    await page.getByRole('button', { name: /Close|关闭/i }).click();
+
+    // Enable short gallery URLs
+    await updateShortGallerySetting(page, adminToken, true);
+
+    const settingsResponse = await page.request.get('/api/admin/settings', {
+      headers: {
+        Authorization: `Bearer ${adminToken}`,
+      },
+    });
+    expect(settingsResponse.ok()).toBeTruthy();
+    const adminSettings = await settingsResponse.json();
+    expect(adminSettings.general_short_gallery_urls === true || adminSettings.general_short_gallery_urls === 'true').toBeTruthy();
+
+    const { shareLink: shortShareLink, event: shortEvent } = await createEventWithPhotos(page, adminToken);
+    expect(shortShareLink).toMatch(/\/gallery\/[0-9a-fA-F]{32}$/);
+    expect(shortShareLink).not.toContain(shortEvent.slug);
+
+    // Verify short share link works
+    await openGalleryShareLink(page, shortShareLink);
+
+    // Legacy share link should still work after enabling short URLs
+    await openGalleryShareLink(page, shareLink);
+  } finally {
+    await updateShortGallerySetting(page, resetToken, false).catch(() => {
+      /* noop */
+    });
+  }
+});

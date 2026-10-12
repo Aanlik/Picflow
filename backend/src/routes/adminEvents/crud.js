@@ -1,0 +1,1337 @@
+// Extracted verbatim from the original routes/adminEvents.js (see ./index.js).
+// Exports a register function; ./index.js calls the sub-routers in the original
+// registration order so Express route matching is unchanged.
+
+const { body, validationResult } = require('express-validator');
+const { db, logActivity } = require('../../database/db');
+const { formatBoolean, whereTimestamp, isPostgreSQL, sqliteTimestampMs } = require('../../utils/dbCompat');
+const { parseExpiresAtText } = require('../../utils/expiresAtText');
+
+const { adminAuth } = require('../../middleware/auth');
+const { requirePermission, userHasAllPermissions } = require('../../middleware/permissions');
+const bcrypt = require('bcrypt');
+const crypto = require('crypto');
+const fs = require('fs').promises;
+const path = require('path');
+const { escapeLikePattern, likeWithEscape } = require('../../utils/sqlSecurity');
+const { getBcryptRounds } = require('../../utils/passwordValidation');
+const logger = require('../../utils/logger');
+const { sanitizeForLog, sanitizeValidationErrors } = require('../../utils/sanitizeForLog');
+const { errorResponse, safeValidationErrors } = require('../../utils/routeHelpers');
+const { isUniqueViolation } = require('../../utils/dbErrors');
+const { buildShareLinkVariants, resolveShareLinkUrl } = require('../../services/shareLinkService');
+const { parseBooleanInput } = require('../../utils/parsers');
+const { normaliseEventTimeTriple } = require('../../services/eventService');
+const { hasColumnCached } = require('../../utils/schemaCache');
+const { requireEventOwnership, scopeEventsListQuery, withoutForeignEventSecrets } = require('../../middleware/ownership');
+
+const { galleryPasswordColumns, dropCopiesIfStorageOff } = require('../../utils/galleryPasswordVault');
+const { credentialChangeColumns, sameAsStored } = require('../../utils/galleryCredentialCutoff');
+
+const { getAbsoluteFrontendUrl } = require('../../utils/frontendUrl');
+const downloadZipService = require('../../services/downloadZipService');
+const { KEYBIND_MODES } = require('../../services/feedbackDefaults');
+const { validateHeroImageAnchor, getEventFieldRequirements, getCustomerNameFromPayload, getCustomerPhoneFromPayload, isPhoneFieldEnabled, mapEventForApi, hasCustomerContactColumns, deleteEventCascade } = require('./helpers');
+
+/**
+ * `events.slug` is UNIQUE, and both routes that mint one do a read-then-insert
+ * (`while (await db('events').where({ slug }).first())`) — a check two
+ * concurrent requests for the same name + date can both pass. The loser's
+ * INSERT then raises the unique violation, which surfaced as a raw 500 with
+ * "duplicate key value violates unique constraint events_slug_unique".
+ *
+ * Detect that one constraint specifically so the client gets an actionable
+ * 409 instead. Deliberately narrower than isUniqueViolation alone: the events
+ * table carries other unique columns (share_token), and a loose message test
+ * would misfire because knex prefixes the whole INSERT — which always mentions
+ * `slug` — to err.message.
+ */
+function isDuplicateSlugError(error) {
+  if (!isUniqueViolation(error)) return false;
+  // Postgres names the constraint; sqlite names the offending column.
+  if (error.constraint) return /slug/i.test(error.constraint);
+  return /unique constraint failed:.*\bevents\.slug\b/i.test(String(error.message || ''));
+}
+
+const DUPLICATE_SLUG_RESPONSE = {
+  error: 'An event with this name already exists. Change the event name or date and try again.',
+  code: 'EVENT_SLUG_TAKEN',
+};
+
+module.exports = (router) => {
+
+  // Create new event
+  router.post('/', adminAuth, requirePermission('events.create'), [
+    body('event_name').notEmpty().trim(),
+    body('event_date').optional({ values: 'falsy' }).isDate(),
+    // Migration 137 — calendar time fields.
+    body('event_time_start').optional({ values: 'falsy' }).matches(/^([01]\d|2[0-3]):[0-5]\d$/)
+      .withMessage('event_time_start must be HH:MM 24h'),
+    body('event_time_end').optional({ values: 'falsy' }).matches(/^([01]\d|2[0-3]):[0-5]\d$/)
+      .withMessage('event_time_end must be HH:MM 24h'),
+    body('is_full_day').optional().isBoolean().toBoolean(),
+    body('customer_name').optional().trim(),
+    body('customer_phone').optional({ nullable: true, checkFalsy: true })
+      .isString().trim()
+      .isLength({ max: 32 }).withMessage('Phone number must be at most 32 characters'),
+    body('require_password').optional().isBoolean(),
+    body('password').optional().isString().custom((value, { req }) => {
+      const input = req.body.require_password;
+      const normalizeBoolean = (val, defaultValue = true) => {
+        if (val === undefined || val === null) return defaultValue;
+        if (typeof val === 'boolean') return val;
+        if (typeof val === 'number') return val !== 0;
+        if (typeof val === 'string') {
+          const normalized = val.trim().toLowerCase();
+          if (['false', '0', 'no', 'off'].includes(normalized)) return false;
+          if (['true', '1', 'yes', 'on'].includes(normalized)) return true;
+        }
+        return defaultValue;
+      };
+
+      const requirePassword = normalizeBoolean(input, true);
+      if (!requirePassword) {
+        return true;
+      }
+      if (typeof value !== 'string' || value.trim().length < 6) {
+        throw new Error('Password must be at least 6 characters long');
+      }
+      return true;
+    }),
+    body('expiration_days').isInt({ min: 1, max: 365 }).optional(),
+    body('color_theme').optional().trim(),
+    body('allow_user_uploads').optional().isBoolean().toBoolean(),
+    body('upload_category_id').optional({ nullable: true, checkFalsy: true }).isInt(),
+    body('allow_downloads').optional().isBoolean(),
+    body('disable_right_click').optional().isBoolean(),
+    body('enable_devtools_protection').optional().isBoolean(),
+    // Image security. PUT /:id has validated these all along; create
+    // accepted none of them, so a value sent here used to be dropped on the
+    // floor and the column default applied instead (#1296).
+    body('protection_level').optional().not().isArray().isIn(['basic', 'standard', 'enhanced', 'maximum']),
+    body('use_canvas_rendering').optional().not().isArray().isBoolean().toBoolean(),
+    body('image_quality').optional().not().isArray().isInt({ min: 1, max: 100 }).toInt(),
+    body('watermark_downloads').optional().isBoolean(),
+    body('watermark_text').optional().trim(),
+    // #328 follow-up: per-event opt-in for presigned-URL "Download All".
+    // Bypasses watermarks; admin must enable knowingly.
+    // Feedback sub-toggles (#1044). Optional: omitting them inherits the
+    // global Settings > Events defaults.
+    body('allow_ratings').optional().isBoolean(),
+    body('allow_likes').optional().isBoolean(),
+    body('allow_comments').optional().isBoolean(),
+    body('allow_favorites').optional().isBoolean(),
+    body('allow_reactions').optional().isBoolean(),
+    body('allow_color_labels').optional().isBoolean(),
+    body('keybind_mode').optional().isIn(KEYBIND_MODES),
+    body('css_template_id').optional({ nullable: true, checkFalsy: true }).isInt(),
+    // Hero logo settings
+    body('hero_logo_visible').optional({ nullable: true }).isBoolean(),
+    body('hero_logo_size').optional({ nullable: true }).isIn(['small', 'medium', 'large', 'xlarge']),
+    body('hero_logo_position').optional().isIn(['top', 'center', 'bottom']),
+    // Header style settings (decoupled from layout)
+    body('header_style').optional().isIn(['hero', 'standard', 'banner', 'minimal', 'none']),
+    body('hero_divider_style').optional().isIn(['wave', 'straight', 'angle', 'curve', 'none']),
+    // Hero image anchor position (#162) – accepts legacy keywords or "X% Y%" focal point
+    body('hero_image_anchor').optional().custom(validateHeroImageAnchor),
+    // Client access settings (#172)
+    body('client_access_enabled').optional().isBoolean(),
+    body('client_password').optional().isString(),
+    body('default_photo_sort').optional().isIn([
+      'upload_date_desc', 'upload_date_asc',
+      'capture_date_desc', 'capture_date_asc',
+      'filename_asc', 'filename_desc'
+    ]),
+    // Per-event promotional override (#440). Three-way mode:
+    //   inherit → fall back to global branding_promo_markdown
+    //   custom  → render this event's promo_markdown verbatim
+    //   off     → suppress entirely for this event
+    body('promo_mode').optional().isIn(['inherit', 'custom', 'off']),
+    body('promo_markdown').optional({ nullable: true }).isString(),
+    // Per-event info-banner override (#932). Same three-way mode as promo,
+    // but resolved against branding_info_markdown and rendered above the grid.
+    body('info_mode').optional().isIn(['inherit', 'custom', 'off']),
+    body('info_markdown').optional({ nullable: true }).isString(),
+    // Per-event opt-in for using hero photo as the social-share preview
+    // image (#474). When false (default), galleryOgService falls back to
+    // the brand logo for og:image / Twitter Card.
+    body('og_image_share_enabled').optional().isBoolean(),
+  ], async (req, res) => {
+    try {
+      // Redact credentials — the body carries the gallery password (GHSA-r794).
+      logger.debug('Create event request body', { body: sanitizeForLog(req.body) });
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        // errors.array() embeds the SUBMITTED value per field — including a
+        // rejected plaintext password (GHSA-r794).
+        logger.error('Validation errors:', sanitizeValidationErrors(errors.array()));
+        return res.status(400).json({ errors: safeValidationErrors(errors) });
+      }
+
+      const created = await require('../../services/eventCreationService').createEvent(req.body, {
+        actor: req.admin,
+        frontendUrl: await getAbsoluteFrontendUrl(req, { override: process.env.APP_URL }),
+      });
+      res.json(created);
+    } catch (error) {
+      if (error.isOperational) return res.status(error.statusCode).json(error.responseBody || { error: error.message, code: error.code });
+      if (isDuplicateSlugError(error)) {
+        logger.warn('Event creation lost the slug race', { error: error.message });
+        return res.status(409).json(DUPLICATE_SLUG_RESPONSE);
+      }
+      errorResponse(res, error, 500, 'Failed to create event');
+    }
+  });
+
+  // Get all events with pagination and filters
+  router.get('/', adminAuth, requirePermission('events.view'), async (req, res) => {
+    try {
+      const page = parseInt(req.query.page) || 1;
+      const limit = parseInt(req.query.limit) || 20;
+      const offset = (page - 1) * limit;
+      const search = req.query.search || '';
+      const status = req.query.status || 'all';
+      const allowedSortBy = ['created_at', 'event_name', 'slug', 'updated_at', 'expires_at', 'capture_date'];
+      const sortBy = allowedSortBy.includes(req.query.sortBy) ? req.query.sortBy : 'created_at';
+      const sortOrder = ['asc', 'desc'].includes(req.query.sortOrder) ? req.query.sortOrder : 'desc';
+
+      // Build query
+      let query = db('events');
+
+      // Roles other than super_admin and admin see their own events plus
+      // ownerless ones, the rule requireEventOwnership applies per event.
+      query = scopeEventsListQuery(query, req.admin);
+
+      // Apply search filter
+      if (search) {
+        const pattern = `%${escapeLikePattern(search)}%`;
+        query = query.where((builder) => {
+          builder.whereRaw(likeWithEscape('event_name'), [pattern])
+            .orWhereRaw(likeWithEscape('slug'), [pattern]);
+        });
+      }
+
+      // Apply status filter
+      if (status === 'active') {
+        query = query.where('is_active', formatBoolean(true)).where('is_archived', formatBoolean(false));
+      } else if (status === 'archived') {
+        query = query.where('is_archived', formatBoolean(true));
+      } else if (status === 'inactive') {
+        query = query.where('is_active', formatBoolean(false)).where('is_archived', formatBoolean(false));
+      } else if (status === 'draft') {
+        query = query.where('is_draft', formatBoolean(true)).where('is_archived', formatBoolean(false));
+      } else if (status === 'expiring') {
+        const sevenDaysFromNow = new Date();
+        sevenDaysFromNow.setDate(sevenDaysFromNow.getDate() + 7);
+        // whereTimestamp: ISO-string binds compared the extend path's epoch-ms
+        // rows lexicographically on SQLite, the mirror image of the checker's
+        // bug (issue 1733).
+        query = query
+          .where('is_active', formatBoolean(true))
+          .where('is_archived', formatBoolean(false))
+          .modify(whereTimestamp, 'expires_at', '<=', sevenDaysFromNow)
+          .modify(whereTimestamp, 'expires_at', '>', new Date());
+      } else if (status === 'all') {
+        // Archives have their own page and lifecycle. Keep them out of the
+        // photography-project list's default/all view after archiving.
+        query = query.where('is_archived', formatBoolean(false));
+      }
+
+      // Get total count for pagination
+      const countQuery = query.clone();
+      const [{ count }] = await countQuery.count('* as count');
+
+      // Apply sorting and pagination
+      // SQLite holds expires_at as ISO text or as epoch ms (the extend path
+      // bound a Date) and orders every number below every text; sort the
+      // value as a timestamp, like the status filter compares it. sortOrder
+      // is the literal 'asc' / 'desc' from the allowlist above.
+      if (sortBy === 'expires_at' && !isPostgreSQL()) {
+        const ms = sqliteTimestampMs('expires_at');
+        query = query.orderByRaw(`${ms.sql} ${sortOrder}`, ms.bindings);
+      } else {
+        query = query.orderBy(sortBy, sortOrder);
+      }
+      const events = await query
+        .limit(limit)
+        .offset(offset);
+
+      // Get photo counts for each event
+      const eventIds = events.map(e => e.id);
+      const photoCounts = await db('photos')
+        .whereIn('event_id', eventIds)
+        .groupBy('event_id')
+        .select('event_id')
+        .count('* as count');
+
+      // Map photo counts to events
+      const photoCountMap = photoCounts.reduce((acc, { event_id, count }) => {
+        acc[event_id] = parseInt(count);
+        return acc;
+      }, {});
+
+      // Add photo counts to events and convert dates
+      const eventsWithCounts = await Promise.all(events.map(async (event) => {
+        const eventWithCounts = {
+          ...event,
+          photo_count: photoCountMap[event.id] || 0,
+          // Convert Unix timestamps to ISO strings
+          created_at: event.created_at ? new Date(event.created_at).toISOString() : null,
+          expires_at: event.expires_at ? new Date(event.expires_at).toISOString() : null,
+          archived_at: event.archived_at ? new Date(event.archived_at).toISOString() : null
+        };
+        const mapped = mapEventForApi(eventWithCounts);
+        if (mapped.share_link) mapped.share_link = await resolveShareLinkUrl(mapped.share_link);
+        return withoutForeignEventSecrets(mapped, req.admin);
+      }));
+
+      res.json({
+        events: eventsWithCounts,
+        pagination: {
+          page,
+          limit,
+          total: parseInt(count),
+          totalPages: Math.ceil(count / limit)
+        }
+      });
+    } catch (error) {
+      errorResponse(res, error, 500, 'Failed to fetch events');
+    }
+  });
+
+  // Get single event details
+  router.get('/:id', adminAuth, requirePermission('events.view'), async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      // Same visibility as the list: a role limited to its own events gets a
+      // 404 for anyone else's, not a 403 that confirms the event exists.
+      const event = await scopeEventsListQuery(db('events').where('id', id), req.admin).first();
+
+      if (!event) {
+        return res.status(404).json({ error: 'Event not found' });
+      }
+
+      // Get photo count
+      const [{ count: photoCount }] = await db('photos')
+        .where('event_id', id)
+        .count('* as count');
+
+      // Get total size
+      const [{ totalSize }] = await db('photos')
+        .where('event_id', id)
+        .sum('size_bytes as totalSize');
+
+      // Get recent photos
+      const recentPhotos = await db('photos')
+        .where('event_id', id)
+        .orderBy('uploaded_at', 'desc')
+        .limit(10)
+        .select('filename', 'type', 'size_bytes', 'uploaded_at');
+
+      const mapped = mapEventForApi({
+        ...event,
+        photo_count: parseInt(photoCount) || 0,
+        total_size: parseInt(totalSize) || 0,
+        recent_photos: recentPhotos,
+      });
+      if (mapped.share_link) mapped.share_link = await resolveShareLinkUrl(mapped.share_link);
+      res.json(withoutForeignEventSecrets(mapped, req.admin));
+    } catch (error) {
+      errorResponse(res, error, 500, 'Failed to fetch event details');
+    }
+  });
+
+  // Publish a draft gallery. Sharing the link is handled directly by the photographer.
+  router.post('/:id/publish', adminAuth, requirePermission('events.edit'), requireEventOwnership, async (req, res) => {
+    try {
+      const event = await db('events').where('id', req.params.id).first();
+      if (!event) return res.status(404).json({ error: 'Event not found' });
+      if (!parseBooleanInput(event.is_draft, false)) {
+        return res.status(400).json({ error: 'Event is already published' });
+      }
+      await db('events').where('id', req.params.id).update({
+        is_draft: formatBoolean(false),
+        updated_at: new Date().toISOString(),
+      });
+      await logActivity('event_published', { event_name: event.event_name }, req.params.id,
+        { type: 'admin', id: req.admin.id, name: req.admin.username });
+      res.json({ message: 'Event published successfully', is_draft: false });
+    } catch (error) {
+      errorResponse(res, error, 500, 'Failed to publish event');
+    }
+  });
+
+  // Duplicate an event (#626). Creates a new DRAFT gallery that inherits the
+  // source event's branding, behaviour, hero/header, feedback, and category
+  // configuration — admin then fills in customer + publishes via the publish
+  // dialog (#627), where the password is set. Photos, hero photo selection,
+  // client-access secrets, customer assignments, archive/sent state are NOT
+  // carried over.
+  router.post('/:id/duplicate', adminAuth, requirePermission('events.create'), requireEventOwnership, [
+    body('event_name').trim().notEmpty().withMessage('Event name is required'),
+    body('event_date').optional({ values: 'falsy' }).isDate(),
+    body('customer_name').optional().trim(),
+  ], async (req, res) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ errors: safeValidationErrors(errors) });
+      }
+
+      const { id } = req.params;
+      const source = await db('events').where('id', id).first();
+      if (!source) {
+        return res.status(404).json({ error: 'Source event not found' });
+      }
+
+      const { event_name, event_date, customer_name } = req.body;
+
+      // Generate a fresh unique slug using the same shape as the create path.
+      const slugifyEventName = require('../../utils/slug').slugifyEventName;
+      const processedEventName = slugifyEventName(event_name);
+      const slugSuffix = event_date || crypto.randomBytes(3).toString('hex');
+      const baseSlug = `${processedEventName}-${slugSuffix}`;
+      let slug = baseSlug;
+      let counter = 1;
+      // eslint-disable-next-line no-await-in-loop
+      while (await db('events').where({ slug }).first()) {
+        slug = `${baseSlug}-${counter}`;
+        counter += 1;
+      }
+
+      // Recompute expires_at: preserve the source's expiration window (delta
+      // between source.expires_at and source.event_date) so the duplicate keeps
+      // the same "active for N days" feel. Falls back to 30 days if source had
+      // no expiration set.
+      let newExpiresAt = null;
+      if (event_date) {
+        let expirationDays = 30;
+        if (source.expires_at && source.event_date) {
+          const days = Math.round(
+            (new Date(source.expires_at).getTime() - new Date(source.event_date).getTime())
+          / (24 * 60 * 60 * 1000),
+          );
+          if (days > 0) expirationDays = days;
+        }
+        const [year, month, day] = event_date.split('-').map((s) => parseInt(s, 10));
+        const baseDate = new Date(year, month - 1, day);
+        baseDate.setDate(baseDate.getDate() + expirationDays);
+        newExpiresAt = baseDate;
+      }
+
+      const shareToken = crypto.randomBytes(16).toString('hex');
+      const { shareLinkToStore } = await buildShareLinkVariants({ slug, shareToken });
+
+      // Random-placeholder password hash. When the admin publishes via the
+      // PublishGalleryDialog (#627), the dialog re-hashes whatever they type and
+      // overwrites this. Pattern matches the create path at line ~606.
+      const password_hash = await bcrypt.hash(crypto.randomBytes(32).toString('hex'), getBcryptRounds());
+
+      // Create the storage folder structure (same as create path).
+      const storagePath = process.env.STORAGE_PATH || path.join(__dirname, '../../../../storage');
+      const eventPath = path.join(storagePath, 'events/active', slug);
+      await fs.mkdir(path.join(eventPath, 'collages'), { recursive: true });
+      await fs.mkdir(path.join(eventPath, 'individual'), { recursive: true });
+
+      const calendarColumnsExist = await hasColumnCached('events', 'is_full_day');
+
+      // Build the insert row. Copy behaviour + branding fields from source;
+      // leave per-gallery secrets / state / photos blank.
+      const insertResult = await db('events').insert({
+        slug,
+        event_type: 'project',
+        event_name,
+        event_date: event_date || null,
+        ...(calendarColumnsExist ? {
+          event_time_start: source.event_time_start,
+          event_time_end: source.event_time_end,
+          is_full_day: source.is_full_day,
+        } : {}),
+        customer_name: customer_name || null,
+        host_name: customer_name || null,
+        password_hash,
+        color_theme: source.color_theme,
+        share_link: shareLinkToStore,
+        share_token: shareToken,
+        expires_at: newExpiresAt ? newExpiresAt.toISOString() : null,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        created_by: req.admin.id,
+        allow_user_uploads: source.allow_user_uploads,
+        upload_category_id: source.upload_category_id,
+        allow_downloads: source.allow_downloads,
+        disable_right_click: source.disable_right_click,
+        enable_devtools_protection: source.enable_devtools_protection,
+        // A duplicate inherits the source's protection settings, NOT the
+        // current global defaults — copying the gallery is the whole point.
+        // These four sat next to enable_devtools_protection and were simply
+        // missed, so duplicating a 'maximum' event produced a 'standard' one
+        // (#1296).
+        protection_level: source.protection_level,
+        image_quality: source.image_quality,
+        use_canvas_rendering: source.use_canvas_rendering,
+        watermark_downloads: source.watermark_downloads,
+        watermark_text: source.watermark_text,
+        require_password: source.require_password,
+        css_template_id: source.css_template_id || null,
+        hero_logo_visible: source.hero_logo_visible,
+        hero_logo_size: source.hero_logo_size,
+        hero_logo_position: source.hero_logo_position,
+        // Banner overrides travel with the copy: the duplicate dialog promises
+        // the new gallery 'inherits the branding, behaviour, feedback, and
+        // category configuration', and a gallery muted with 'off' silently
+        // un-muting on duplication is the opposite of that.
+        // Markdown rides along only while the mode is 'custom': rows written
+        // before the PUT normalisation landed can hold stale text on an
+        // 'inherit'/'off' gallery, and copying it would resurrect that text
+        // the moment someone switched the duplicate to 'custom'.
+        promo_mode: source.promo_mode || 'inherit',
+        promo_markdown: source.promo_mode === 'custom' ? (source.promo_markdown || null) : null,
+        info_mode: source.info_mode || 'inherit',
+        info_markdown: source.info_mode === 'custom' ? (source.info_markdown || null) : null,
+        login_logo_visible: source.login_logo_visible,
+        header_style: source.header_style || 'standard',
+        hero_divider_style: source.hero_divider_style || 'wave',
+        hero_image_anchor: source.hero_image_anchor || 'center',
+        photo_cap: source.photo_cap || null,
+        is_draft: formatBoolean(true),
+        default_photo_sort: source.default_photo_sort || 'upload_date_desc',
+        // Client-access secrets and the OG-share opt-in deliberately do NOT
+        // carry over — admin re-decides per gallery.
+        client_access_enabled: formatBoolean(false),
+        og_image_share_enabled: formatBoolean(false),
+      }).returning('id');
+
+      const newEventId = insertResult[0]?.id || insertResult[0];
+
+      // Copy event_feedback_settings if the source had a row (only present when
+      // feedback_enabled was true on the source event).
+      const sourceFeedback = await db('event_feedback_settings').where({ event_id: id }).first();
+      if (sourceFeedback) {
+        await db('event_feedback_settings').insert({
+          event_id: newEventId,
+          feedback_enabled: sourceFeedback.feedback_enabled,
+          allow_ratings: sourceFeedback.allow_ratings,
+          allow_likes: sourceFeedback.allow_likes,
+          allow_comments: sourceFeedback.allow_comments,
+          allow_favorites: sourceFeedback.allow_favorites,
+          allow_reactions: sourceFeedback.allow_reactions,
+          // A clone copies the SOURCE event, so these come from the source
+          // row rather than the global defaults (#1044).
+          allow_color_labels: sourceFeedback.allow_color_labels,
+          keybind_mode: sourceFeedback.keybind_mode,
+          show_feedback_to_guests: sourceFeedback.show_feedback_to_guests,
+          // Including the identity mode (#1197): a clone that silently came
+          // back in 'simple' would drop the shared tag on a gallery duplicated
+          // precisely to reuse its proofing setup.
+          identity_mode: sourceFeedback.identity_mode || 'simple',
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        });
+      }
+
+      // Copy per-event photo categories (global categories are not duplicated —
+      // they apply to every event already). Mapping by name; photo_categories
+      // has no foreign key into photos here so we just clone the rows.
+      if (await db.schema.hasTable('photo_categories')) {
+        const sourceCategories = await db('photo_categories')
+          .where({ event_id: id })
+          .where(function () { this.whereNull('is_global').orWhere('is_global', formatBoolean(false)); })
+          .select('name', 'slug', 'is_global', 'is_folder');
+        if (sourceCategories.length > 0) {
+          await db('photo_categories').insert(
+            sourceCategories.map((c) => ({
+              event_id: newEventId,
+              name: c.name,
+              slug: c.slug,
+              is_global: formatBoolean(false),
+              // #1160: carry folder-ness across. Without this the clone silently
+              // falls back to the column default and a duplicated gallery turns
+              // every folder back into a filter.
+              is_folder: formatBoolean(parseBooleanInput(c.is_folder, false)),
+            })),
+          );
+        }
+      }
+
+      await logActivity('event_duplicated',
+        { source_event_id: parseInt(id, 10), source_event_name: source.event_name },
+        newEventId,
+        { type: 'admin', id: req.admin.id, name: req.admin.username },
+      );
+
+      res.json({
+        message: 'Event duplicated successfully',
+        id: newEventId,
+        slug,
+        is_draft: true,
+      });
+    } catch (error) {
+      if (isDuplicateSlugError(error)) {
+        logger.warn('Event duplication lost the slug race', { error: error.message });
+        return res.status(409).json(DUPLICATE_SLUG_RESPONSE);
+      }
+      errorResponse(res, error, 500, 'Failed to duplicate event');
+    }
+  });
+
+  // Update event
+  router.put('/:id', adminAuth, requirePermission('events.edit'), requireEventOwnership, [
+    body('event_name').optional().trim().notEmpty(),
+    body('event_date').optional({ values: 'falsy' }).isDate(),
+    // Migration 137 — calendar time fields. Same regex/range rule as POST.
+    body('event_time_start').optional({ values: 'falsy', nullable: true })
+      .matches(/^([01]\d|2[0-3]):[0-5]\d$/)
+      .withMessage('event_time_start must be HH:MM 24h'),
+    body('event_time_end').optional({ values: 'falsy', nullable: true })
+      .matches(/^([01]\d|2[0-3]):[0-5]\d$/)
+      .withMessage('event_time_end must be HH:MM 24h'),
+    body('is_full_day').optional().isBoolean().toBoolean(),
+    body('is_active').optional().isBoolean(),
+    // The forms Date.parse reads, which is what the handler stores (it writes
+    // toISOString()); isISO8601() alone also admits the basic format
+    // (20261006T120000Z), which Node cannot parse and SQLite's strftime
+    // cannot read either, so such a value was accepted and then silently
+    // dropped out of every expiry comparison.
+    body('expires_at').optional({ nullable: true, checkFalsy: true }).isISO8601()
+      .custom((value) => parseExpiresAtText(value) !== null)
+      .withMessage('expires_at must be an ISO 8601 date-time such as 2026-10-06T12:00:00Z'),
+    body('color_theme').optional({ nullable: true }),
+    body('allow_user_uploads').optional().isBoolean(),
+    // Reveal mode (#838): hide the gallery from guests until reveal.
+    body('reveal_mode').optional().isBoolean(),
+    body('reveal_at').optional({ nullable: true, checkFalsy: true }).isISO8601(),
+    // Migration 143 — per-event reminder overrides. All three are
+    // optional; nullable values are accepted so admins can clear an
+    // override (e.g. drop a custom offset back to the global default).
+    body('event_reminder_disabled').optional().isBoolean(),
+    body('event_reminder_offset_days').optional({ nullable: true })
+      .custom((v) => v === null || (Number.isInteger(Number(v)) && Number(v) >= 0))
+      .withMessage('event_reminder_offset_days must be a non-negative integer or null'),
+    body('event_reminder_body_override').optional({ nullable: true, checkFalsy: true })
+      .isString().isLength({ max: 10_000 }),
+    body('customer_name').optional({ nullable: true, checkFalsy: true }).trim(),
+    body('customer_phone').optional({ nullable: true, checkFalsy: true })
+      .isString().trim()
+      .isLength({ max: 32 }).withMessage('Phone number must be at most 32 characters'),
+    body('upload_category_id').optional().custom((value) => {
+    // Accept null, undefined, or integer values
+      if (value === null || value === undefined) return true;
+      return Number.isInteger(Number(value));
+    }).withMessage('upload_category_id must be an integer or null'),
+    body('hero_photo_id').optional().custom((value) => {
+    // Accept null, undefined, or numeric values
+      if (value === null || value === undefined) return true;
+      // Check if it's a number or can be converted to a valid integer
+      const num = Number(value);
+      return !isNaN(num) && Number.isInteger(num);
+    }).withMessage('hero_photo_id must be an integer or null'),
+    body('allow_downloads').optional().isBoolean(),
+    body('disable_right_click').optional().isBoolean(),
+    body('watermark_downloads').optional().isBoolean(),
+    body('watermark_text').optional().trim(),
+    body('source_mode').optional().isIn(['managed', 'reference']),
+    body('external_path').optional({ nullable: true }).isString().trim(),
+    body('external_watch').optional().isBoolean(),
+    body('require_password').optional().isBoolean(),
+    // Download protection settings
+    body('protection_level').optional().isIn(['basic', 'standard', 'enhanced', 'maximum']),
+    body('enable_devtools_protection').optional().isBoolean(),
+    body('use_canvas_rendering').optional().isBoolean(),
+    body('overlay_protection').optional().isBoolean(),
+    body('image_quality').optional().isInt({ min: 1, max: 100 }),
+    body('password').optional().isString().custom((value) => {
+      if (value === undefined || value === null || value === '') {
+        return true;
+      }
+      if (typeof value !== 'string' || value.trim().length < 6) {
+        throw new Error('Password must be at least 6 characters long');
+      }
+      return true;
+    }),
+    body('css_template_id').optional({ nullable: true, checkFalsy: true }).isInt(),
+    // Hero logo settings
+    body('hero_logo_visible').optional({ nullable: true }).isBoolean(),
+    body('hero_logo_size').optional({ nullable: true }).isIn(['small', 'medium', 'large', 'xlarge']),
+    body('hero_logo_position').optional().isIn(['top', 'center', 'bottom']),
+    // Password-page logo toggle (#894). null = default (show).
+    body('login_logo_visible').optional({ nullable: true }).isBoolean(),
+    // Header style settings (decoupled from layout)
+    body('header_style').optional().isIn(['hero', 'standard', 'banner', 'minimal', 'none']),
+    body('hero_divider_style').optional().isIn(['wave', 'straight', 'angle', 'curve', 'none']),
+    // Hero image anchor position (#162) – accepts legacy keywords or "X% Y%" focal point
+    body('hero_image_anchor').optional().custom(validateHeroImageAnchor),
+    // Client access settings (#172)
+    body('client_access_enabled').optional().isBoolean(),
+    body('client_password').optional().isString(),
+    body('regenerate_client_token').optional().isBoolean(),
+    body('default_photo_sort').optional().isIn([
+      'upload_date_desc', 'upload_date_asc',
+      'capture_date_desc', 'capture_date_asc',
+      'filename_asc', 'filename_desc'
+    ]),
+    // Per-event promotional override (#440). Three-way mode:
+    //   inherit → fall back to global branding_promo_markdown
+    //   custom  → render this event's promo_markdown verbatim
+    //   off     → suppress entirely for this event
+    body('promo_mode').optional().isIn(['inherit', 'custom', 'off']),
+    body('promo_markdown').optional({ nullable: true }).isString(),
+    // Per-event info-banner override (#932). Same three-way mode as promo,
+    // but resolved against branding_info_markdown and rendered above the grid.
+    body('info_mode').optional().isIn(['inherit', 'custom', 'off']),
+    body('info_markdown').optional({ nullable: true }).isString(),
+    // Per-event opt-in for using hero photo as the social-share preview
+    // image (#474). When false (default), galleryOgService falls back to
+    // the brand logo for og:image / Twitter Card.
+    body('og_image_share_enabled').optional().isBoolean(),
+  ], async (req, res) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        // Redact credentials — an invalid update still logs the whole body (GHSA-pgmp).
+        logger.debug('Update event validation errors', { errors: sanitizeValidationErrors(errors.array()), body: sanitizeForLog(req.body) });
+        return res.status(400).json({ errors: safeValidationErrors(errors) });
+      }
+
+      const { id } = req.params;
+      const updates = { ...req.body };
+
+      // express-validator applies isInt/isIn/isBoolean element-wise to
+      // arrays, so `image_quality: [72]` satisfies its validator and stays
+      // an array. This handler spreads req.body into .update() with no
+      // column allow-list, so such a value reaches a scalar column: a PG
+      // insert error, and `[false]` coerced to true by formatBoolean.
+      //
+      // Guarded here rather than per field because it applies to all validated fields.
+      const ARRAY_VALUED_FIELDS = new Set();
+      const arrayValued = Object.keys(updates)
+        .filter((key) => Array.isArray(updates[key]) && !ARRAY_VALUED_FIELDS.has(key));
+      if (arrayValued.length > 0) {
+        return res.status(400).json({
+          error: `Array values are not accepted for: ${arrayValued.join(', ')}`,
+        });
+      }
+
+      // Strip identity/provenance/secret columns from the mass-assigned
+      // body (GHSA-3rqx). The handler spreads req.body straight into the
+      // events UPDATE, so without this an events.edit holder could rewrite
+      // ownership (created_by), routing identity (slug/share_link), the
+      // share/client tokens, or the password hashes directly. Plaintext
+      // `password`/`client_password` inputs are NOT stripped — those are the
+      // supported way to change credentials and get hashed below; the
+      // tokens are regenerated internally where needed.
+      // The handler spreads req.body straight into the events UPDATE, so any
+      // column an events.edit holder names is writable unless blocked here.
+      // This is a COMPLETE deny-set of every server-managed / permission-gated
+      // events column (enumerated from the schema); everything else is a
+      // legitimate edit-form field and passes through, including input-only
+      // keys (password/client_password) the handler transforms below. New
+      // server-managed columns MUST be added here. (codex review — GHSA-3rqx.)
+      const IMMUTABLE_EVENT_COLUMNS = [
+        // Identity / provenance
+        'id', 'created_by', 'created_at', 'updated_at', 'slug',
+        // Routing + share/client tokens (generated at create / internally)
+        'share_link', 'share_token', 'client_share_token', 'show_share_token',
+        // Secrets (set via the plaintext password/client_password inputs)
+        'password_hash', 'client_password_hash',
+        // #1271 — encrypted copies follow the hashes; a forged ciphertext
+        // from another owner's row would decrypt through /:id/password
+        'password_recoverable', 'client_password_recoverable',
+        // Server-consumed file paths — e.g. DELETE /:id/logo fs.unlink()s
+        // hero_logo_path, so a forged value is an arbitrary-delete primitive.
+        'hero_logo_path', 'hero_logo_url', 'archive_path', 'download_zip_path',
+        // Written by archiveService from the zip's real byte count; the
+        // archives list both sorts and displays it.
+        'archive_size',
+        // Server-managed timestamps
+        'download_zip_generated_at', 'archived_at', 'revealed_at', 'event_reminder_sent_at',
+        // Credential-change cutoffs: clearing one would revive the sessions
+        // the password change ended.
+        'gallery_password_changed_at', 'client_password_changed_at',
+        // Lifecycle — governed by dedicated permission-gated routes
+        // (events.archive/restore, publish, activate/deactivate), not events.edit.
+        'is_archived', 'is_draft', 'is_active',
+        // Legacy relationship fields remain blocked from writes here.
+        'project_id', 'quote_id',
+        // Legacy relationship and name mirrors are not accepted by this route.
+        'host_name', 'customer_account_ids',
+      ];
+      // Only canonical keys reach the UPDATE. SQLite resolves quoted
+      // identifiers case-insensitively, so `{ "Event_Name": ... }` lands on
+      // event_name there while every check in this handler — validators,
+      // the permission guards on individual fields, the deny-set below — is
+      // keyed on the exact lowercase name. Every events column and every
+      // input-only key this handler accepts is lowercase snake_case, so a key
+      // with any uppercase in it is not something a legitimate client sends;
+      // it is dropped before anything looks at it. The deny-set keeps its own
+      // case-folding as belt and braces (GHSA-3rqx).
+      for (const key of Object.keys(updates)) {
+        if (key !== key.toLowerCase()) delete updates[key];
+      }
+      const denied = new Set(IMMUTABLE_EVENT_COLUMNS.map((c) => c.toLowerCase()));
+      for (const key of Object.keys(updates)) {
+        if (denied.has(key.toLowerCase())) delete updates[key];
+      }
+
+      const customerColumnsAvailable = await hasCustomerContactColumns();
+
+      // An empty customer name clears the field. Clearing is refused where
+      // Settings require the name, with the same error shape as creation.
+      const clearedFieldErrors = [];
+      const hasNameUpdate = Object.prototype.hasOwnProperty.call(updates, 'customer_name');
+      const nextName = hasNameUpdate ? getCustomerNameFromPayload(updates) : undefined;
+      if (hasNameUpdate && !nextName) {
+        const fieldRequirements = await getEventFieldRequirements();
+        if (hasNameUpdate && !nextName && fieldRequirements.require_customer_name) {
+          clearedFieldErrors.push({ path: 'customer_name', msg: 'Customer name is required' });
+        }
+        if (clearedFieldErrors.length > 0) {
+          return res.status(400).json({ errors: clearedFieldErrors });
+        }
+      }
+
+      if (hasNameUpdate) {
+        if (customerColumnsAvailable) {
+          updates.customer_name = nextName || null;
+        } else {
+          delete updates.customer_name;
+        }
+        updates.host_name = nextName || null;
+      }
+
+      // Phone is gated on the global toggle (#322). Strip from the update
+      // unconditionally if disabled — even null/clear is rejected so an
+      // admin can't accidentally write to a field they've turned off.
+      if (Object.prototype.hasOwnProperty.call(updates, 'customer_phone')) {
+        const phoneEnabled = await isPhoneFieldEnabled();
+        if (!phoneEnabled) {
+          delete updates.customer_phone;
+        } else {
+          const nextPhone = getCustomerPhoneFromPayload(updates);
+          updates.customer_phone = nextPhone || null;
+        }
+      }
+
+      const hasRequirePasswordUpdate = Object.prototype.hasOwnProperty.call(updates, 'require_password');
+      let requirePasswordUpdate;
+      if (hasRequirePasswordUpdate) {
+        requirePasswordUpdate = parseBooleanInput(updates.require_password, true);
+        updates.require_password = formatBoolean(requirePasswordUpdate);
+      }
+
+      let newPasswordPlain;
+      if (Object.prototype.hasOwnProperty.call(updates, 'password')) {
+        if (updates.password === undefined || updates.password === null || updates.password === '') {
+          delete updates.password;
+        } else {
+          newPasswordPlain = updates.password;
+          delete updates.password;
+        }
+      }
+
+      if (Object.prototype.hasOwnProperty.call(updates, 'source_mode')) {
+        updates.source_mode = updates.source_mode === 'reference' ? 'reference' : 'managed';
+      }
+
+      if (Object.prototype.hasOwnProperty.call(updates, 'external_path')) {
+        const trimmedPath = updates.external_path ? String(updates.external_path).trim() : '';
+        updates.external_path = trimmedPath || null;
+      }
+
+      // The permission guard below inspects `external_watch` / `external_path`
+      // by exact name, but SQLite resolves column names case-insensitively, so
+      // `External_Watch` would sail past it and still land on the column.
+      // Anything that is one of these two keys in any spelling other than the
+      // canonical one is dropped here, before the guard.
+      for (const key of Object.keys(updates)) {
+        const lower = key.toLowerCase();
+        if ((lower === 'external_watch' || lower === 'external_path') && key !== lower) delete updates[key];
+      }
+
+      // Folder watcher opt-in (issue 1187). Written through formatBoolean
+      // like the other event flags so SQLite gets 0/1; a managed event has
+      // no folder to watch, so the switch is cleared with the path.
+      if (Object.prototype.hasOwnProperty.call(updates, 'external_watch')) {
+        updates.external_watch = formatBoolean(updates.external_watch === true || updates.external_watch === 'true');
+      }
+
+      // Enabling the watcher, or pointing an enabled one at another folder,
+      // makes the server import on this admin's behalf — which the manual
+      // Import endpoint requires photos.upload for. events.edit alone must
+      // not be a way around that. Only transitions are checked: a save that
+      // leaves an already-watched event as it is stays an events.edit
+      // operation, so a role without photos.upload can still edit the rest.
+      if (Object.prototype.hasOwnProperty.call(updates, 'external_watch') || Object.prototype.hasOwnProperty.call(updates, 'external_path')) {
+        const current = await db('events').where('id', id).select('external_watch', 'external_path').first();
+        const wasWatched = Boolean(current?.external_watch);
+        const willWatch = Object.prototype.hasOwnProperty.call(updates, 'external_watch')
+          ? Boolean(updates.external_watch)
+          : wasWatched;
+        const pathChanges = Object.prototype.hasOwnProperty.call(updates, 'external_path')
+          && (updates.external_path || null) !== (current?.external_path || null);
+        if (willWatch && ((!wasWatched) || pathChanges)) {
+          if (!(await userHasAllPermissions(req.admin.id, ['photos.upload']))) {
+            return res.status(403).json({ error: 'The photos.upload permission is required to enable automatic imports for this folder' });
+          }
+        }
+      }
+
+      if (updates.source_mode === 'managed') {
+        updates.external_path = null;
+        updates.external_watch = formatBoolean(false);
+      }
+
+      if (updates.source_mode === 'reference' && (updates.external_path === null || updates.external_path === undefined)) {
+        return res.status(400).json({ error: 'external_path is required when source_mode is reference' });
+      }
+
+      // Plaintexts to remember after the row is written (#1271); each key is
+      // only set when this request changed that password.
+      const recoverable = {};
+      // Credentials this request changed; sessions opened with the old one end.
+      const credentialChanges = new Set();
+      // Hashes left alone because the submitted password matched; the write is
+      // conditional on them so a concurrent change cannot slip underneath.
+      let keptGalleryHash = false;
+      let keptClientHash = false;
+      if (Object.prototype.hasOwnProperty.call(updates, 'client_password') && updates.client_password) {
+        updates.client_password_hash = await bcrypt.hash(updates.client_password, getBcryptRounds());
+        recoverable.clientPassword = updates.client_password;
+        delete updates.client_password;
+      } else {
+        delete updates.client_password;
+      }
+      if (updates.regenerate_client_token) {
+        updates.client_share_token = crypto.randomBytes(32).toString('hex');
+        credentialChanges.add('client');
+      }
+      delete updates.regenerate_client_token;
+
+      delete updates.customer_account_ids;
+
+      // Migration 137 — calendar time triple. Renormalise only when at
+      // least one of the three fields was supplied; otherwise leave the
+      // row's current values alone. is_full_day=true forces both times
+      // to null. Drop the fields silently on un-migrated installs.
+      const timeFieldsTouched = (
+        Object.prototype.hasOwnProperty.call(updates, 'event_time_start')
+      || Object.prototype.hasOwnProperty.call(updates, 'event_time_end')
+      || Object.prototype.hasOwnProperty.call(updates, 'is_full_day')
+      );
+      if (timeFieldsTouched) {
+        if (await hasColumnCached('events', 'is_full_day')) {
+          const triple = normaliseEventTimeTriple({
+            event_time_start: updates.event_time_start,
+            event_time_end: updates.event_time_end,
+            is_full_day: updates.is_full_day,
+          });
+          updates.event_time_start = triple.event_time_start;
+          updates.event_time_end = triple.event_time_end;
+          updates.is_full_day = formatBoolean(triple.is_full_day);
+        } else {
+          delete updates.event_time_start;
+          delete updates.event_time_end;
+          delete updates.is_full_day;
+        }
+      }
+
+      // Log the update request for debugging
+      // `updates` no longer holds the plaintext password (stripped above), but
+      // it still carries client_password_hash and — when regenerate_client_token
+      // was passed — a LIVE client_share_token bearer credential.
+      logger.debug('Update event request', {
+        id,
+        updates: sanitizeForLog(updates),
+        color_theme_length: updates.color_theme ? updates.color_theme.length : 0,
+        color_theme_type: typeof updates.color_theme,
+        hero_photo_id: updates.hero_photo_id,
+        hero_photo_id_type: typeof updates.hero_photo_id
+      });
+
+      // Check if event exists
+      let eventQuery = db('events').where('id', id);
+      // Editor role can only edit their own events
+      if (req.admin.roleName === 'editor') {
+        eventQuery = eventQuery.where('created_by', req.admin.id);
+      }
+      const event = await eventQuery.first();
+      if (!event) {
+        return res.status(404).json({ error: 'Event not found' });
+      }
+
+      const currentRequirePassword = parseBooleanInput(event.require_password, true);
+
+      // Resubmitting the current client password is not a change: keep the hash
+      // and the client sessions opened with it.
+      if (updates.client_password_hash) {
+        if (await sameAsStored(recoverable.clientPassword, event.client_password_hash)) {
+          delete updates.client_password_hash;
+          keptClientHash = true;
+        } else {
+          credentialChanges.add('client');
+        }
+      }
+
+      if (hasRequirePasswordUpdate && requirePasswordUpdate === true && !currentRequirePassword && !newPasswordPlain) {
+        return res.status(400).json({ error: 'Password must be provided when enabling password requirement.' });
+      }
+
+      if (newPasswordPlain) {
+        recoverable.password = newPasswordPlain;
+        if (!(await sameAsStored(newPasswordPlain, event.password_hash))) {
+          updates.password_hash = await bcrypt.hash(newPasswordPlain, getBcryptRounds());
+          credentialChanges.add('gallery');
+        } else {
+          keptGalleryHash = true;
+        }
+      } else if (hasRequirePasswordUpdate && requirePasswordUpdate === false && currentRequirePassword) {
+        updates.password_hash = await bcrypt.hash(crypto.randomBytes(32).toString('hex'), getBcryptRounds());
+        recoverable.password = null;
+      }
+
+      // Enforce expires_at requirement based on app settings
+      // Allow admins to clear `expires_at` on edit even when the global
+      // `event_require_expiration` setting is ON (#426). The setting now
+      // controls only the create-time default — once an event exists, an
+      // admin editing it can override and remove the expiration. Empty /
+      // null values normalize to NULL in the column ("never expires").
+      if (Object.prototype.hasOwnProperty.call(updates, 'expires_at') && !updates.expires_at) {
+        updates.expires_at = null;
+      } else if (typeof updates.expires_at === 'string') {
+        // Store the canonical toISOString() form. isISO8601() also accepts
+        // shapes SQLite's date parser cannot read (`+0200` offsets, the basic
+        // format without separators), and whereTimestamp drops such a row
+        // from every expiry comparison rather than guess. A zone-less value
+        // is read as UTC, as julianday() reads the stored ones.
+        updates.expires_at = parseExpiresAtText(updates.expires_at).toISOString();
+      }
+
+      // Format hero logo settings if provided. null = inherit the global
+      // branding_logo_display_hero toggle (#756); only an explicit true/false
+      // is a per-event override.
+      if (Object.prototype.hasOwnProperty.call(updates, 'hero_logo_visible')) {
+        updates.hero_logo_visible = updates.hero_logo_visible === null
+          ? null
+          : formatBoolean(updates.hero_logo_visible);
+      }
+
+      // Password-page logo toggle (#894): null passes through; other
+      // accepted representations ("false", 0, …) are parsed before the
+      // DB formatting — formatBoolean alone would store the truthy
+      // string "false" as 1.
+      if (Object.prototype.hasOwnProperty.call(updates, 'login_logo_visible')) {
+        updates.login_logo_visible = updates.login_logo_visible === null
+          ? null
+          : formatBoolean(parseBooleanInput(updates.login_logo_visible, true));
+      }
+
+      // Per-event opt-in for hero-photo OG share image (#474). Coerce so
+      // SQLite stores 0/1 and Postgres stores boolean true/false.
+      if (Object.prototype.hasOwnProperty.call(updates, 'og_image_share_enabled')) {
+        updates.og_image_share_enabled = formatBoolean(updates.og_image_share_enabled === true);
+      }
+
+      // Per-event promotional override (#440). Normalize promo_markdown to
+      // NULL when mode is anything other than 'custom' so we don't carry
+      // stale text after the admin switches modes. Empty markdown also
+      // becomes NULL.
+      // Banner overrides (#440 promo / #932 info). Markdown is stored ONLY
+      // while the mode is 'custom', so switching modes can't leave stale copy
+      // that reappears later.
+      //
+      // The mode must be resolved against the STORED row when a partial PUT
+      // sends only the markdown: reading updates.promo_mode alone leaves it
+      // undefined, which used to fall through to the "store it" branch and
+      // park hidden text on an 'inherit'/'off' gallery — text that then
+      // resurfaced the moment someone switched that gallery to 'custom'.
+      let storedBannerModes = null;
+      for (const field of ['promo', 'info']) {
+        const modeKey = `${field}_mode`;
+        const mdKey = `${field}_markdown`;
+        if (!Object.prototype.hasOwnProperty.call(updates, modeKey)
+        && !Object.prototype.hasOwnProperty.call(updates, mdKey)) continue;
+
+        let effectiveMode = updates[modeKey];
+        if (!Object.prototype.hasOwnProperty.call(updates, modeKey)) {
+          // Partial PUT that sent only the markdown — read the stored mode.
+          // Fetched at most once per request, and only on this path.
+          if (storedBannerModes === null) {
+            storedBannerModes = await db('events')
+              .where('id', id)
+              .select('promo_mode', 'info_mode')
+              .first() || {};
+          }
+          effectiveMode = storedBannerModes[modeKey];
+        }
+
+        if (effectiveMode !== 'custom') {
+          updates[mdKey] = null;
+        } else if (Object.prototype.hasOwnProperty.call(updates, mdKey)) {
+          const md = typeof updates[mdKey] === 'string' ? updates[mdKey].trim() : '';
+          updates[mdKey] = md || null;
+        }
+      }
+
+      // Sync header_style / hero_divider_style from color_theme JSON when not
+      // explicitly provided in the request body (#158).  This ensures the
+      // database columns stay in sync even if the frontend only sends the
+      // serialised theme object.
+      if (updates.color_theme && !Object.prototype.hasOwnProperty.call(updates, 'header_style')) {
+        try {
+          const themeStr = typeof updates.color_theme === 'string' ? updates.color_theme : '';
+          if (themeStr.startsWith('{')) {
+            const parsed = JSON.parse(themeStr);
+            if (parsed.headerStyle) {
+              updates.header_style = parsed.headerStyle;
+            }
+            if (parsed.heroDividerStyle && !Object.prototype.hasOwnProperty.call(updates, 'hero_divider_style')) {
+              updates.hero_divider_style = parsed.heroDividerStyle;
+            }
+          }
+        } catch (_) {
+        // color_theme is not JSON (e.g. preset name) – nothing to extract
+        }
+      }
+
+      // Reveal mode (#838). Turning the toggle ON from off clears
+      // revealed_at, so a gallery can be re-hidden after a reveal;
+      // reveal_at accepts null/'' to drop a schedule.
+      if (Object.prototype.hasOwnProperty.call(updates, 'reveal_mode')) {
+        const nextRevealMode = parseBooleanInput(updates.reveal_mode, false);
+        updates.reveal_mode = formatBoolean(nextRevealMode);
+        const wasOn = event.reveal_mode === true || event.reveal_mode === 1 || event.reveal_mode === '1';
+        if (nextRevealMode && !wasOn) {
+          updates.revealed_at = null;
+          // A stale PAST schedule from a previous cycle would instantly
+          // re-open the gate on re-arm. Only bites partial API updates —
+          // isGalleryHidden() with the stamp cleared tells us whether the
+          // stored schedule still hides anything.
+          const { isGalleryHidden } = require('../../utils/revealMode');
+          if (!Object.prototype.hasOwnProperty.call(updates, 'reveal_at')
+              && event.reveal_at
+              && !isGalleryHidden({ reveal_mode: true, revealed_at: null, reveal_at: event.reveal_at })) {
+            updates.reveal_at = null;
+          }
+        }
+      }
+      if (Object.prototype.hasOwnProperty.call(updates, 'reveal_at')) {
+        // ISO string, not a Date object — the SQLite driver stringifies raw
+        // Dates uselessly; ISO round-trips on both engines.
+        updates.reveal_at = updates.reveal_at ? new Date(updates.reveal_at).toISOString() : null;
+        // Scheduling a FUTURE reveal on an already-revealed gallery re-arms
+        // hiding — that's the only way this state can be reached, since
+        // "Reveal now" and the scheduler both clear/consume the schedule.
+        if (updates.reveal_at && new Date(updates.reveal_at) > new Date() && event.revealed_at) {
+          updates.revealed_at = null;
+        }
+      }
+
+      // Handle client access fields (#172)
+      if (Object.prototype.hasOwnProperty.call(updates, 'client_access_enabled')) {
+        updates.client_access_enabled = formatBoolean(updates.client_access_enabled);
+        if (!parseBooleanInput(updates.client_access_enabled, false) && parseBooleanInput(event.client_access_enabled, false)) {
+          credentialChanges.add('client');
+        }
+        // Auto-generate client share token when first enabling
+        if (parseBooleanInput(updates.client_access_enabled, false) && !event.client_share_token && !updates.client_share_token) {
+          updates.client_share_token = crypto.randomBytes(32).toString('hex');
+        }
+      }
+
+      // Update event. Skip the write when the denylist (or masked secrets)
+      // left nothing to change — Knex rejects .update({}) with an error,
+      // which would surface as a 500 for an otherwise-valid no-op request
+      // (e.g. a body of only protected fields). (codex review.)
+      if (Object.keys(recoverable).length > 0) Object.assign(updates, await galleryPasswordColumns(recoverable));
+      if (credentialChanges.size > 0) Object.assign(updates, await credentialChangeColumns(...credentialChanges));
+      // Ignore unknown keys from older clients before writing to the events
+      // table. This also keeps retired form fields from becoming database
+      // errors after their columns have been removed by an upgrade migration.
+      const currentEventColumns = new Set(Object.keys(await db('events').columnInfo()).map((name) => name.toLowerCase()));
+      for (const key of Object.keys(updates)) {
+        if (!currentEventColumns.has(key.toLowerCase())) delete updates[key];
+      }
+      if (Object.keys(updates).length > 0) {
+        let eventUpdate = db('events').where('id', id);
+        if (keptGalleryHash) eventUpdate = eventUpdate.where('password_hash', event.password_hash);
+        if (keptClientHash) eventUpdate = eventUpdate.where('client_password_hash', event.client_password_hash);
+        const updated = await eventUpdate.update(updates);
+        if (!updated && (keptGalleryHash || keptClientHash)) {
+          // A password changed underneath: write the submitted ones as changes.
+          if (keptGalleryHash) {
+            updates.password_hash = await bcrypt.hash(newPasswordPlain, getBcryptRounds());
+            credentialChanges.add('gallery');
+          }
+          if (keptClientHash) {
+            updates.client_password_hash = await bcrypt.hash(recoverable.clientPassword, getBcryptRounds());
+            credentialChanges.add('client');
+          }
+          Object.assign(updates, await credentialChangeColumns(...credentialChanges));
+          await db('events').where('id', id).update(updates);
+        }
+      }
+      if (Object.keys(recoverable).length > 0) await dropCopiesIfStorageOff(id);
+
+      // Log activity
+      await logActivity('event_updated',
+        { changes: Object.keys(updates), eventName: event.event_name },
+        id,
+        { type: 'admin', id: req.admin.id, name: req.admin.username }
+      );
+
+      // Invalidate download zip if watermark settings changed
+      const changeKeys = Object.keys(req.body);
+      if (changeKeys.includes('watermark_downloads') || changeKeys.includes('watermark_text')) {
+        downloadZipService.invalidate(parseInt(id));
+      }
+
+      res.json({ message: 'Event updated successfully' });
+    } catch (error) {
+      errorResponse(res, error, 500, 'Failed to update event');
+    }
+  });
+
+  // Delete event
+  // Reveal now (#838): stamp revealed_at so the gallery opens for guests
+  // immediately. Idempotent — revealing an already-revealed event no-ops.
+  router.post('/:id/reveal', adminAuth, requirePermission('events.edit'), requireEventOwnership, async (req, res) => {
+    try {
+      const { id } = req.params;
+      const event = await db('events').where('id', id).first();
+      if (!event) {
+        return res.status(404).json({ error: 'Event not found' });
+      }
+      const isOn = event.reveal_mode === true || event.reveal_mode === 1 || event.reveal_mode === '1';
+      if (!isOn) {
+        return res.status(400).json({ error: 'Reveal mode is not enabled for this event' });
+      }
+
+      const now = new Date().toISOString();
+      // Also clear a pending schedule — "reveal now" makes it obsolete, and
+      // a stale future reveal_at would re-arm hiding on the next form save.
+      const stamped = await db('events')
+        .where('id', id)
+        .whereNull('revealed_at')
+        .update({ revealed_at: now, reveal_at: null });
+
+      if (stamped === 1) {
+        await logActivity('gallery_revealed', { scheduled: false }, id, {
+          type: 'admin', id: req.admin.id, name: req.admin.username,
+        });
+      }
+
+      const fresh = await db('events').where('id', id).first();
+      res.json({ message: 'Gallery revealed', revealed_at: fresh.revealed_at });
+    } catch (error) {
+      logger.error('Failed to reveal gallery:', error);
+      res.status(500).json({ error: 'Failed to reveal gallery' });
+    }
+  });
+
+  router.delete('/:id', adminAuth, requirePermission('events.delete'), requireEventOwnership, async (req, res) => {
+    try {
+      const { id } = req.params;
+      await deleteEventCascade(id, { id: req.admin.id, username: req.admin.username });
+      res.json({ message: 'Event deleted successfully' });
+    } catch (error) {
+      if (error.code === 'EVENT_NOT_FOUND') {
+        return res.status(404).json({ error: 'Event not found' });
+      }
+      logger.error('Error deleting event', { eventId: req.params.id, error: error.message });
+      if (error.message && error.message.includes('foreign key constraint')) {
+        return res.status(500).json({
+          error: 'Cannot delete event due to existing references. Please contact support.'
+        });
+      }
+      res.status(500).json({ error: 'Failed to delete event' });
+    }
+  });
+
+  // Toggle event status
+  router.post('/:id/toggle-status', adminAuth, requirePermission('events.edit'), requireEventOwnership, async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      let eventQuery = db('events').where('id', id);
+      // Editor role can only edit their own events
+      if (req.admin.roleName === 'editor') {
+        eventQuery = eventQuery.where('created_by', req.admin.id);
+      }
+      const event = await eventQuery.first();
+      if (!event) {
+        return res.status(404).json({ error: 'Event not found' });
+      }
+
+      const newStatus = !parseBooleanInput(event.is_active, false);
+      await db('events')
+        .where('id', id)
+        .update({
+          is_active: formatBoolean(newStatus),
+          updated_at: new Date().toISOString()
+        });
+
+      // Log activity
+      await logActivity(newStatus ? 'event_activated' : 'event_deactivated',
+        { eventName: event.event_name },
+        id,
+        { type: 'admin', id: req.admin.id, name: req.admin.username }
+      );
+
+      res.json({
+        message: `Event ${newStatus ? 'activated' : 'deactivated'} successfully`,
+        is_active: newStatus
+      });
+    } catch (error) {
+      errorResponse(res, error, 500, 'Failed to toggle event status');
+    }
+  });
+
+  // Extend a gallery's expiration. Migrated from the legacy /api/events router
+  // (removed — GHSA-4j34-x562-5vfq), now on the canonical mount with the same
+  // permission + ownership guards as every other gallery mutation, so a
+  // non-owning editor/viewer can no longer touch a gallery they don't own.
+  router.post('/:id/extend', adminAuth, requirePermission('events.edit'), requireEventOwnership, [
+    body('days').isInt({ min: 1, max: 365 })
+  ], async (req, res) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ errors: safeValidationErrors(errors) });
+      }
+
+      const { id } = req.params;
+      const { days } = req.body;
+
+      let eventQuery = db('events').where('id', id);
+      // Editor role can only touch their own events (defence in depth alongside
+      // requireEventOwnership).
+      if (req.admin.roleName === 'editor') {
+        eventQuery = eventQuery.where('created_by', req.admin.id);
+      }
+      const event = await eventQuery.first();
+      if (!event) {
+        return res.status(404).json({ error: 'Event not found' });
+      }
+
+      const newExpiration = new Date(event.expires_at);
+      newExpiration.setDate(newExpiration.getDate() + days);
+
+      await db('events').where('id', id).update({
+        expires_at: newExpiration,
+        is_active: formatBoolean(true) // reactivate if it had expired
+      });
+
+      await logActivity('event_expiration_extended',
+        { eventName: event.event_name, days },
+        id,
+        { type: 'admin', id: req.admin.id, name: req.admin.username }
+      );
+
+      res.json({ expires_at: newExpiration });
+    } catch (error) {
+      errorResponse(res, error, 500, 'Failed to extend expiration');
+    }
+  });
+
+};

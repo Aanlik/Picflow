@@ -1,0 +1,221 @@
+const chokidar = require('chokidar');
+const path = require('path');
+const fs = require('fs').promises;
+const sharp = require('sharp');
+const pLimit = require('p-limit');
+const { db } = require('../database/db');
+const { formatBoolean } = require('../utils/dbCompat');
+const { generateThumbnail, generateVideoPlaceholder } = require('./imageProcessor');
+const logger = require('../utils/logger');
+const { isVideoMimeType } = require('./videoProcessor');
+const mime = require('mime-types');
+const downloadZipService = require('./downloadZipService');
+
+const getStoragePath = () => process.env.STORAGE_PATH || path.join(__dirname, '../../../storage');
+const WATCH_PATH = () => path.join(getStoragePath(), 'events/active');
+
+// Bound concurrent watcher work. chokidar fires 'add' once per file — with no
+// ignoreInitial option the boot scan fires it for EVERY existing file, and a
+// bulk drop into the watch folder fires it for every new one at once. Each
+// handler runs DB lookups and (for new files) a full sharp pipeline;
+// sharp.concurrency(2) only caps libvips threads WITHIN one operation, not the
+// number of parallel pipelines, so unbounded handlers can OOM small hosts.
+// 'unlink' shares the limiter: mass deletes otherwise burst DB work and
+// ZIP-cache invalidation the same way.
+const configuredConcurrency = Number.parseInt(process.env.FILE_WATCHER_CONCURRENCY || '2', 10);
+const watcherConcurrency = Number.isFinite(configuredConcurrency)
+  ? Math.max(1, configuredConcurrency)
+  : 2;
+const processLimit = pLimit(watcherConcurrency);
+
+let watcher = null;
+const pending = new Set();
+const enqueue = (run) => {
+  const task = processLimit(run); pending.add(task);
+  task.finally(() => pending.delete(task)).catch(() => {});
+  return task;
+};
+async function stopFileWatcher() {
+  const closing = watcher; watcher = null;
+  if (closing) await closing.close();
+  await Promise.allSettled([...pending]);
+}
+
+function startFileWatcher() {
+  if (watcher) return watcher;
+  // Auto-import via filesystem watching only works with the local storage
+  // backend. In S3 mode there is no local directory to watch — every photo
+  // must enter through the admin upload API. Skip cleanly with a clear log
+  // so operators aren't surprised by the missing feature.
+  const backend = (process.env.STORAGE_BACKEND || 'local').toLowerCase();
+  if (backend !== 'local') {
+    logger.warn(`[fileWatcher] auto-import disabled — STORAGE_BACKEND=${backend}. Use the admin upload API instead.`);
+    return null;
+  }
+
+  watcher = chokidar.watch(WATCH_PATH(), {
+    ignored: /(^|[/\\])\../, // ignore dotfiles
+    persistent: true,
+    awaitWriteFinish: {
+      stabilityThreshold: 2000,
+      pollInterval: 100
+    }
+  });
+
+  watcher
+    .on('add', (filePath) => {
+      enqueue(() => processNewPhoto(filePath)).catch((error) => {
+        logger.error('Error processing new photo:', error);
+      });
+    })
+    .on('unlink', (filePath) => {
+      enqueue(() => removePhoto(filePath)).catch((error) => {
+        logger.error('Error removing photo:', error);
+      });
+    });
+
+  logger.info('File watcher started');
+  return watcher;
+}
+
+/**
+ * Has this watched file already been imported into this event?
+ *
+ * Exported so the regression test drives this query rather than a copy of it.
+ * See the caller for why source_filename is one of the arms.
+ *
+ * @param {number} eventId
+ * @param {string} basename    the file's basename on disk
+ * @param {string} relativePath the path the import would store
+ */
+async function findExistingPhoto(eventId, basename, relativePath) {
+  return db('photos')
+    .where({ event_id: eventId })
+    .where(function() {
+      this.where('filename', basename)
+        .orWhere('source_filename', basename)
+        .orWhere('path', relativePath)
+        .orWhere('path', path.posix.join('events/active', relativePath.split(path.sep).join('/')));
+    })
+    .first();
+}
+
+async function processNewPhoto(filePath) {
+  const relativePath = path.relative(WATCH_PATH(), filePath);
+  const pathParts = relativePath.split(path.sep);
+
+  if (pathParts.length < 2) return; // Not in correct folder structure
+
+  const eventSlug = pathParts[0];
+  const photoType = pathParts[1] === 'collages' ? 'collage' : 'individual';
+
+  // Check if this is an image or video file
+  const ext = path.extname(filePath).toLowerCase();
+  const detectedMime = mime.lookup(filePath) || '';
+  const isVideo = isVideoMimeType(detectedMime, filePath) || ['.mp4', '.mov', '.webm'].includes(ext);
+  if (!isVideo && !['.jpg', '.jpeg', '.png', '.webp'].includes(ext)) return;
+
+  // Skip temporary upload files
+  const filename = path.basename(filePath);
+  if (filename.startsWith('temp_')) {
+    logger.debug(`Skipping temporary upload file: ${filename}`);
+    return;
+  }
+
+  // Find the event
+  const event = await db('events').where({ slug: eventSlug, is_active: formatBoolean(true) }).first();
+  if (!event || event.is_archived || event.is_archiving) return;
+
+  // Get file stats
+  const stats = await fs.stat(filePath);
+
+  // Generate thumbnail or placeholder
+  let thumbnailPath = null;
+  if (isVideo) {
+    thumbnailPath = await generateVideoPlaceholder(filename);
+  } else {
+    thumbnailPath = await generateThumbnail(filePath);
+  }
+
+  // Calculate relative thumbnail path
+  const relativeThumbPath = thumbnailPath; // thumbnailPath is already relative to storage root
+  const mimeType = detectedMime || (isVideo ? 'video/mp4' : 'image/jpeg');
+
+  // Capture image dimensions so aspect-aware layouts (masonry / mosaic /
+  // justified) can size each card to the photo's real proportions
+  // instead of the 800×600 fallback in MasonryGalleryLayout (#447).
+  // Skip videos — those would need ffprobe.
+  let dimensions = null;
+  if (!isVideo) {
+    try {
+      const metadata = await sharp(filePath).metadata();
+      // Oriented, not raw — see imageProcessor.orientedDimensions (#1185).
+      const dims = require('./imageProcessor').orientedDimensions(metadata);
+      if (dims.width && dims.height) {
+        dimensions = { width: dims.width, height: dims.height };
+      }
+    } catch (err) {
+      logger.debug(`Could not read image dimensions for ${filename}: ${err.message}`);
+    }
+  }
+
+  // Check if photo already exists.
+  //
+  // `source_filename` is in here, not just filename/path, because a REPLACEMENT
+  // changes both of those (#1226). replacePhoto generates a fresh filename and
+  // a fresh managed path, so a watched-folder photo that had its file replaced
+  // — through the Lightroom round-trip (#745) or the admin replace — stopped
+  // matching either arm, and the next sweep imported the untouched original a
+  // second time. The gallery then held the edit AND the original: the same
+  // duplicate shape external_relpath prevents for reference galleries.
+  //
+  // source_filename is the stable key: written once at ingest (below) and
+  // preserved across a replace by design. Rows predating migration 193 are
+  // covered too — its backfill sets source_filename from
+  // COALESCE(original_filename, filename), and this path never wrote
+  // original_filename, so for watcher rows that resolves to the basename this
+  // compares against.
+  const existingPhoto = await findExistingPhoto(event.id, path.basename(filePath), relativePath);
+
+  if (!existingPhoto) {
+    // Add to database
+    await db('photos').insert({
+      event_id: event.id,
+      filename: path.basename(filePath),
+      // The camera-original name. This path never sets original_filename, so
+      // without this the Lightroom round-trip (#745) has nothing to match a
+      // RAW against for auto-imported galleries.
+      source_filename: path.basename(filePath),
+      path: relativePath,
+      thumbnail_path: relativeThumbPath,
+      type: isVideo ? 'video' : photoType,
+      size_bytes: stats.size,
+      mime_type: mimeType,
+      ...(dimensions && { width: dimensions.width, height: dimensions.height })
+    }).returning('id');
+    logger.info(`Added new photo: ${relativePath}`);
+    downloadZipService.invalidate(event.id);
+
+  } else {
+    logger.debug(`Photo already exists: ${relativePath}`);
+  }
+}
+
+async function removePhoto(filePath) {
+  const relativePath = path.relative(WATCH_PATH(), filePath);
+
+  // Look up event before deleting to invalidate zip cache
+  const photo = await db('photos').where({ path: relativePath }).first();
+
+  // The database is authoritative. Archive/replacement cleanup emits the
+  // same unlink events as a manual file deletion, sometimes after restore.
+  // Deleting a row here loses comments, identity and workflow history.
+  // Actual deletion is performed by the authenticated project/photo routes.
+  if (photo) {
+    downloadZipService.invalidate(photo.event_id);
+    logger.info(`Watched file removed; retained photo metadata: ${relativePath}`);
+  }
+
+}
+
+module.exports = { stopFileWatcher, startFileWatcher, findExistingPhoto, removePhoto };
