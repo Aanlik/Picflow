@@ -15,7 +15,7 @@ test('mobile customer selects multiple photos and saves each original filename',
   await page.getByRole('checkbox').nth(0).click();
   await page.getByRole('checkbox').nth(1).click();
   await page.getByRole('button', { name: /下载.*2/ }).click();
-  const dialog = page.getByRole('dialog', { name: '下载已选照片' });
+  const dialog = page.getByRole('dialog', { name: '下载所选照片' });
   await expect(dialog).toBeVisible();
   const links = dialog.getByRole('link');
   await expect(links).toHaveCount(2);
