@@ -50,6 +50,6 @@ describe('Bridge project archive contents', () => {
     expect(archiveName).not.toContain('__bridge_');
 
     const header = buildContentDisposition('林晓雨项目.zip');
-    expect(header).toContain("filename*=UTF-8''%E6%9E%97%E6%99%93%E9%9B%A8%E9%A1%B9%E7%9B%AE.zip");
+    expect(header).toContain('filename*=UTF-8\'\'%E6%9E%97%E6%99%93%E9%9B%A8%E9%A1%B9%E7%9B%AE.zip');
   });
 });
