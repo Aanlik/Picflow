@@ -30,6 +30,7 @@ describe('DELETE /admin/archives/:id', () => {
     }));
     jest.doMock('../../src/middleware/ownership', () => ({
       requireEventOwnership: (_req, _res, next) => next(),
+      scopeEventsListQuery: (query) => query,
     }));
 
     ({ db, cleanup } = await require('./helpers/sqliteTestDb').bootTestDb());
@@ -70,6 +71,20 @@ describe('DELETE /admin/archives/:id', () => {
     // The route's own audit row is written after the delete and has no event FK.
     const [{ audits }] = await db('activity_logs').where('activity_type', 'archive_deleted').count('* as audits');
     expect(Number(audits)).toBe(1);
+  });
+
+  it('returns the archive event calendar date in a stable date-only form', async () => {
+    const [ev] = await db('events').insert({
+      slug: 'archive-date', event_type: 'project', event_name: 'Archive Date', event_date: '2026-10-13',
+      password_hash: 'x', share_link: '/gallery/archive-date/tok', share_token: 'archive-date-token',
+      is_active: 0, is_archived: 1, is_draft: 0, created_at: new Date().toISOString(),
+    }).returning('id');
+    const eventId = typeof ev === 'object' ? ev.id : ev;
+
+    const res = await request(app).get('/admin/archives');
+
+    expect(res.status).toBe(200);
+    expect(res.body.archives.find((row) => row.id === eventId).eventDate).toBe('2026-10-13');
   });
 
   it('asks Bridge to remove the archived project delivery folders and clears the durable intent', async () => {

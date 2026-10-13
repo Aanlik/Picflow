@@ -1,4 +1,5 @@
 const { filterDeliveredPhotoEntries, getArchivableDeliveredPhotoIds, archivePhotoDisplayName } = require('../archiveService');
+const { buildContentDisposition } = require('../../utils/filenameSanitizer');
 
 describe('Bridge project archive contents', () => {
   it('keeps only the managed photo rows marked as delivered', () => {
@@ -36,5 +37,19 @@ describe('Bridge project archive contents', () => {
     };
     expect(archivePhotoDisplayName(photo, true)).toBe('DSC04270.jpg');
     expect(archivePhotoDisplayName(photo, false)).toBe('DSC04270.jpg');
+  });
+
+  it('keeps Unicode camera names and excludes internal Bridge hash suffixes', () => {
+    const photo = {
+      filename: 'generated-file.jpg',
+      original_filename: `upload.__bridge_${'b'.repeat(64)}.jpg`,
+      source_filename: '林晓雨.ARW',
+    };
+    const archiveName = archivePhotoDisplayName(photo, true);
+    expect(archiveName).toBe('林晓雨.jpg');
+    expect(archiveName).not.toContain('__bridge_');
+
+    const header = buildContentDisposition('林晓雨项目.zip');
+    expect(header).toContain("filename*=UTF-8''%E6%9E%97%E6%99%93%E9%9B%A8%E9%A1%B9%E7%9B%AE.zip");
   });
 });

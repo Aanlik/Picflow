@@ -900,7 +900,10 @@ export const EventInformationCard: React.FC<EventInformationCardProps> = ({
                   </span>
                   {event.upload_category_id && (
                     <p className="text-xs text-neutral-600 dark:text-neutral-400">
-                      {t('events.uploadCategory')}: {categories.find(c => c.id === event.upload_category_id)?.name || 'N/A'}
+                      {t('events.uploadCategory')}: {(() => {
+                        const category = categories.find(c => c.id === event.upload_category_id);
+                        return category ? categoryLabel(category, t) : 'N/A';
+                      })()}
                     </p>
                   )}
                 </div>

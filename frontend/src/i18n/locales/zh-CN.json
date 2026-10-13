@@ -170,18 +170,18 @@
     "filesAdded": "已添加文件",
     "deleted": "文件传输已删除",
     "deleteConfirmTitle": "删除此文件传输？",
-    "deleteConfirmBody": "这将删除链接和任何客户端的上传。 源项目照片不会受到影响。",
+    "deleteConfirmBody": "这会删除分享链接及客户上传的补充文件，不会影响项目中的照片。",
     "addImages": "添加图像",
     "clientUpload": "客户端上传",
     "disableUploads": "禁用",
     "enableUploads": "启用上传链接",
     "uploadEnabled": "上传链接已启用",
     "noUploads": "客户端尚未上传文件。",
-    "uploadHint": "启用后，客户可通过六位验证码向你发送补充文件，例如品牌标志。",
+    "uploadHint": "启用后，客户可凭六位访问码向你提交补充文件，例如品牌标志素材。",
     "createAndSend": "创建传输",
     "uploadedFiles": "上传的文件",
     "addFiles": "添加文件",
-    "noUploadedFiles": "没有上传文件。 从您的计算机中添加文件以包含在下载中。",
+    "noUploadedFiles": "暂无已上传文件。你可以从电脑中添加文件，供客户通过此链接下载。",
     "delivery": {
       "link": "共享链接"
     },
@@ -211,12 +211,12 @@
       "uploadFiles": "上传自己的文件",
       "chooseFiles": "选择文件",
       "noUploadFiles": "可选择添加电脑中的文件供客户下载。",
-      "delivery": "交付",
-      "recipientsPlaceholder": "多个接收地址请用逗号分隔。",
-      "recipientsCount": "{{count}} 位收件人，每位都会收到下载链接",
-      "recipientsHint": "用逗号分隔多个接收地址。",
-      "recipientsCount_one": "{{count}} 位收件人，每位都会收到下载链接",
-      "recipientsCount_other": "{{count}} 位收件人，每位都会收到下载链接"
+      "delivery": "文件交付",
+      "recipientsPlaceholder": "多个邮箱地址请用逗号分隔。",
+      "recipientsCount": "{{count}} 位接收人，每人都会收到下载链接",
+      "recipientsHint": "填写接收人的邮箱地址；多个地址请用逗号分隔。",
+      "recipientsCount_one": "{{count}} 位接收人，每人都会收到下载链接",
+      "recipientsCount_other": "{{count}} 位接收人，每人都会收到下载链接"
     },
     "picker": {
       "title": "从其他项目选择图像",
@@ -868,7 +868,7 @@
     "allowPresignedDownload": "允许 S3 直链下载（仅适用于 S3 存储，不添加水印）",
     "neverExpires": "永不到期",
     "rightClickBlocked": "右键被屏蔽",
-    "devtoolsDetection": "DevTools 检测",
+    "devtoolsDetection": "开发者工具检测",
     "watermarked": "已添加水印",
     "importExternal": "从外部目录导入",
     "externalImportInfo": "导入所选文件夹及其子文件夹中的照片。",
@@ -1207,7 +1207,7 @@
       "defaultProtectionHelp": "这些设置适用于所有新项目。 单个项目可以推翻这些默认。",
       "protectionLevel": "默认保护级别",
       "imageQuality": "默认图像质量",
-      "enableDevtools": "默认启用 DevTools 检测",
+      "enableDevtools": "默认启用开发者工具检测",
       "enableCanvas": "默认情况下启用图片查看器中的画布渲染( 高级保护)",
       "rateLimiting": "请求频率限制",
       "rateLimitingHelp": "限制图片请求频率，减少批量抓取。",
@@ -1384,7 +1384,7 @@
       "width": "宽度",
       "height": "高度",
       "eventTitle": "下载分辨率",
-      "eventIntro": "仅覆盖此相册的全站下载设置。 “ 继承” 遵循设置 – 下载分辨率。",
+      "eventIntro": "仅对当前项目生效。“继承”将采用“设置 > 下载分辨率”中的全局规则。",
       "inheritWith": "沿用全局设置（{{value}}）",
       "effective": "当前生效：{{standard}}",
       "pickerOn": "客户可选择其他下载尺寸"
@@ -1461,7 +1461,7 @@
     "colorModeLight": "浅色",
     "colorModeDark": "深色",
     "colorModeAuto": "自动",
-    "colorModeHelp": "自动遵循访客的系统偏好.",
+    "colorModeHelp": "自动跟随访客的系统偏好。",
     "preview": "预览",
     "saveChanges": "保存更改",
     "applyLivePreview": "应用更改并实时预览",
@@ -1525,7 +1525,7 @@
       "xl": "XL — 最大照片"
     },
     "thumbnailScaleHint": "相对于基网格列调整列数",
-    "typographyAndStyle": "字型样式",
+    "typographyAndStyle": "字体与排版",
     "bodyFont": "正文字体",
     "headingFont": "标题字体",
     "sameAsBody": "与正文相同",
@@ -1582,7 +1582,7 @@
     "whiteLabel": "自有品牌显示",
     "hidePoweredBy": "隐藏 Picflow 的品牌",
     "hidePoweredByHelp": "隐藏相册页脚中的 Picflow 署名，展示您自己的摄影品牌。",
-    "logoCustomization": "logo 自定义",
+    "logoCustomization": "标志自定义",
     "changeLogo": "更换标志",
     "logoSizeSmall": "小型( 32px)",
     "logoSizeMedium": "中（48 像素）",
@@ -1639,18 +1639,18 @@
     "forcedModeGalleryNote": "此相册遵循站点指定的颜色模式，无法单独覆盖。",
     "colorGroupSurfaces": "背景层次",
     "colorGroupSurfacesHelp": "页面背景位于最底层，内容区和浮层背景依次叠加。",
-    "backgroundColorHelp": "页面本身——每个相册，管理员页面和CMS页面的主体背景.",
+    "backgroundColorHelp": "页面底色，适用于客户页面、管理后台和 CMS 页面的主体背景。",
     "surfaceColorHelp": "卡片、侧边栏、页眉栏和导航。背景上方的第一层。",
     "elevatedColorHelp": "用于浮层、图片占位区、悬停或选中行、弹窗标题和代码块。",
-    "borderColorHelp": "分割符，表网格线，卡片轮廓，输入边框.",
+    "borderColorHelp": "用于分隔线、表格网格线、卡片边框和输入框边框。",
     "colorGroupText": "文本",
     "colorGroupTextHelp": "正文颜色用于主要内容，次要颜色用于说明和辅助信息。",
     "textColorHelp": "用于标题、正文、表格内容、输入框和导航文字。",
-    "mutedTextColorHelp": "说明、 输入下的帮助文本、 表格列标题、 页脚链接、 日期和元数据。",
+    "mutedTextColorHelp": "用于说明文字、输入框帮助信息、表格列标题、页脚链接、日期和元数据。",
     "colorGroupAccent": "品牌强调色",
     "colorGroupAccentHelp": "强调交互元素；强调色用于文字和轮廓，按钮填充色用于实心按钮。",
-    "accentColorHelp": "链接、 图标、 焦点环、 主按钮上的悬浮状态、 活动侧边栏项目下划线。 应在背景和表面都清晰读取。",
-    "accentDarkColorHelp": "填充 CTA 按钮、 活动侧栏项背景、 徽章和标记。 需要足够对比，白色文本才能在顶部读取。",
+    "accentColorHelp": "用于链接、图标、焦点提示、主按钮悬停状态和当前侧栏项目标记；请确保在背景与内容区上都清晰可见。",
+    "accentDarkColorHelp": "用于实心按钮、当前侧栏项目背景、徽章和标记。请确保与白色文字有足够的对比度。",
     "cssTemplate": "CSS 模板",
     "cssTemplateDescription": "选择一个预建的 CSS 模板，将应用全应用程序的样式应用到此相册。 模板可以在设置 > CSS 模板中管理。",
     "noTemplate": "无模板",
@@ -2302,7 +2302,7 @@
       "refresh": "刷新",
       "error": "无法加载覆盖报告：{{message}}",
       "generatedAt": "报告生成时间：{{when}}",
-      "fallbackInUse": "未找到 backup_paths 数据表，当前使用旧版内置路径配置。迁移 108 可能尚未执行；请检查服务器日志并重新运行数据库迁移。",
+      "fallbackInUse": "当前未读取到备份目录配置，系统暂时使用内置的兼容规则。请检查数据库迁移是否已完成。",
       "database": {
         "title": "数据库",
         "mode": "备份方式",
@@ -2328,7 +2328,25 @@
         "path": "路径",
         "coverage": "覆盖状态",
         "featureFlag": "功能开关",
-        "description": "说明"
+        "description": "说明",
+        "genericDescription": "备份目录",
+        "labels": {
+          "activeEvents": "进行中的项目照片",
+          "archivedEvents": "已归档项目照片",
+          "thumbnails": "生成的照片缩略图",
+          "previews": "灯箱预览图",
+          "heroes": "项目封面图片",
+          "uploads": "客户上传的文件",
+          "businessDocs": "项目文档"
+        },
+        "flags": {
+          "backup_include_archived": "包含已归档项目",
+          "other": "相关功能",
+          "enabled": "已启用",
+          "disabled": "未启用",
+          "unset": "未设置",
+          "none": "无"
+        }
       },
       "coverage": {
         "willScan": "将纳入备份",
@@ -2455,7 +2473,7 @@
       },
       "fields": {
         "destinationPath": "目标路径",
-        "destinationPathHelp": "后端所看到的目录。 与 Docker 一样，这是后端容器内部的路径，而不是主机: 使用挂入容器的目录。",
+        "destinationPathHelp": "这是后端容器内可访问的目录路径，不是 NAS 主机路径。请填写已挂载到容器中的目录。",
         "destinationPathPlaceholder": "/应用/储存/备份",
         "rsyncHost": "远程主机",
         "rsyncHostPlaceholder": "备份. example.com",
@@ -2617,7 +2635,7 @@
         "configuration": {
           "s3": "S3 配置",
           "endpoint": "S3 端点 URL",
-          "bucket": "Bucket 名称",
+          "bucket": "存储桶名称",
           "accessKey": "访问密钥 ID",
           "secretKey": "密钥"
         }
@@ -2661,15 +2679,15 @@
         "subtitle": "选择要还原的内容",
         "additionalOptions": {
           "title": "附加选项",
-          "skipPreBackup": "跳过预响应备份",
-          "skipPreBackupHelp": "默认情况下，恢复前会创建备份。 请选中此项以跳过。",
+          "skipPreBackup": "跳过恢复前备份",
+          "skipPreBackupHelp": "默认会在恢复前创建备份。勾选此项可跳过这一步。",
           "force": "强制恢复",
           "forceHelp": "取代安全检查和警告(谨慎使用)"
         }
       },
       "confirmation": {
-        "title": "复检确认",
-        "subtitle": "请检查您的恢复配置",
+        "title": "确认恢复设置",
+        "subtitle": "请核对本次恢复的设置",
         "validation": {
           "passed": "已通过验证",
           "failed": "校验失败",
@@ -2933,7 +2951,8 @@
     "removeColorLabel": "取消{{color}}选择",
     "setColorLabel": "选为{{color}}",
     "markedAs": "已选{{color}}",
-    "alsoMarkedBy": "其他客户还选择了：{{colors}}"
+    "alsoMarkedBy": "其他客户还选择了：{{colors}}",
+    "commentIdentityRequired": "请先登记选片人姓名，再提交评论。"
   },
   "filter": {
     "feedbackFilters": "选片筛选",

@@ -41,7 +41,7 @@ interface GuestIdentityContextValue {
    * prompt and waits until the user registers (or cancels, in which case it
    * throws a "user_cancelled" error).
    */
-  ensureIdentity: () => Promise<GuestIdentity>;
+  ensureIdentity: (force?: boolean) => Promise<GuestIdentity>;
 }
 
 const GuestIdentityContext = createContext<GuestIdentityContextValue | null>(null);
@@ -273,8 +273,8 @@ export const GuestIdentityProvider: React.FC<GuestIdentityProviderProps> = ({
     pendingRejecters.current = [];
   }, [slug]);
 
-  const ensureIdentity = useCallback(async (): Promise<GuestIdentity> => {
-    if (identityMode !== 'guest') {
+  const ensureIdentity = useCallback(async (force = false): Promise<GuestIdentity> => {
+    if (identityMode !== 'guest' && !force) {
       // In simple mode, there is no per-person identity. Return a synthetic
       // "null" identity that callers will ignore.
       return Promise.resolve({
@@ -295,7 +295,13 @@ export const GuestIdentityProvider: React.FC<GuestIdentityProviderProps> = ({
       if (redeemed) return redeemed;
     }
 
-    if (identity) return identity;
+    // For a forced recovery after GUEST_IDENTITY_REQUIRED, the axios
+    // interceptor may already have cleared storage while React still holds
+    // the rejected identity in state. Trust storage in that path so we reopen
+    // registration instead of retrying with the stale token.
+    const currentIdentity = force ? getGuestIdentity(slug) : identity;
+    if (currentIdentity) return currentIdentity;
+    if (force && identity) setIdentity(null);
 
     return new Promise((resolve, reject) => {
       pendingResolvers.current.push(resolve);

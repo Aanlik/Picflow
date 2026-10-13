@@ -49,3 +49,23 @@ def test_archive_restore_returns_project_to_saved_stage(tmp_path):
         assert project.previous_stage is None
         assert project.has_entered_editing
     db.dispose()
+
+
+def test_archived_project_cannot_change_stage_until_restored(tmp_path):
+    engine, _client, _cfg, db = setup(tmp_path)
+    engine.set_stage(7, 'EDITING')
+    engine.set_stage(7, 'ARCHIVED')
+
+    try:
+        engine.set_stage(7, 'SELECTING')
+        assert False, 'ordinary stage changes must not unarchive a project'
+    except ValueError as error:
+        assert '请先恢复项目' in str(error)
+
+    with engine.sessions() as session:
+        project = session.scalar(select(Project).where(Project.event_id == 7))
+        assert project.stage == 'ARCHIVED'
+        assert project.previous_stage == 'EDITING'
+
+    assert engine.restore_stage(7) == 'EDITING'
+    db.dispose()

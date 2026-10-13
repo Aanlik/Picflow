@@ -124,6 +124,42 @@ describe('admin photography workflow summary', () => {
     expect(String(global.fetch.mock.calls[1][0])).toContain('raw_subdir=2026%2F26-10-04%2F01_RAW');
   });
 
+  it('runs the first Bridge sync before reporting an auto-bound project as connected', async () => {
+    await db('events').where({ id: eventId }).update({
+      source_mode: 'reference',
+      external_path: 'Camera/2026/26-10-04/02_PROOF',
+    });
+    global.fetch = jest.fn()
+      .mockResolvedValueOnce({
+        status: 303,
+        json: async () => null,
+        headers: { get: (name) => name === 'location' ? '/' : null },
+      })
+      .mockResolvedValueOnce({
+        status: 200,
+        json: async () => ({ success: true }),
+        headers: { get: () => null },
+      })
+      .mockResolvedValueOnce({
+        status: 200,
+        json: async () => ({
+          event_id: eventId, name: 'Workflow Summary', stage: 'SELECTING', connected: true,
+          summary: { '客户已选': 4 }, photos: [],
+        }),
+        headers: { get: () => null },
+      });
+
+    const result = await auth(request(app)
+      .post(`/api/admin/photography-workflow/${eventId}/auto-bind`)
+      .send({}));
+
+    expect(result.status).toBe(201);
+    expect(result.body).toMatchObject({ configured: true, connected: true, summary: { '客户已选': 4 } });
+    expect(global.fetch).toHaveBeenCalledTimes(3);
+    expect(String(global.fetch.mock.calls[1][0])).toBe(`http://bridge:8080/api/projects/${eventId}/sync`);
+    expect(global.fetch.mock.calls[1][1].method).toBe('POST');
+  });
+
   it('moves withdrawn deliveries out of the delivered workflow filter', async () => {
     global.fetch = jest.fn(async () => ({
       status: 200,

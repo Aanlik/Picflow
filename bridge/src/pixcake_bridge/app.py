@@ -741,6 +741,8 @@ def create_app(config=None, client=None, start_workers=True):
             try:
                 if action == "stage":
                     engine.set_stage(event_id, stage)
+                elif action == "restore":
+                    engine.restore_stage(event_id)
                 elif action == "retry":
                     if confirm_unknown != "checked":
                         raise ValueError("请先核对 Picflow 中结果未知的任务")
@@ -749,7 +751,7 @@ def create_app(config=None, client=None, start_workers=True):
                     raise ValueError("操作不存在")
             except ValueError as exc:
                 raise HTTPException(400, str(exc))
-        if action in {"sync", "rescan", "retry"}:
+        if action in {"sync", "rescan", "retry", "restore"}:
             await engine.sync(event_id)
         return RedirectResponse("/", status_code=303)
 

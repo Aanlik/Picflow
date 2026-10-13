@@ -48,7 +48,12 @@ export const ArchivesPage: React.FC = () => {
   const formatDate = (dateString: string | null | undefined): string => {
     if (!dateString) return '';
     try {
-      const date = parseISO(dateString);
+      // DATE columns can arrive either as a date-only string or a timestamp
+      // depending on the database driver. Prefer the calendar date embedded
+      // in the value so timezone conversion cannot turn midnight into the
+      // previous day, then fall back to normal ISO parsing.
+      const dateOnly = dateString.match(/^\d{4}-\d{2}-\d{2}/)?.[0];
+      const date = dateOnly ? parseISO(dateOnly) : parseISO(dateString);
       return isValid(date) ? fmtDate(date) : '';
     } catch {
       return '';

@@ -281,6 +281,15 @@ const SummaryCard: React.FC<{
 
 const PathsTable: React.FC<{ paths: BackupCoverageReport['paths'] }> = ({ paths }) => {
   const { t } = useTranslation();
+  const pathLabelKeys: Record<string, string> = {
+    'events/active': 'backup.coverage.paths.labels.activeEvents',
+    'events/archived': 'backup.coverage.paths.labels.archivedEvents',
+    thumbnails: 'backup.coverage.paths.labels.thumbnails',
+    previews: 'backup.coverage.paths.labels.previews',
+    heroes: 'backup.coverage.paths.labels.heroes',
+    uploads: 'backup.coverage.paths.labels.uploads',
+    'business-docs': 'backup.coverage.paths.labels.businessDocs',
+  };
   return (
     <div className="border border-neutral-200 dark:border-neutral-700 rounded-lg overflow-hidden">
       <div className="px-3 py-2 bg-neutral-50 dark:bg-neutral-800/50 border-b border-neutral-200 dark:border-neutral-700">
@@ -312,11 +321,11 @@ const PathsTable: React.FC<{ paths: BackupCoverageReport['paths'] }> = ({ paths 
                 </td>
                 <td className="px-3 py-2 text-xs text-neutral-600 dark:text-neutral-400">
                   {p.featureFlag
-                    ? `${p.featureFlag} = ${p.featureFlagValue === null ? '∅' : String(p.featureFlagValue)}`
-                    : '—'}
+                    ? `${t(`backup.coverage.paths.flags.${p.featureFlag}`, { defaultValue: t('backup.coverage.paths.flags.other') })}：${p.featureFlagValue === null ? t('backup.coverage.paths.flags.unset') : p.featureFlagValue ? t('backup.coverage.paths.flags.enabled') : t('backup.coverage.paths.flags.disabled')}`
+                    : t('backup.coverage.paths.flags.none')}
                 </td>
                 <td className="px-3 py-2 text-xs text-neutral-600 dark:text-neutral-400">
-                  {p.description ?? '—'}
+                  {t(pathLabelKeys[p.path] || 'backup.coverage.paths.genericDescription')}
                 </td>
               </tr>
             ))}

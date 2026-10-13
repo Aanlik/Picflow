@@ -27,6 +27,8 @@ def test_internal_bridge_actions_need_no_second_login_and_keep_csrf_checks(tmp_p
     raw_job.mkdir(parents=True)
     cfg.delivery_root.mkdir()
     db.dispose()
+
+
     with TestClient(create_app(cfg, remote, start_workers=False)) as client:
         assert client.get("/health").status_code == 200
         dashboard = client.get("/")
@@ -81,6 +83,29 @@ def test_internal_bridge_actions_need_no_second_login_and_keep_csrf_checks(tmp_p
             "event_id": "12",
             "raw_subdir": "2026/portrait",
         }, follow_redirects=False).status_code == 303
+
+
+def test_archived_stage_requires_explicit_restore_in_api_and_dashboard(tmp_path):
+    engine, remote, cfg, db = setup(tmp_path)
+    with TestClient(create_app(cfg, remote, start_workers=False)) as client:
+        assert client.post('/api/projects/7/stage', json={'stage': 'EDITING'}).status_code == 200
+        assert client.post('/api/projects/7/stage', json={'stage': 'ARCHIVED'}).status_code == 200
+
+        dashboard = client.get('/').text
+        assert '恢复项目同步' in dashboard
+        assert '<select name="stage">' not in dashboard
+        assert client.post('/api/projects/7/stage', json={'stage': 'SELECTING'}).status_code == 400
+        with engine.sessions() as session:
+            archived = session.scalar(select(Project).where(Project.event_id == 7))
+            assert archived.stage == 'ARCHIVED'
+            assert archived.previous_stage == 'EDITING'
+
+        assert client.post('/projects/7/restore', follow_redirects=False).status_code == 303
+        with engine.sessions() as session:
+            restored = session.scalar(select(Project).where(Project.event_id == 7))
+            assert restored.stage == 'EDITING'
+            assert restored.previous_stage is None
+    db.dispose()
 
 
 def test_project_summary_counts_only_active_existing_source_references(tmp_path):
@@ -379,6 +404,33 @@ def test_archive_delete_removes_only_project_delivery_and_keeps_raw_source(tmp_p
         with engine.sessions() as session:
             assert session.scalar(select(Project).where(Project.event_id == 7)) is None
             assert session.query(Photo).count() == 0
+    db.dispose()
+
+
+def test_archive_delete_cleans_project_folder_under_shared_delivery_root(tmp_path):
+    engine, remote, cfg, db = setup(tmp_path)
+    cfg.delivery_root = tmp_path / 'PixCakeDelivery'
+    cfg.delivery_root.mkdir()
+    cfg.projects_file = tmp_path / 'projects.json'
+    raw_root = cfg.projects[0].raw
+    raw_before = (raw_root / 'DSC00001.ARW').read_bytes()
+    project_root = cfg.delivery_root / '26-09-18'
+    project = cfg.projects[0]
+    project.selected = project_root / '03_SELECTED_RAW'
+    project.final = project_root / '04_FINAL'
+    project.history = project_root / '05_HISTORY'
+    for directory in (project.selected, project.final, project.history):
+        directory.mkdir(parents=True)
+    (project.selected / 'DSC00001.ARW').write_bytes(b'selected copy')
+    (project.final / 'DSC00001.JPG').write_bytes(b'final')
+    (project.history / 'V1').mkdir()
+    (project.history / 'V1' / 'DSC00001.JPG').write_bytes(b'old final')
+
+    with TestClient(create_app(cfg, remote, start_workers=False)) as client:
+        response = client.delete('/api/projects/7?delete_delivery=true')
+        assert response.status_code == 200
+        assert not project_root.exists()
+        assert (raw_root / 'DSC00001.ARW').read_bytes() == raw_before
     db.dispose()
 
 

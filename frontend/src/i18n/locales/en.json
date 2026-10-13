@@ -2328,7 +2328,25 @@
         "path": "Path",
         "coverage": "Coverage",
         "featureFlag": "Feature flag",
-        "description": "Description"
+        "description": "Description",
+        "genericDescription": "Backup directory",
+        "labels": {
+          "activeEvents": "Active project photos",
+          "archivedEvents": "Archived project photos",
+          "thumbnails": "Generated photo thumbnails",
+          "previews": "Lightbox preview images",
+          "heroes": "Project cover images",
+          "uploads": "Customer-uploaded files",
+          "businessDocs": "Project documents"
+        },
+        "flags": {
+          "backup_include_archived": "Include archived projects",
+          "other": "Related feature",
+          "enabled": "Enabled",
+          "disabled": "Disabled",
+          "unset": "Not set",
+          "none": "None"
+        }
       },
       "coverage": {
         "willScan": "Will scan",
@@ -2933,7 +2951,8 @@
     "removeColorLabel": "Remove {{color}} label",
     "setColorLabel": "Mark as {{color}}",
     "markedAs": "Marked as {{color}}",
-    "alsoMarkedBy": "Also marked by others: {{colors}}"
+    "alsoMarkedBy": "Also marked by others: {{colors}}",
+    "commentIdentityRequired": "Please register a customer name before submitting a comment."
   },
   "filter": {
     "feedbackFilters": "Feedback Filters",

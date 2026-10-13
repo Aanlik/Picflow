@@ -4,10 +4,10 @@ import { useTranslation } from 'react-i18next';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { feedbackService } from '../../services/feedback.service';
 import { toast } from 'react-toastify';
-import { format } from 'date-fns';
 import { Button, Input } from '../common';
 import type { PhotoFeedback } from '../../services/feedback.service';
 import { useGuestIdentityOptional } from '../../contexts/GuestIdentityContext';
+import { useLocalizedDate } from '../../hooks/useLocalizedDate';
 
 interface PhotoCommentsProps {
   photoId: string;
@@ -31,6 +31,7 @@ export const PhotoComments: React.FC<PhotoCommentsProps> = ({
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const guestIdentity = useGuestIdentityOptional();
+  const { format: formatDate } = useLocalizedDate();
   const isGuestMode = guestIdentity?.identityMode === 'guest';
   const [showCommentForm, setShowCommentForm] = useState(false);
   const [commentText, setCommentText] = useState('');
@@ -47,12 +48,24 @@ export const PhotoComments: React.FC<PhotoCommentsProps> = ({
   }, [commentText]);
 
   const submitCommentMutation = useMutation({
-    mutationFn: (data: any) =>
-      feedbackService.submitFeedback(gallerySlug, photoId, {
+    mutationFn: async (data: { comment_text: string; guest_name?: string }) => {
+      const payload: Parameters<typeof feedbackService.submitFeedback>[2] = {
         feedback_type: 'comment',
         comment_text: data.comment_text,
         guest_name: data.guest_name,
-      }),
+      };
+      try {
+        return await feedbackService.submitFeedback(gallerySlug, photoId, payload);
+      } catch (error: any) {
+        // The gallery settings can be stale while a preview is open, and an
+        // expired guest token can be rejected after the form was rendered.
+        // Turn that first API response into the same name prompt used by the
+        // grid, then retry once so the comment is not silently lost.
+        if (error.response?.data?.code !== 'GUEST_IDENTITY_REQUIRED' || !guestIdentity) throw error;
+        await guestIdentity.ensureIdentity(true);
+        return feedbackService.submitFeedback(gallerySlug, photoId, payload);
+      }
+    },
     onSuccess: () => {
       setCommentText('');
       setShowCommentForm(false);
@@ -67,6 +80,8 @@ export const PhotoComments: React.FC<PhotoCommentsProps> = ({
     onError: (error: any) => {
       if (error.response?.status === 429) {
         toast.error(t('feedback.rateLimited', 'Please wait before commenting again'));
+      } else if (error.response?.data?.code === 'GUEST_IDENTITY_REQUIRED') {
+        toast.error(t('feedback.identityRequired', '请先登记选片人姓名，再提交评论。'));
       } else if (error.response?.data?.errors) {
         setErrors(error.response.data.errors);
       } else {
@@ -218,7 +233,7 @@ export const PhotoComments: React.FC<PhotoCommentsProps> = ({
                     {comment.guest_name || t('feedback.anonymous', 'Anonymous')}
                   </span>
                   <span className="text-xs text-muted-theme">
-                    {format(new Date(comment.created_at), 'PP')}
+                    {formatDate(comment.created_at)}
                   </span>
                 </div>
                 <p className="text-sm text-muted-theme break-words">

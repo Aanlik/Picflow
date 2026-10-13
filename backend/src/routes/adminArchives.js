@@ -20,6 +20,19 @@ const { toIso } = require('../utils/dateNormalize');
 const { restoreWorkflowStage, persistDeleteDeliveryIntent, flushUnbindIntent } = require('../services/photographyWorkflowBridge');
 const router = express.Router();
 
+// `events.event_date` is a calendar date, not a moment in time. Normalize
+// database-driver Date objects to a UTC date-only string while preserving
+// date-only values verbatim for the locale-aware UI formatter.
+function archiveEventDate(value) {
+  if (value == null || value === '') return null;
+  if (typeof value === 'string') {
+    const dateOnly = /^\d{4}-\d{2}-\d{2}/.exec(value)?.[0];
+    if (dateOnly) return dateOnly;
+  }
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString().slice(0, 10);
+}
+
 /**
  * Which extracted files are media, for archives too old to carry a manifest.
  *
@@ -119,7 +132,7 @@ router.get('/', adminAuth, requirePermission('archives.view'), async (req, res) 
         id: archive.id,
         slug: archive.slug,
         eventName: archive.event_name,
-        eventDate: archive.event_date,
+        eventDate: archiveEventDate(archive.event_date),
         archivedAt: archive.archived_at ? new Date(archive.archived_at).toISOString() : null,
         expiresAt: archive.expires_at ? new Date(archive.expires_at).toISOString() : null,
         photoCount: archive.photo_count || 0,
@@ -191,7 +204,7 @@ router.get('/:id', adminAuth, requirePermission('archives.view'), requireEventOw
       id: archive.id,
       slug: archive.slug,
       eventName: archive.event_name,
-      eventDate: archive.event_date,
+      eventDate: archiveEventDate(archive.event_date),
       colorTheme: archive.color_theme,
       createdAt: archive.created_at,
       expiresAt: archive.expires_at,
