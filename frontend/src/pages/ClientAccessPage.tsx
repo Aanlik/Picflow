@@ -3,7 +3,7 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import { AlertCircle, Lock } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
-import { Card, CardContent, Input, Button, Loading, PoweredBy } from '../components/common';
+import { Card, CardContent, Input, Button, Loading } from '../components/common';
 import { useGalleryAuth } from '../contexts';
 import { useGalleryInfo } from '../hooks/useGallery';
 import { usePublicSettings } from '../hooks/usePublicSettings';
@@ -179,25 +179,6 @@ export const ClientAccessPage: React.FC = () => {
           </Card>
         </div>
 
-        {/* Footer */}
-        <div className="p-8 text-center">
-          <div className="flex items-center justify-center gap-4">
-            <Link
-              to="/impressum"
-              className="text-xs text-neutral-500 hover:text-neutral-700 transition-colors"
-            >
-              {t('legal.impressum')}
-            </Link>
-            <span className="text-xs text-neutral-400">|</span>
-            <Link
-              to="/datenschutz"
-              className="text-xs text-neutral-500 hover:text-neutral-700 transition-colors"
-            >
-              {t('legal.datenschutz')}
-            </Link>
-          </div>
-          <PoweredBy className="text-xs mt-2 text-neutral-500" />
-        </div>
       </div>
     </div>
   );

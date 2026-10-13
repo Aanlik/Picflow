@@ -82,8 +82,7 @@ router.get('/status', requirePermission('backup.view'), async (req, res) => {
 router.post('/validate', requireSuperAdmin(), [
   body('source').notEmpty().withMessage('Backup source is required'),
   body('manifestPath').notEmpty().withMessage('Manifest path is required'),
-  body('restoreType').isIn(['full', 'database', 'files', 'selective']).withMessage('Invalid restore type'),
-  body('selectedItems').optional().isArray(),
+  body('restoreType').isIn(['full', 'database', 'files']).withMessage('Invalid restore type'),
   body('s3Config').optional().isObject()
 ], async (req, res) => {
   const errors = validationResult(req);
@@ -109,7 +108,6 @@ router.post('/validate', requireSuperAdmin(), [
       source: req.body.source,
       manifestPath: req.body.manifestPath,
       restoreType: req.body.restoreType,
-      selectedItems: req.body.selectedItems,
       s3Config,
       dryRun: true,
       force: false
@@ -152,8 +150,7 @@ router.post('/validate', requireSuperAdmin(), [
 router.post('/start', requireSuperAdmin(), [
   body('source').notEmpty().withMessage('Backup source is required'),
   body('manifestPath').notEmpty().withMessage('Manifest path is required'),
-  body('restoreType').isIn(['full', 'database', 'files', 'selective']).withMessage('Invalid restore type'),
-  body('selectedItems').optional().isArray(),
+  body('restoreType').isIn(['full', 'database', 'files']).withMessage('Invalid restore type'),
   body('skipPreBackup').optional().isBoolean(),
   body('force').optional().isBoolean(),
   body('s3Config').optional().isObject()
@@ -213,7 +210,6 @@ router.post('/start', requireSuperAdmin(), [
       source: req.body.source,
       manifestPath: req.body.manifestPath,
       restoreType: req.body.restoreType,
-      selectedItems: req.body.selectedItems,
       skipPreBackup: req.body.skipPreBackup,
       force: req.body.force,
       s3Config,

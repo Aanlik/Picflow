@@ -56,7 +56,6 @@ vi.mock('framer-motion', () => {
 
 vi.mock('../../../common', () => ({
   AuthenticatedImage: ({ src, alt }: { src: string; alt?: string }) => <img src={src} alt={alt} />,
-  PoweredBy: () => null,
 }));
 
 vi.mock('../../PhotoLightbox', () => ({

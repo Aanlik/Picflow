@@ -536,18 +536,18 @@ async function processPhoto(photoId) {
         } catch (e) {
           logger.warn(`processPhoto: thumbnail generation failed for ${photoId}`, { error: e.message });
         }
-        try {
-          const sharp = require('sharp');
-          const metadata = await sharp(proc.path).metadata();
-          // Oriented, not raw — see orientedDimensions (#1185).
-          const dims = require('./imageProcessor').orientedDimensions(metadata);
-          if (dims.width && dims.height) {
-            updateData.width = dims.width;
-            updateData.height = dims.height;
-          }
-        } catch (e) {
-          logger.warn(`processPhoto: dimensions extraction failed for ${photoId}`, { error: e.message });
+        // Metadata parsing is also the minimum decode check for an uploaded
+        // image. If it fails, let the worker mark the row failed; otherwise a
+        // text file named .jpg would be published as a completed photo.
+        const sharp = require('sharp');
+        const metadata = await sharp(proc.path).metadata();
+        // Oriented, not raw — see orientedDimensions (#1185).
+        const dims = require('./imageProcessor').orientedDimensions(metadata);
+        if (!dims.width || !dims.height) {
+          throw new Error('Image metadata did not contain valid dimensions');
         }
+        updateData.width = dims.width;
+        updateData.height = dims.height;
       } finally {
         await proc.cleanup();
       }

@@ -4,8 +4,8 @@ const { adminAuth } = require('../middleware/auth');
 const { requirePermission } = require('../middleware/permissions');
 const logger = require('../utils/logger');
 const { checkLatestRelease } = require('../services/githubUpdateService');
-const appVersion = require('../../package.json').version || '1.0.0';
-const buildVersion = process.env.PICFLOW_BUILD_VERSION || process.env.PHOFLOW_BUILD_VERSION || process.env.PICPEAK_BUILD_VERSION || '1.0';
+const appVersion = require('../../package.json').version || '1.0.2';
+const buildVersion = process.env.PICFLOW_BUILD_VERSION || process.env.PHOFLOW_BUILD_VERSION || process.env.PICPEAK_BUILD_VERSION || '1.0.2';
 const buildRevision = process.env.PICFLOW_BUILD_REVISION || process.env.GITHUB_SHA || null;
 
 const router = express.Router();

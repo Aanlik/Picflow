@@ -152,7 +152,10 @@ async function deleteEventCascade(eventId, adminContext) {
   }
 
   await db.transaction(async (trx) => {
-    await require('../../services/photographyWorkflowBridge').persistUnbindIntent(eventId, trx);
+    // Deleting a Picflow project also removes its Bridge-generated delivery
+    // folders (selected RAW copies and retouched exports). Camera source files
+    // live in a separate read-only mount and are never touched by this API.
+    await require('../../services/photographyWorkflowBridge').persistDeleteDeliveryIntent(eventId, trx);
     // 1. Delete activity logs (audit trail) — and the per-admin bell
     // dismissals that point at them (migration 239). On PostgreSQL the FK
     // cascade removes them with the activity rows, so nothing is deleted
@@ -224,6 +227,16 @@ async function deleteEventCascade(eventId, adminContext) {
       }
     }
   });
+
+  // The intent is durable before the event row is deleted. Attempt cleanup
+  // immediately, while the reconciler retries it after a transient outage.
+  try {
+    await require('../../services/photographyWorkflowBridge').flushUnbindIntent(eventId);
+  } catch (bridgeError) {
+    logger.warn('Bridge delivery cleanup deferred after project delete', {
+      eventId, error: bridgeError.message,
+    });
+  }
 
   // Tier sweep, post-commit and best-effort for the same reason as the folder
   // removal above: an orphaned derivative is recoverable noise, a rolled-back

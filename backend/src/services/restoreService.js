@@ -259,7 +259,7 @@ const os = require('os');
  * - Comprehensive rollback capability
  * - Detailed logging of every action
  * - Dry-run mode for testing
- * - Multiple restore options (full, database-only, files-only, selective)
+ * - Multiple restore options (full, database-only, files-only)
  * - S3 support with resume capability
  * - Post-restore verification
  *
@@ -287,8 +287,7 @@ class RestoreService {
    * @param {Object} options - Restore options
    * @param {string} options.source - Backup source (file path or S3 URL)
    * @param {string} options.manifestPath - Path to backup manifest
-   * @param {string} options.restoreType - 'full', 'database', 'files', or 'selective'
-   * @param {Array} options.selectedItems - For selective restore, array of items to restore
+   * @param {string} options.restoreType - 'full', 'database', or 'files'
    * @param {boolean} options.dryRun - If true, performs validation only
    * @param {boolean} options.skipPreBackup - Skip automatic pre-restore backup (dangerous!)
    * @param {boolean} options.force - Force restore even with warnings (dangerous!)
@@ -453,10 +452,7 @@ class RestoreService {
         restoreResult = await this.performDatabaseRestore(localBackupPath, manifest, options);
         break;
       case 'files':
-        restoreResult = await this.performFilesRestore(localBackupPath, manifest, options);
-        break;
-      case 'selective':
-        restoreResult = await this.performSelectiveRestore(localBackupPath, manifest, options);
+        restoreResult = await this.performFilesRestore(localBackupPath, manifest);
         break;
       default:
         throw new Error(`Unknown restore type: ${options.restoreType}`);
@@ -586,7 +582,7 @@ class RestoreService {
           const sums = manifest.metadata.stored_path_sha256 || {};
           // Only where the backed-up bytes are actually there: after a partial
           // restore a different file may sit at the mapped path.
-          // A files-only or selective restore leaves the live rows: those are
+          // A files-only restore leaves the live rows: those are
           // moved only when the document they name is gone.
           const updated = await applyStoredPathMap(db, manifest.metadata.stored_path_map,
             (rel) => holdsBytes(path.join(root, ...rel.split('/')), sums[rel]),
@@ -765,13 +761,9 @@ class RestoreService {
       throw new Error('Restore type is required');
     }
 
-    const validTypes = ['full', 'database', 'files', 'selective'];
+    const validTypes = ['full', 'database', 'files'];
     if (!validTypes.includes(options.restoreType)) {
       throw new Error(`Invalid restore type. Must be one of: ${validTypes.join(', ')}`);
-    }
-
-    if (options.restoreType === 'selective' && (!options.selectedItems || options.selectedItems.length === 0)) {
-      throw new Error('Selected items are required for selective restore');
     }
 
     if (options.source.startsWith('s3://') && !options.s3Config) {
@@ -1091,9 +1083,7 @@ class RestoreService {
 
       // Download files if needed
       if (options.restoreType === 'full' || options.restoreType === 'files') {
-        const filesToDownload = options.restoreType === 'selective'
-          ? options.selectedItems
-          : manifest.files.manifest;
+        const filesToDownload = manifest.files.manifest;
 
         let downloaded = 0;
         for (const file of filesToDownload) {
@@ -1161,7 +1151,7 @@ class RestoreService {
       result.databaseRestored = dbResult.success;
 
       // Then restore files
-      const filesResult = await this.performFilesRestore(backupPath, manifest, options);
+      const filesResult = await this.performFilesRestore(backupPath, manifest);
       result.filesRestored = filesResult.filesRestored;
 
       return result;
@@ -1550,13 +1540,11 @@ END $$;`
   /**
    * Perform files-only restore
    */
-  async performFilesRestore(backupPath, manifest, options) {
+  async performFilesRestore(backupPath, manifest) {
     this.updateProgress('Restoring files...');
 
     const storagePath = process.env.STORAGE_PATH || path.join(__dirname, '../../../storage');
-    const filesToRestore = options.restoreType === 'selective'
-      ? options.selectedItems.filter(item => item.type === 'file')
-      : manifest.files.manifest;
+    const filesToRestore = manifest.files.manifest;
 
     let restoredCount = 0;
     const errors = [];
@@ -1687,38 +1675,6 @@ END $$;`
   }
 
   /**
-   * Perform selective restore
-   */
-  async performSelectiveRestore(backupPath, manifest, options) {
-    const result = {
-      itemsRestored: 0,
-      errors: []
-    };
-
-    // Separate selected items by type
-    const databaseItems = options.selectedItems.filter(item => item.type === 'database');
-    const fileItems = options.selectedItems.filter(item => item.type === 'file');
-
-    // Restore database items (tables)
-    if (databaseItems.length > 0) {
-      this.log('warn', 'Selective database restore not implemented yet');
-      result.errors.push('Selective database restore not implemented');
-    }
-
-    // Restore file items
-    if (fileItems.length > 0) {
-      const filesResult = await this.performFilesRestore(backupPath, manifest, {
-        ...options,
-        selectedItems: fileItems
-      });
-      result.itemsRestored += filesResult.filesRestored;
-      result.errors.push(...filesResult.errors);
-    }
-
-    return result;
-  }
-
-  /**
    * Perform post-restore verification
    */
   async performPostRestoreVerification(manifest, options) {
@@ -1770,11 +1726,9 @@ END $$;`
       // Verify files. The whole required set, not a prefix: the first 100
       // entries used to be sampled "for performance", so a crafted manifest
       // only had to order the bad entry after them to pass.
-      if (options.restoreType === 'full' || options.restoreType === 'files' || options.restoreType === 'selective') {
+      if (options.restoreType === 'full' || options.restoreType === 'files') {
         const storagePath = process.env.STORAGE_PATH || path.join(__dirname, '../../../storage');
-        const filesToVerify = options.restoreType === 'selective'
-          ? options.selectedItems.filter(item => item.type === 'file')
-          : manifest.files.manifest;
+        const filesToVerify = manifest.files.manifest;
 
         for (const file of filesToVerify) {
           const filePath = path.join(storagePath, file.path);

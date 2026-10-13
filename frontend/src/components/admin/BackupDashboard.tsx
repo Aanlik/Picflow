@@ -315,7 +315,9 @@ export const BackupDashboard: React.FC<BackupDashboardProps> = ({ status, config
         <StatCard
           icon={Clock}
           label={t('backup.dashboard.stats.lastDuration')}
-          value={lastBackup ? `${Math.round(lastBackup.duration_seconds / 60)}m` : 'N/A'}
+          value={lastBackup
+            ? `${Math.round(lastBackup.duration_seconds / 60)} ${t('backup.dashboard.minuteShort')}`
+            : t('backup.dashboard.noDuration')}
           color="purple"
           subtext={lastBackup ? formatTime(new Date(lastBackup.created_at)) : ''}
         />
@@ -325,7 +327,9 @@ export const BackupDashboard: React.FC<BackupDashboardProps> = ({ status, config
           label={t('backup.dashboard.stats.backupStatus')}
           value={isEnabled ? t('backup.dashboard.stats.active') : t('backup.dashboard.stats.inactive')}
           color={isEnabled ? 'green' : 'gray'}
-          subtext={config?.backup_destination_type || t('backup.dashboard.notConfigured.title')}
+          subtext={config?.backup_destination_type
+            ? t(`backup.configuration.destinationTypes.${config.backup_destination_type}.name`)
+            : t('backup.dashboard.notConfigured.title')}
         />
       </div>
 
@@ -346,7 +350,11 @@ export const BackupDashboard: React.FC<BackupDashboardProps> = ({ status, config
                   )}
                   <div>
                     <p className="font-medium text-neutral-900 dark:text-neutral-100">
-                      {t('backup.dashboard.backupType', { type: backup.backup_type })}
+                      {t('backup.dashboard.backupType', {
+                        type: t(`backup.dashboard.backupTypeNames.${String(backup.backup_type).toLowerCase()}`, {
+                          defaultValue: backup.backup_type,
+                        }),
+                      })}
                     </p>
                     <p className="text-sm text-neutral-500 dark:text-neutral-400">
                       {formatDateTime(new Date(backup.created_at))}
@@ -424,11 +432,11 @@ export const BackupDashboard: React.FC<BackupDashboardProps> = ({ status, config
                 </p>
                 <p className="text-sm text-neutral-500 dark:text-neutral-400">
                   {config?.backup_destination_type === 's3' && config?.backup_s3_bucket
-                    ? `Bucket: ${config.backup_s3_bucket}`
+                    ? t('backup.dashboard.destinationBucket', { value: config.backup_s3_bucket })
                     : config?.backup_destination_type === 'local' && config?.backup_destination_path
-                    ? `Path: ${config.backup_destination_path}`
+                    ? t('backup.dashboard.destinationPath', { value: config.backup_destination_path })
                     : config?.backup_destination_type === 'rsync' && config?.backup_rsync_host
-                    ? `Host: ${config.backup_rsync_host}`
+                    ? t('backup.dashboard.destinationHost', { value: config.backup_rsync_host })
                     : t('backup.dashboard.noDestinationSet')}
                 </p>
               </div>

@@ -6,7 +6,7 @@ import { api } from '../../config/api';
 import { Button, Card } from '../common';
 
 type UpdateCheck = {
-  status: 'no_release' | 'update_available' | 'up_to_date' | 'rate_limited';
+  status: 'no_release' | 'update_available' | 'up_to_date' | 'current_ahead' | 'rate_limited';
   currentVersion: string;
   latestVersion: string | null;
   repositoryUrl: string;
@@ -29,6 +29,8 @@ export const GitHubUpdateCard: React.FC = () => {
     ? t('settings.systemStatus.updateAvailable', '发现新版本')
     : result?.status === 'up_to_date'
       ? t('settings.systemStatus.upToDate', '当前已是最新版本')
+      : result?.status === 'current_ahead'
+        ? t('settings.systemStatus.currentAhead', '当前构建版本高于最新正式发布版本。')
       : result?.status === 'no_release'
         ? t('settings.systemStatus.noRelease', 'GitHub 仓库尚未发布版本')
         : result?.status === 'rate_limited'

@@ -8,7 +8,7 @@ const { db } = require('../database/db');
 const logger = require('../utils/logger');
 const { getStorage } = require('./storage');
 const { resolvePhotoStorageKey } = require('./photoResolver');
-const { getUseOriginalFilenames } = require('./downloadFilenameService');
+const { getUseOriginalFilenames, pickRawDownloadName } = require('./downloadFilenameService');
 const { createArchiveStreamGuard } = require('../utils/archiveStreamGuard');
 const { bridgeConfig, getProjectDetail, setWorkflowStage, restoreWorkflowStage } = require('./photographyWorkflowBridge');
 const {
@@ -33,6 +33,10 @@ function getArchivableDeliveredPhotoIds(photos = []) {
   return new Set(photos
     .filter((photo) => photo.delivered && !photo.selection_cancelled && !photo.withdraw_pending)
     .map((photo) => Number(photo.photo_id)));
+}
+
+function archivePhotoDisplayName(photo, useOriginal) {
+  return sanitizeForZipEntry(pickRawDownloadName(photo, useOriginal));
 }
 
 async function archiveEvent(event) {
@@ -138,7 +142,9 @@ async function archiveEvent(event) {
         if (!photoRow.original_filename) continue;
         try {
           const key = resolvePhotoStorageKey(event, photoRow);
-          if (key) originalsByKey.set(key, photoRow.original_filename);
+          if (key && (useOriginal || /\.__bridge_[a-f0-9]{64}(?=\.[^.]+$)/i.test(photoRow.original_filename))) {
+            originalsByKey.set(key, archivePhotoDisplayName(photoRow, useOriginal));
+          }
         } catch {
           // External-mode rows have no managed key; skip silently.
         }
@@ -299,4 +305,4 @@ async function archiveEvent(event) {
   }
 }
 
-module.exports = { archiveEvent, filterDeliveredPhotoEntries, getArchivableDeliveredPhotoIds };
+module.exports = { archiveEvent, filterDeliveredPhotoEntries, getArchivableDeliveredPhotoIds, archivePhotoDisplayName };

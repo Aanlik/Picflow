@@ -18,6 +18,7 @@ import {
   Loader2,
   Shield,
   Download,
+  Upload,
   Eye,
   Calendar,
   Clock,
@@ -64,13 +65,6 @@ export const RestoreWizard = () => {
       icon: Image,
       warning: t('backup.restore.restoreTypes.files.warning')
     },
-    {
-      id: 'selective',
-      name: t('backup.restore.restoreTypes.selective.name'),
-      description: t('backup.restore.restoreTypes.selective.description'),
-      icon: CheckCircle,
-      warning: t('backup.restore.restoreTypes.selective.warning')
-    }
   ];
   
   const [restoreData, setRestoreData] = useState({
@@ -78,7 +72,6 @@ export const RestoreWizard = () => {
     sourceConfig: {},
     selectedBackup: null,
     restoreType: 'full',
-    selectedItems: [],
     skipPreBackup: false,
     force: false,
     encryptionPassphrase: ''
@@ -115,7 +108,6 @@ export const RestoreWizard = () => {
         source: restoreData.source,
         manifestPath: restoreData.selectedBackup.manifest_path,
         restoreType: restoreData.restoreType,
-        selectedItems: restoreData.selectedItems,
         ...restoreData.sourceConfig
       });
       return response.data.data;
@@ -136,7 +128,6 @@ export const RestoreWizard = () => {
         source: restoreData.source,
         manifestPath: restoreData.selectedBackup.manifest_path,
         restoreType: restoreData.restoreType,
-        selectedItems: restoreData.selectedItems,
         skipPreBackup: restoreData.skipPreBackup,
         force: restoreData.force,
         encryptionPassphrase: restoreData.encryptionPassphrase,
@@ -172,7 +163,10 @@ export const RestoreWizard = () => {
   const canProceed = () => {
     switch (currentStep) {
       case 0:
-        return !!restoreData.source;
+        // Portable .picpeak files have their own restore card and endpoint.
+        // Sending that source through the scheduled-backup wizard cannot list
+        // or restore it, so stop the misleading path here.
+        return !!restoreData.source && restoreData.source !== 'upload';
       case 1:
         return !!restoreData.selectedBackup;
       case 2:
@@ -281,7 +275,14 @@ export const RestoreWizard = () => {
         </Card>
       )}
 
-      {restoreData.source === 'upload' && <PicpeakRestoreCard />}
+      {restoreData.source === 'upload' && (
+        <>
+          <p className="rounded-lg bg-blue-50 p-3 text-sm text-blue-900 dark:bg-blue-950/40 dark:text-blue-100">
+            {t('backup.restore.source.upload.directRestore')}
+          </p>
+          <PicpeakRestoreCard />
+        </>
+      )}
     </div>
   );
 
@@ -327,7 +328,7 @@ export const RestoreWizard = () => {
                       {fmtDate(backup.created_at)} {t('backup.restore.backup.at')} {fmtTime(backup.created_at)}
                     </p>
                     <p className="text-sm text-neutral-500 dark:text-neutral-400">
-                      {t('backup.dashboard.backupType', { type: backup.backup_type })} • {formatBytes(backup.total_size || 0)}
+                      {t('backup.dashboard.backupType', { type: t(`backup.dashboard.backupTypeNames.${String(backup.backup_type).toLowerCase()}`, { defaultValue: backup.backup_type }) })} • {formatBytes(backup.total_size || 0)}
                     </p>
                   </div>
                 </div>
@@ -891,7 +892,6 @@ export const RestoreWizard = () => {
                 sourceConfig: {},
                 selectedBackup: null,
                 restoreType: 'full',
-                selectedItems: [],
                 skipPreBackup: false,
                 force: false,
                 encryptionPassphrase: ''

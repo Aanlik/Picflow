@@ -1,4 +1,4 @@
-import { MobileDownloadQueue } from './MobileDownloadQueue';
+import { DownloadQueue } from './DownloadQueue';
 import { useGalleryFiltering, resolveMediaType } from './hooks/useGalleryFiltering';
 import { useGalleryUpload } from './hooks/useGalleryUpload';
 import { useGallerySelection } from './hooks/useGallerySelection';
@@ -394,8 +394,6 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ slug, event, requiresP
     if (settingsData) {
       setBrandingSettings({
         company_name: settingsData.branding_company_name || '',
-        company_tagline: settingsData.branding_company_tagline || '',
-        footer_text: settingsData.branding_footer_text || '',
         watermark_enabled: settingsData.branding_watermark_enabled || false,
         logo_url: settingsData.branding_logo_url || null,
         logo_url_dark: settingsData.branding_logo_url_dark || null,
@@ -891,7 +889,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ slug, event, requiresP
         )}
 
         {/* Download size picker (#858) — "download all", or a selection. */}
-        <MobileDownloadQueue />
+        <DownloadQueue />
         {(showResolutionPicker || resolutionPickerIds) && (
           <DownloadResolutionModal
             slug={slug}
@@ -985,11 +983,15 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ slug, event, requiresP
   // present, a search matching none of them would otherwise look "folder-only"
   // and swallow the no-results message the guest needs.
   const rootIsFoldersOnly = !openFolder && tiles.length > 0 && scopedPhotos.length === 0;
+  const identityMode: 'simple' | 'guest' =
+    feedbackSettings?.identity_mode === 'guest' ? 'guest' : 'simple';
 
   // For full-page layouts, render just the PhotoGridWithLayouts without any wrappers
   if (isFullPageLayout) {
     return (
+      <GuestIdentityProvider slug={slug} identityMode={identityMode}>
       <>
+        <GuestNamePromptModal />
         {/* #1160: these layouts return early and render edge-to-edge, but they
             still get `filteredPhotos`, so without this the foldered photos
             would be hidden with no way in. Contained width so the folder strip
@@ -1121,7 +1123,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ slug, event, requiresP
         {uploadProcessingNotice}
 
         {/* Download size picker (#858) — "download all", or a selection. */}
-        <MobileDownloadQueue />
+      <DownloadQueue />
         {(showResolutionPicker || resolutionPickerIds) && (
           <DownloadResolutionModal
             slug={slug}
@@ -1135,11 +1137,9 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ slug, event, requiresP
           />
         )}
       </>
+      </GuestIdentityProvider>
     );
   }
-
-  const identityMode: 'simple' | 'guest' =
-    feedbackSettings?.identity_mode === 'guest' ? 'guest' : 'simple';
 
   return (
     <GuestIdentityProvider slug={slug} identityMode={identityMode}>
@@ -1475,7 +1475,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ slug, event, requiresP
         {uploadProcessingNotice}
 
         {/* Download size picker (#858) — "download all", or a selection. */}
-        <MobileDownloadQueue />
+        <DownloadQueue />
         {(showResolutionPicker || resolutionPickerIds) && (
           <DownloadResolutionModal
             slug={slug}

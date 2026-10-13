@@ -23,7 +23,6 @@ vi.mock('../../../common', () => ({
     mounted.push(src);
     return <img data-testid="tile" src={src} alt={alt} />;
   },
-  PoweredBy: () => null,
 }));
 
 vi.mock('../../../../contexts/ThemeContext', () => ({

@@ -39,6 +39,8 @@ describe('Simplified Chinese locale', () => {
     expect(i18n.t('feedback.settings.keybindColorsDesc')).toContain('快捷键只修改颜色标记');
     expect(i18n.t('gallery.photosSelected', { count: 50 })).toBe('已选择 50 张照片');
     expect(i18n.t('gallery.batchSelect')).toBe('批量选择');
+    expect(i18n.t('gallery.deleteSelected')).toBe('删除已选照片');
+    expect(i18n.t('events.deleteSelected')).toBe('删除所选项目');
   });
 
   it('uses the configured default instead of an old automatic English cache', async () => {

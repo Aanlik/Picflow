@@ -1,4 +1,4 @@
-import { MOBILE_DOWNLOAD_EVENT } from '../utils/mobileDownloads';
+import { DOWNLOAD_QUEUE_EVENT } from '../utils/downloadQueue';
 import type { AxiosResponse } from 'axios';
 import { api } from '../config/api';
 import type {
@@ -380,17 +380,15 @@ export const galleryService = {
     window.setTimeout(() => window.URL.revokeObjectURL(url), 60_000);
   },
 
-  // Trigger one native browser download per selected photo. These are
-  // same-origin navigations so the gallery's HttpOnly access cookie and the
-  // server's Content-Disposition filename, access checks, and rendition
-  // handling remain in force. Creating anchors directly from the click
-  // handler also gives Chrome/Edge the best chance to recognize them as
-  // user-initiated multiple downloads.
+  // A browser may block or race multiple programmatic downloads started in a
+  // single click, sometimes saving the first response more than once. For a
+  // multi-file selection, present one explicit link per photo so the user can
+  // authorize each same-origin download reliably on desktop and mobile.
   async downloadSelectedPhotos(slug: string, photoIds: number[], resolution?: string): Promise<void> {
     const uniqueIds = [...new Set(photoIds)];
-    if (uniqueIds.length > 1 && (isIOS() || /Android|MicroMessenger/i.test(navigator.userAgent))) {
+    if (uniqueIds.length > 1) {
       const query = resolution ? `?resolution=${encodeURIComponent(resolution)}` : '';
-      window.dispatchEvent(new CustomEvent(MOBILE_DOWNLOAD_EVENT, { detail: uniqueIds.map(photoId => ({
+      window.dispatchEvent(new CustomEvent(DOWNLOAD_QUEUE_EVENT, { detail: uniqueIds.map(photoId => ({
         photoId, href: withAdminPreview(`/api/gallery/${slug}/download/${photoId}${query}`),
       })) }));
       return;

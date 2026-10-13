@@ -7,7 +7,7 @@ root=Path.cwd();(root/'outputs/verification').mkdir(parents=True,exist_ok=True);
 for i in range(100): Image.new('RGB',(64,48),(i,80,160)).save(shoot/f'DSC{i:05}.JPG')
 if not (f/'Camera/outside').is_symlink(): (f/'Camera/outside').symlink_to('/data')
 before={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in shoot.iterdir()}
-name='picflow-folder-test';image=os.environ.get('PICFLOW_IMAGE','picflow:1.0.1')
+name='picflow-folder-test';image=os.environ.get('PICFLOW_IMAGE','picflow:1.0.2')
 subprocess.run(['docker','run','--platform','linux/amd64','-d','--name',name,'-p','127.0.0.1:19309:3000','-e','NO_EMAIL_MODE=true','-e','EXTERNAL_MEDIA_ROOT=/external-media','-e','EXTERNAL_MEDIA_WATCH_POLLING=true','-e','EXTERNAL_MEDIA_WATCH_RECONCILE_INTERVAL_MS=1000','-e','EXTERNAL_MEDIA_WATCH_SWEEP_INTERVAL_MS=2000','-e','EXTERNAL_MEDIA_WATCH_POLL_INTERVAL_MS=1000','-v','pixcake-folder-test-data:/data','-v',str(f)+':/external-media:ro',image],check=True,stdout=subprocess.DEVNULL)
 p=httpx.Client(base_url='http://127.0.0.1:19309',timeout=90)
 for _ in range(60):

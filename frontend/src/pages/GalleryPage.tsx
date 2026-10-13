@@ -1,13 +1,12 @@
-import { PHOTO_WORKFLOW_MODE } from '../config/photography';
 import React, { useState } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams } from 'react-router-dom';
 import { AlertCircle, Check, Clock, Copy } from 'lucide-react';
 import { differenceInDays, parseISO } from 'date-fns';
 import { useTranslation } from 'react-i18next';
 import { useLocalizedDate } from '../hooks/useLocalizedDate';
 import { usePublicSettings } from '../hooks/usePublicSettings';
 
-import { Card, CardContent, Input, Button, PoweredBy } from '../components/common';
+import { Card, CardContent, Input, Button } from '../components/common';
 import { useGalleryAuth, useTheme } from '../contexts';
 import { useGalleryInfo } from '../hooks/useGallery';
 import { GalleryView } from '../components/gallery';
@@ -381,25 +380,6 @@ export const GalleryPage: React.FC = () => {
             </Card>
           </div>
 
-          {/* Legal Links */}
-          {!PHOTO_WORKFLOW_MODE && (<div className="p-8 text-center">
-            <div className="flex items-center justify-center gap-4">
-              <Link
-                to="/impressum"
-                className="text-xs text-neutral-500 hover:text-neutral-700 transition-colors"
-              >
-                {t('legal.impressum')}
-              </Link>
-              <span className="text-xs text-neutral-400">|</span>
-              <Link
-                to="/datenschutz"
-                className="text-xs text-neutral-500 hover:text-neutral-700 transition-colors"
-              >
-                {t('legal.datenschutz')}
-              </Link>
-            </div>
-            <PoweredBy className="text-xs mt-2 text-neutral-500" />
-          </div>)}
         </div>
       </div>
     );
@@ -621,25 +601,6 @@ export const GalleryPage: React.FC = () => {
             </CardContent>
           </Card>
 
-          {/* Legal Links */}
-          {!PHOTO_WORKFLOW_MODE && (<div className="text-center mt-4 sm:mt-6">
-            <div className="flex items-center justify-center gap-4">
-              <Link
-                to="/impressum"
-                className="text-xs text-neutral-500 hover:text-neutral-700 transition-colors"
-              >
-                {t('legal.impressum')}
-              </Link>
-              <span className="text-xs text-neutral-400">|</span>
-              <Link
-                to="/datenschutz"
-                className="text-xs text-neutral-500 hover:text-neutral-700 transition-colors"
-              >
-                {t('legal.datenschutz')}
-              </Link>
-            </div>
-            <PoweredBy className="text-xs mt-2 text-neutral-500" />
-          </div>)}
         </div>
       </div>
     </div>

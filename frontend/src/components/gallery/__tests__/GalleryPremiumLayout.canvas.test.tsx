@@ -19,7 +19,6 @@ vi.mock('../../../hooks/useInputMode', () => ({ useInputMode: () => 'mouse' }));
 vi.mock('react-intersection-observer', () => ({ useInView: () => ({ ref: vi.fn(), inView: true }) }));
 vi.mock('../../common', async () => ({
   ...await vi.importActual('../../common'),
-  PoweredBy: () => null,
 }));
 vi.mock('../PhotoFeedback', () => ({
   PhotoFeedback: () => <div data-testid="premium-feedback-actions">comments · ratings · reactions</div>,
@@ -106,6 +105,13 @@ async function readyCanvas(dialog: HTMLElement, id = 1) {
 }
 
 describe('Premium lightbox canvas rendering (#1325)', () => {
+  it('does not render a copyright or platform-branding footer', () => {
+    const { container } = mount();
+    expect(container.querySelector('.gallery-premium-footer')).toBeNull();
+    expect(container).not.toHaveTextContent('Powered by');
+    expect(container).not.toHaveTextContent('All rights reserved');
+  });
+
   it('opens the full feedback panel with color labels and comments in the large preview', async () => {
     mount({
       feedbackEnabled: true,

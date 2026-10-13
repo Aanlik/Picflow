@@ -79,12 +79,11 @@ describe('restoreService — required files are fatal', () => {
     expect(verification.errors).toEqual(['File not found after restore: verify/uploads/p100.jpg']);
   });
 
-  it('post-restore verification covers the selected files of a selective restore', async () => {
-    const verification = await restoreService.performPostRestoreVerification(
-      { files: { manifest: [] }, database: {} },
-      { restoreType: 'selective', selectedItems: [{ type: 'file', path: 'nope/missing.jpg' }] },
-    );
-    expect(verification.isValid).toBe(false);
-    expect(verification.errors).toEqual(['File not found after restore: nope/missing.jpg']);
+  it('rejects selective restore because partial database restore is not supported', () => {
+    expect(() => restoreService.validateRestoreOptions({
+      source: '/backups',
+      manifestPath: '/backups/manifest.json',
+      restoreType: 'selective',
+    })).toThrow('Invalid restore type. Must be one of: full, database, files');
   });
 });

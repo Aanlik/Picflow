@@ -23,6 +23,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { eventsService } from '../../services/events.service';
 import { useLocalizedDate } from '../../hooks/useLocalizedDate';
 import { categoriesService } from '../../services/categories.service';
+import { toLocalISODate } from '../../utils/localDate';
 import { settingsService } from '../../services/settings.service';
 import { usePublicSettings } from '../../hooks/usePublicSettings';
 import { cssTemplatesService } from '../../services/cssTemplates.service';
@@ -97,7 +98,7 @@ export const CreateEventPage: React.FC = () => {
 
   const [formData, setFormData] = useState<FormData>({
     event_name: '',
-    event_date: new Date().toISOString().split('T')[0], // Initialize with ISO date format
+    event_date: toLocalISODate(),
     event_time_start: '',
     event_time_end: '',
     is_full_day: true,

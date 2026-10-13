@@ -29,6 +29,7 @@ type RequestItem = {
   filename: string;
   original_filename?: string | null;
   source_filename?: string | null;
+  guest_name?: string | null;
   request_type: 'revision' | 'additional';
   base_version: number | null;
   target_version?: number | null;
@@ -258,7 +259,7 @@ export function PhotographyWorkflowCard({ eventId }: { eventId: number }) {
               <img src={thumbnail} alt={t('photographyWorkflow.requestPhotoAlt', { name: photoName })} className="h-14 w-14 shrink-0 rounded object-cover" loading="lazy" />
               <div className="min-w-0">
                 <div className="truncate text-sm font-medium" title={photoName}>{photoName}</div>
-                <div className="text-xs text-neutral-500">{t('photographyWorkflow.photoNumber', { id: request.photo_id })} · {t(`photographyWorkflow.requestType.${request.request_type}`)}{request.base_version ? ` V${request.base_version}` : ''}</div>
+                <div className="text-xs text-neutral-500">{request.guest_name ? `${request.guest_name} · ` : ''}{t('photographyWorkflow.photoNumber', { id: request.photo_id })} · {t(`photographyWorkflow.requestType.${request.request_type}`)}{request.base_version ? ` V${request.base_version}` : ''}</div>
                 {request.target_version && request.delivery_folder && <div className="mt-1 max-w-[32rem] truncate text-xs text-emerald-700 dark:text-emerald-300" title={request.delivery_folder}>{t('photographyWorkflow.exportToVersion', { version: request.target_version })}：{request.delivery_folder}</div>}
               </div>
             </div>

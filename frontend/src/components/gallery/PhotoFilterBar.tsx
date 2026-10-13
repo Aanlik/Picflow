@@ -104,7 +104,7 @@ export const PhotoFilterBar: React.FC<PhotoFilterBarProps> = ({
             leftIcon={onSortDescChange && sortDesc ? <SortDesc className="w-4 h-4" /> : <SortAsc className="w-4 h-4" />}
             onClick={() => setShowSortMenu(!showSortMenu)}
             aria-label={t('gallery.sortByCurrent', {
-              sort: sortBy === 'date' ? t('gallery.sortByDate') : sortBy === 'name' ? t('gallery.sortByName') : sortBy === 'size' ? t('gallery.sortBySize') : sortBy === 'capture_date' ? t('photoSort.dateTaken', '拍摄日期') : t('gallery.sortByRating', '评分'),
+              sort: t(`gallery.sortLabel${sortBy === 'capture_date' ? 'CaptureDate' : sortBy.charAt(0).toUpperCase() + sortBy.slice(1)}`),
               defaultValue: '按{{sort}}排序',
             })}
             className="w-full md:w-auto text-sm md:text-base"

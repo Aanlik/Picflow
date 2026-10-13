@@ -23,7 +23,7 @@ vi.mock('react-i18next', async () => {
     ...actual,
     useTranslation: () => ({
       t: (_key: string, fallback?: any) =>
-        typeof fallback === 'string' ? fallback : _key,
+        typeof fallback === 'string' ? fallback : _key === 'categories.defaults.ceremony' ? 'Ceremony' : _key,
       i18n: { language: 'en' }
     })
   };

@@ -14,7 +14,7 @@ const router = express.Router();
 const getStoragePath = () => process.env.STORAGE_PATH || path.join(__dirname, '../../../storage');
 const CMS_PAGE_COLUMNS = [
   'id', 'slug', 'title_en', 'title_zh', 'content_en', 'content_zh', 'logo_url',
-  'use_external_url', 'external_url', 'show_in_footer', 'updated_at',
+  'use_external_url', 'external_url', 'updated_at',
 ];
 
 // Multer config for per-page logo uploads. Stores into the same
@@ -82,7 +82,6 @@ router.put('/pages/:slug', adminAuth, requirePermission('cms.edit'), [
   body('logo_url').optional({ nullable: true }).isString(),
   body('use_external_url').optional().isBoolean(),
   body('external_url').optional({ nullable: true }).isString(),
-  body('show_in_footer').optional().isBoolean()
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -136,10 +135,6 @@ router.put('/pages/:slug', adminAuth, requirePermission('cms.edit'), [
       const trimmed = typeof external_url === 'string' ? external_url.trim() : '';
       updateFields.external_url = trimmed || null;
     }
-    if (Object.prototype.hasOwnProperty.call(req.body, 'show_in_footer')) {
-      updateFields.show_in_footer = !!req.body.show_in_footer;
-    }
-
     await db('cms_pages').where('slug', slug).update(updateFields);
 
     const updated = await db('cms_pages').select(CMS_PAGE_COLUMNS).where('slug', slug).first();

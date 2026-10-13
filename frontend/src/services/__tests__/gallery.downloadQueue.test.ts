@@ -1,15 +1,15 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
-import { MOBILE_DOWNLOAD_EVENT } from '../../utils/mobileDownloads';
+import { DOWNLOAD_QUEUE_EVENT } from '../../utils/downloadQueue';
 vi.mock('../../config/api', () => ({ api: { get: vi.fn(), getUri: vi.fn(({ url }) => `/api${url}`) } }));
 import { api } from '../../config/api';
 import { galleryService } from '../gallery.service';
 
-describe('mobile download safety', () => {
+describe('gallery download queue', () => {
   beforeEach(() => { vi.clearAllMocks(); window.history.replaceState({}, '', '/'); });
   afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
-  it.each(['iPhone Safari', 'Android Chrome', 'iPhone MicroMessenger', 'Android MicroMessenger'])('%s queues separate taps instead of silently blocked multi-downloads', async (userAgent) => {
+  it.each(['desktop Chrome', 'iPhone Safari', 'Android Chrome', 'iPhone MicroMessenger', 'Android MicroMessenger'])('%s gets one explicit link per selected photo', async (userAgent) => {
     vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue(userAgent);
-    const receive = vi.fn(); window.addEventListener(MOBILE_DOWNLOAD_EVENT, receive);
+    const receive = vi.fn(); window.addEventListener(DOWNLOAD_QUEUE_EVENT, receive);
     const direct = vi.spyOn(galleryService, 'triggerDirectDownload').mockImplementation(() => {});
     await galleryService.downloadSelectedPhotos('shoot', [1, 2, 1], 'web');
     expect(direct).not.toHaveBeenCalled();
@@ -17,7 +17,7 @@ describe('mobile download safety', () => {
       { photoId: 1, href: '/api/gallery/shoot/download/1?resolution=web' },
       { photoId: 2, href: '/api/gallery/shoot/download/2?resolution=web' },
     ]);
-    window.removeEventListener(MOBILE_DOWNLOAD_EVENT, receive);
+    window.removeEventListener(DOWNLOAD_QUEUE_EVENT, receive);
   });
   it.each([401, 403, 429, 500])('does not mask HTTP %s as a preview download', async (status) => {
     const error = { response: { status } };

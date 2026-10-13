@@ -1,11 +1,11 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { expect, it, vi } from 'vitest';
-import { MobileDownloadQueue } from '../MobileDownloadQueue';
-import { MOBILE_DOWNLOAD_EVENT } from '../../../utils/mobileDownloads';
+import { DownloadQueue } from '../DownloadQueue';
+import { DOWNLOAD_QUEUE_EVENT } from '../../../utils/downloadQueue';
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 it('shows separate native download links and never reports unverified save success', () => {
-  const { unmount } = render(<MobileDownloadQueue />);
-  act(() => window.dispatchEvent(new CustomEvent(MOBILE_DOWNLOAD_EVENT, { detail: [
+  const { unmount } = render(<DownloadQueue />);
+  act(() => window.dispatchEvent(new CustomEvent(DOWNLOAD_QUEUE_EVENT, { detail: [
     { photoId: 1, href: '/api/gallery/shoot/download/1' },
     { photoId: 2, href: '/api/gallery/shoot/download/2' },
   ] })));

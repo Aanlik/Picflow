@@ -1,4 +1,4 @@
-const { filterDeliveredPhotoEntries, getArchivableDeliveredPhotoIds } = require('../archiveService');
+const { filterDeliveredPhotoEntries, getArchivableDeliveredPhotoIds, archivePhotoDisplayName } = require('../archiveService');
 
 describe('Bridge project archive contents', () => {
   it('keeps only the managed photo rows marked as delivered', () => {
@@ -26,5 +26,15 @@ describe('Bridge project archive contents', () => {
       { photo_id: 3, delivered: true, withdraw_pending: true },
       { photo_id: 4, delivered: false, selection_cancelled: false },
     ])).toEqual(new Set([1]));
+  });
+
+  it('uses the camera filename for Bridge exports and strips the private marker', () => {
+    const photo = {
+      filename: 'generated-file.jpg',
+      original_filename: `2026-10-12_individual_DSC04270.__bridge_${'a'.repeat(64)}.jpg`,
+      source_filename: 'DSC04270.ARW',
+    };
+    expect(archivePhotoDisplayName(photo, true)).toBe('DSC04270.jpg');
+    expect(archivePhotoDisplayName(photo, false)).toBe('DSC04270.jpg');
   });
 });

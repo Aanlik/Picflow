@@ -284,10 +284,10 @@ export const EventDetailsPage: React.FC = () => {
 
   const publishMutation = useMutation({
     mutationFn: () => eventsService.publishEvent(parseInt(id!)),
-    onSuccess: (result) => {
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['admin-event', id] });
       queryClient.invalidateQueries({ queryKey: ['admin-events'] });
-      toast.success(result?.message || t('events.publishSuccess'));
+      toast.success(t('events.publishSuccess'));
       setShowPublishDialog(false);
     },
     onError: () => {

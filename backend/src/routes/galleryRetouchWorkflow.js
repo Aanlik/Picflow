@@ -57,7 +57,7 @@ router.get('/:slug/retouch-workflow', verifyGalleryAccess, resolveGuest, blockHi
       }));
     const requests = await db('photo_retouch_requests')
       .where({ event_id: req.event.id, guest_identifier: guestIdentifier })
-      .select('id', 'photo_id', 'request_type', 'base_version', 'customer_message', 'status', 'photographer_reply', 'created_at', 'updated_at')
+      .select('id', 'photo_id', 'request_type', 'base_version', 'customer_message', 'guest_name', 'status', 'photographer_reply', 'created_at', 'updated_at')
       .orderBy('created_at', 'desc');
     res.setHeader('Cache-Control', 'no-store');
     res.json({
@@ -314,13 +314,14 @@ router.post('/:slug/photos/:photoId/retouch-requests',
         photo_id: photoId,
         guest_id: req.guest?.id || null,
         guest_identifier: guestIdentifier,
+        guest_name: req.guest?.name || (typeof req.body?.guest_name === 'string' ? req.body.guest_name.trim().slice(0, 100) : null),
         request_type: requestType,
         base_version: baseVersion,
         customer_message: message,
         status,
         target_version: targetVersion,
         delivery_folder: deliveryFolder,
-      }).returning(['id', 'photo_id', 'request_type', 'base_version', 'customer_message', 'status', 'photographer_reply', 'created_at', 'updated_at']);
+      }).returning(['id', 'photo_id', 'request_type', 'base_version', 'customer_message', 'guest_name', 'status', 'photographer_reply', 'created_at', 'updated_at']);
       await triggerWorkflowSync(event.id);
       res.status(201).json({ request });
     } catch (error) {

@@ -151,14 +151,14 @@
   },
   "transfers": {
     "title": "文件传输",
-    "subtitle": "从任何项目发送原始文件作为下载链接.",
+    "subtitle": "为原始文件或成片创建可分享的下载链接。",
     "new": "新建文件传输",
     "create": "创建传输",
     "created": "创建的传输",
     "createFailed": "无法创建传输",
-    "empty": "还没有传输。 创建一个来共享文件。",
-    "untitled": "无标题的传输",
-    "linkCopied": "链接复制到剪贴板",
+    "empty": "还没有文件传输。创建一个链接即可分享文件。",
+    "untitled": "未命名的文件传输",
+    "linkCopied": "分享链接已复制",
     "copyFailed": "无法复制链接",
     "copyLink": "复制链接",
     "downloadAll": "全部下载",
@@ -168,7 +168,7 @@
     "reactivated": "链接重新激活",
     "disabled": "链接已禁用",
     "filesAdded": "已添加文件",
-    "deleted": "转移已删除",
+    "deleted": "文件传输已删除",
     "deleteConfirmTitle": "删除此文件传输？",
     "deleteConfirmBody": "这将删除链接和任何客户端的上传。 源项目照片不会受到影响。",
     "addImages": "添加图像",
@@ -177,8 +177,8 @@
     "enableUploads": "启用上传链接",
     "uploadEnabled": "上传链接已启用",
     "noUploads": "客户端尚未上传文件。",
-    "uploadHint": "启用后，客户可使用 6 位代码向您发送文件，例如品牌标志。",
-    "createAndSend": "创建发送",
+    "uploadHint": "启用后，客户可通过六位验证码向你发送补充文件，例如品牌标志。",
+    "createAndSend": "创建传输",
     "uploadedFiles": "上传的文件",
     "addFiles": "添加文件",
     "noUploadedFiles": "没有上传文件。 从您的计算机中添加文件以包含在下载中。",
@@ -200,21 +200,21 @@
     },
     "field": {
       "title": "标题",
-      "titlePlaceholder": "例如史密斯队的婚礼决赛",
-      "message": "信件( 可选)",
-      "messagePlaceholder": "在下载页面上向收件人显示",
-      "expiresInDays": "链接活动时间( 天)",
-      "maxDownloads": "最大下载量( 0 = 无限)",
-      "allowUploads": "同时给客户端上传链接( 发送标志等)。",
+      "titlePlaceholder": "例如：婚礼精修成片",
+      "message": "留言（可选）",
+      "messagePlaceholder": "此留言会显示在文件下载页面。",
+      "expiresInDays": "链接有效期（天）",
+      "maxDownloads": "最大下载次数（0 表示不限）",
+      "allowUploads": "允许客户通过链接上传文件（例如补充素材）。",
       "files": "文件",
-      "noFiles": "未选择图像。",
+      "noFiles": "尚未选择文件。",
       "uploadFiles": "上传自己的文件",
       "chooseFiles": "选择文件",
-      "noUploadFiles": "可选地添加您计算机中的文件以发送。",
+      "noUploadFiles": "可选择添加电脑中的文件供客户下载。",
       "delivery": "交付",
-      "recipientsPlaceholder": "anna@example.com, ben@example.com 互联网档案馆的存檔，存档日期2014-12-21.",
+      "recipientsPlaceholder": "多个接收地址请用逗号分隔。",
       "recipientsCount": "{{count}} 位收件人，每位都会收到下载链接",
-      "recipientsHint": "用逗号分隔多个地址，每个收件人都会得到下载链接.",
+      "recipientsHint": "用逗号分隔多个接收地址。",
       "recipientsCount_one": "{{count}} 位收件人，每位都会收到下载链接",
       "recipientsCount_other": "{{count}} 位收件人，每位都会收到下载链接"
     },
@@ -280,7 +280,6 @@
       "actions": "操作"
     },
     "noArchivesFound": "未找到档案",
-    "eventDateNA": "拍摄日期：未知",
     "processing": "正在处理...",
     "download": "下载",
     "restore": "恢复",
@@ -293,7 +292,11 @@
     "confirmDelete": "确定永久删除此归档吗？此操作不可撤销。",
     "restoreSuccess": "归档已成功恢复",
     "deleteSuccess": "归档已永久删除",
-    "deleteSuccessCleanupPending": "归档已删除，NAS 交付文件清理任务已排队，稍后会自动重试。"
+    "deleteSuccessCleanupPending": "归档已删除，NAS 交付文件清理任务已排队，稍后会自动重试。",
+    "eventDate": "拍摄日期：{{date}}",
+    "dateUnknown": "未知",
+    "downloadStarting": "正在下载“{{name}}”的归档文件…",
+    "downloadSuccess": "归档文件下载已开始。"
   },
   "auth": {
     "password": "密码",
@@ -402,7 +405,7 @@
     "sortBy": "排序方式",
     "sortByCaptureDate": "按拍摄时间排序",
     "sortByRating": "按评分排序",
-    "sortByCurrent": "按{{sort}}排序",
+    "sortByCurrent": "排序方式：{{sort}}",
     "photoGallery": "照片相册",
     "photos": "照片",
     "allRightsReserved": "保留所有权利",
@@ -469,7 +472,12 @@
     "videoFormatUnsupported": "当前浏览器不支持该视频格式，请下载后观看",
     "videoLoadFailed": "视频加载失败",
     "batchSelect": "批量选择",
-    "selectPhoto": "选择 {{filename}}"
+    "selectPhoto": "选择 {{filename}}",
+    "sortLabelDate": "日期",
+    "sortLabelName": "名称",
+    "sortLabelSize": "文件大小",
+    "sortLabelCaptureDate": "拍摄时间",
+    "sortLabelRating": "评分"
   },
   "categories": {
     "title": "照片分类",
@@ -736,7 +744,7 @@
     "expired": "已过期",
     "draft": "草稿",
     "publishAndNotify": "发布并通知客户",
-    "publishSuccess": "相册已发布，客户已收到通知。",
+    "publishSuccess": "项目已发布，客户分享链接已就绪。",
     "publishDialog": {
       "title": "发布相册",
       "justPublish": "发布",
@@ -765,7 +773,7 @@
     "failedToLoadEvents": "项目加载失败",
     "tryAgain": "重试",
     "bulkArchivePartial": "已归档 {{success}} 个项目，{{failed}} 个失败",
-    "deleteSelected": "删除已选照片",
+    "deleteSelected": "删除所选项目",
     "bulkDelete": {
       "warning": "这将永久删除选中的项目、 全部照片、 档案和审计日志。 此动作无法撤销。",
       "confirmLabel": "请输入 {{literal}} 确认",
@@ -1093,14 +1101,14 @@
       "rateLimitSkipAuthenticatedHelp": "管理员会话以及已登录客户对其相册图片的请求（缩略图、预览图和照片）不受此限制。",
       "rateLimitPublicOnly": "仅限制公开接口",
       "rateLimitPublicOnlyHelp": "开启后，仅对 /api/public 和 /api/gallery 下的请求计数。",
-      "rateLimitNatNote": "限制按客户端 IP 计算；同一办公室、家庭或场地 Wi-Fi 可能共用额度。反向代理部署须正确配置 TRUST_PROXY，否则所有访客可能共用代理 IP 的额度。被拒绝的请求会在日志中记录为“Rate limit exceeded”。",
+      "rateLimitNatNote": "请求频率按客户端 IP 统计。同一办公室、家庭或场地 Wi-Fi 可能共用额度。通过反向代理部署时，请正确配置 TRUST_PROXY，否则所有访客可能共用代理服务器的 IP。被限流的请求会记为“请求频率超限”。",
       "rateLimitInvalid": "速率限制值超出范围:窗口 1–60 分钟，请求 10–1000, 失败的登录 1- 100。 没有保存。",
       "galleryPasswordsTitle": "相册访问密码",
       "galleryPasswordRecoverable": "保存可读取的相册密码副本",
       "galleryPasswordRecoverableHelp": "允许管理员查看或重设客户页面密码。请设置强密码，并通过你选择的方式告知客户。",
       "galleryPasswordRecoverableWarningTitle": "这削弱了对相册的保护",
       "galleryPasswordRecoverableWarning": "副本使用服务器密钥加密，但同时能访问数据库和服务器配置的人，或有后台权限的管理员，可以读取已保存的密码。每次读取均记入操作日志，请仅在需要时开启。",
-      "galleryPasswordRecoverableOffNote": "关闭它会删除所有存储的复制件。 只有打开时设置的密码才会被保存。"
+      "galleryPasswordRecoverableOffNote": "关闭后会删除已保存的密码副本。只有开启此功能后设置的密码才会保存。"
     },
     "categories": {
       "title": "分类",
@@ -1142,7 +1150,8 @@
       "rateLimited": "GitHub 公共接口请求次数已达上限，请稍后再试。",
       "checkFailed": "连接 GitHub 失败，请稍后重试。",
       "viewRelease": "查看版本发布页",
-      "viewRepository": "打开 GitHub 仓库"
+      "viewRepository": "打开 GitHub 仓库",
+      "currentAhead": "当前构建版本高于最新正式发布版本。"
     },
     "photoDimensions": {
       "title": "图片尺寸",
@@ -1158,18 +1167,18 @@
     "events": {
       "title": "项目创建",
       "requiredFields": "必填信息",
-      "requiredFieldsDescription": "配置创建新项目时需要的联系字段。",
+      "requiredFieldsDescription": "设置创建新项目时需要填写的联系信息。",
       "requireCustomerName": "必须填写客户姓名",
-      "requireCustomerNameHelp": "新项目必须提供客户姓名",
+      "requireCustomerNameHelp": "创建项目时必须填写客户姓名。",
       "requireEventDate": "必须填写拍摄日期",
       "requireEventDateHelp": "创建项目时必须填写拍摄日期。",
-      "eventDateWarning": "未填写拍摄日期时，相册链接将使用随机标识。",
-      "requireExpiration": "要求到期日期",
-      "requireExpirationHelp": "相册必须设置到期时间。",
-      "expirationWarning": "不设到期时间的相册将持续开放，直到您手动归档。",
+      "eventDateWarning": "未填写拍摄日期时，项目链接会使用随机标识。",
+      "requireExpiration": "要求设置到期时间",
+      "requireExpirationHelp": "创建项目时必须设置到期时间。",
+      "expirationWarning": "未设置到期时间的项目会持续开放，直到手动归档。",
       "saveSettings": "保存项目设置",
       "noteTitle": "说明",
-      "noteText": "这些设置只影响新项目创建。 现有项目不受影响。 默认行为需要所有字段。",
+      "noteText": "这些设置只影响新建项目，不会更改已有项目。",
       "defaultRequirePassword": "默认需要密码",
       "defaultRequirePasswordHelp": "新建项目时默认勾选“启用访问密码”；关闭后可直接创建凭链接访问的相册。",
       "showGalleryFilterBar": "显示相册搜索和排序栏",
@@ -1178,7 +1187,7 @@
       "enablePhoneFieldHelp": "为项目添加可选联系电话，供后续沟通或自动化流程使用。启用后仍可留空。",
       "defaultFeedbackEnabled": "默认启用客户反馈",
       "defaultFeedbackEnabledHelp": "新建项目时默认开启客户反馈；点赞、评分和评论等选项仍可分别调整。",
-      "feedbackTypeDefaultsHelp": "哪些反馈类型从新相册开始。 现有的相册没有受到影响 — 每个相册仍然可以单独改变。",
+      "feedbackTypeDefaultsHelp": "这些选项决定新项目默认启用哪些客户反馈功能；已有项目不受影响，可单独调整。",
       "defaultAllowRatings": "星级评分",
       "defaultAllowLikes": "点赞",
       "defaultAllowFavorites": "收藏",
@@ -1212,8 +1221,8 @@
       "blockSuspiciousIps": "自动屏蔽可疑的 IP",
       "logEvents": "将安全日志保存到数据库",
       "infoTitle": "关于图像保护",
-      "infoText": "这些保护功能有助于防止随意下载和复制，但不能屏蔽所有方法。决定性的用户仍然可以找到捕捉图像的方法。考虑使用水印和法律协议进行全面保护。",
-      "imageQualityHelp": "1-100,较高=质量提高",
+      "infoText": "这些保护功能可以减少随意下载、复制和截图，但无法完全阻止有意绕过限制的用户。需要更强保护时，可结合水印和书面协议。",
+      "imageQualityHelp": "范围为 1–100；数值越高，画质越好，文件也越大。",
       "suspiciousActivityThresholdHelp": "达到此违规次数后，标记为可疑活动。",
       "autoBlockThresholdHelp": "达到此违规次数后，自动封禁 IP。"
     },
@@ -1235,11 +1244,11 @@
       "fitHelp": "设置如何调整图片以适配缩略图尺寸；“裁剪铺满”填满区域，“完整显示”保留整张图片。",
       "regenerateTitle": "重新生成缩略图",
       "regenerateHelp": "更改缩略图设置后，可重新生成已有缩略图以应用新配置。此操作会在后台运行；照片较多时可能需要一些时间。",
-      "regenerateButton": "重生成全部缩略图",
+      "regenerateButton": "重新生成全部缩略图",
       "regenerateStarted": "已开始重新生成缩略图",
-      "regenerateError": "启动缩略图再生失败",
-      "regenerateRunning": "正在重新生成缩略图，请完成后再试。",
-      "readOnly": "只有能够编辑设置的管理员才能更改这些值或重新生成整个库.",
+      "regenerateError": "无法启动缩略图重新生成任务",
+      "regenerateRunning": "缩略图正在后台重新生成，请稍后再试。",
+      "readOnly": "只有具有设置编辑权限的管理员才能修改这些选项或重新生成缩略图。",
       "lightboxTitle": "图片查看器预览图",
       "lightboxHelp": "图片查看器使用约 1920 像素的 JPEG 预览图，通常为 200–500 KB；原文件通常为 5–12 MB。点击下载仍可获得原文件。预览图每张约占用一个额外文件，保存在 /previews。",
       "lightboxToggle": "提前生成预览图",
@@ -1247,17 +1256,18 @@
       "regeneratePreviewsButton": "重新生成所有预览",
       "previewsRegenerateStarted": "已开始重新生成预览图",
       "previewsRegenerateError": "启动预览再生失败",
-      "saveSuccess": "已保存的缩略图设置",
+      "saveSuccess": "缩略图设置已保存",
       "saveError": "保存缩略图设置失败",
       "loadError": "加载缩略图设置失败",
       "infoTitle": "关于缩略图",
-      "infoText": "缩略图是由原图生成的较小预览图。提高缩略图尺寸或质量可改善照片在网格中的显示效果，但会占用更多存储空间和带宽。更改设置后，请重新生成缩略图以更新已有照片。",
+      "infoText": "缩略图是由原图生成的小尺寸预览图。提高尺寸或质量可让照片在网格中显示得更清晰，但会增加存储占用和加载时间。更改设置后，请重新生成缩略图以更新已有照片。",
       "fit_cover": "裁剪铺满（保留比例）",
       "fit_contain": "完整显示（保留比例）",
       "fit_fill": "拉伸填满（不保留比例）",
       "fit_inside": "缩小适配（保留比例）",
       "fit_outside": "放大覆盖（保留比例）",
-      "fitRecommendation": "瀑布流、拼贴和等高布局建议使用“缩小适配”保留照片比例；正方形网格可使用“裁剪铺满”。"
+      "fitRecommendation": "瀑布流、拼贴和等高布局建议使用“缩小适配”保留照片比例；正方形网格可使用“裁剪铺满”。",
+      "regeneratePreviewsError": "无法启动预览图重新生成任务"
     },
     "seo": {
       "title": "搜索引擎设置",
@@ -1268,20 +1278,20 @@
       "sitemapUrlHelp": "可选，填写后添加至 robots.txt。",
       "aiBlockingTitle": "AI 爬虫限制",
       "blockAiCrawlers": "屏蔽 AI/LLM 爬行器",
-      "blockAiCrawlersHelp": "阻止 AI 爬虫访问您的内容，降低内容被用于模型训练的风险。",
-      "blockedAgents": "已限制的 AI 爬虫",
-      "addAgentPlaceholder": "输入代理名称...",
-      "blockSocialBots": "屏蔽社交平台链接预览爬虫",
-      "blockSocialBotsHelp": "阻止 Twitter、Facebook、LinkedIn 等平台抓取页面并生成链接预览。",
+      "blockAiCrawlersHelp": "阻止 AI 爬虫抓取页面，降低内容被用于模型训练的可能性。",
+      "blockedAgents": "已屏蔽的爬虫",
+      "addAgentPlaceholder": "输入爬虫标识…",
+      "blockSocialBots": "禁止社交平台生成链接预览",
+      "blockSocialBotsHelp": "阻止 Twitter、Facebook、LinkedIn 等平台抓取页面内容并生成链接预览。",
       "metaTagsTitle": "元标记自定义规则",
       "metaNoindex": "添加无索引元标记",
       "metaNoindexHelp": "通过 HTML 元标记和 robots.txt 提示搜索引擎不要收录此页面。",
       "metaNofollow": "添加不跟随元标记",
       "metaNofollowHelp": "提示搜索引擎不要跟踪此页面中的链接。",
-      "metaNoai": "添加 noai/ noimageai 元标记",
-      "metaNoaiHelp": "声明页面内容不用于 AI 训练或图像训练。",
+      "metaNoai": "添加 noai / noimageai 元标记",
+      "metaNoaiHelp": "声明页面内容不应被用于 AI 或图像模型训练。",
       "customRules": "自定义 robots.txt 规则",
-      "ruleAgentPlaceholder": "用户代理",
+      "ruleAgentPlaceholder": "爬虫名称",
       "rulePathPlaceholder": "禁止访问的路径",
       "showPreview": "显示 robots.txt 预览",
       "hidePreview": "隐藏 robots.txt 预览",
@@ -1416,6 +1426,7 @@
     "companyTagline": "品牌标语",
     "companyTaglineHelp": "简短介绍您的摄影品牌。",
     "footerText": "页脚文本",
+    "footerPlaceholder": "© {{year}} 版权所有",
     "logo": "品牌标志",
     "uploadLogo": "上传标志",
     "logoHelp": "建议大小: 200x60px, PNG 或 JPEG",
@@ -2244,35 +2255,39 @@
         "stories": "客户案例",
         "contact": "联系我们"
       }
+    },
+    "systemPageTitles": {
+      "gallery-not-found": "相册未找到页面",
+      "not-found": "页面未找到页面"
     }
   },
   "backup": {
     "picpeak": {
       "restoreIntro": "上传此实例或其他实例导出的 .picpeak 文件。支持将 SQLite 备份恢复到 PostgreSQL（用于升级）；其他数据库类型必须与当前实例一致。",
-      "crossEngineNote": "跨引擎恢复: SQLite 备份被转换到 PostgreSQL 实例上。",
+      "crossEngineNote": "跨数据库类型恢复：已将 SQLite 备份转换为 PostgreSQL 数据库。",
       "downloadFailed": "无法创建备份文件。",
       "title": "便携式备份(.picpeak)",
       "intro": "下载单个便携备份文件，可通过浏览器在其他实例中恢复。",
       "includePhotos": "包含原相册照片( 较大文件)",
       "download": "下载 .picpeak 备份",
-      "externalPathsFailed": "备份已恢复，但外部照片路径无法转换——这些原始文件在经过重试之前不会加载.",
-      "restoreDone": "备份恢复。",
+      "externalPathsFailed": "备份已恢复，但外部照片路径转换失败；原因排除后请重新尝试恢复。",
+      "restoreDone": "备份恢复完成。",
       "reloginRequired": "恢复完成，请重新登录。",
       "restoreFailed": "恢复失败。",
       "restoreTitle": "从 .picpeak 备份恢复",
       "chooseFile": "选择 .picpeak 文件…",
-      "restoreSummary": "已恢复 {{tables}} 张数据库表和 {{files}} 个文件。",
-      "externalPathsFailedDetail": "外部图片路径没有转换，因此每个引用的原始文本目前无法访问。 一旦原因解决，重新运行恢复或待处理的迁移。",
-      "externalMediaNote": "此备份引用一个外部媒体库。 请确定在此实例上配置了外部媒体路由。",
+      "restoreSummary": "已恢复 {{tables}} 张数据表和 {{files}} 个文件。",
+      "externalPathsFailedDetail": "外部照片路径无法转换，当前无法读取引用的原片。排除原因后，请重新执行恢复或运行待处理的迁移。",
+      "externalMediaNote": "此备份引用了外部媒体文件夹。请确认当前实例已正确配置外部媒体挂载。",
       "externalMediaLink": "设置指南",
-      "reload": "重新加载应用程序",
-      "confirmTitle": "恢复将删除所有当前数据",
-      "confirmBody": "此选项将永久替换此实例上的所有数据为上传的备份，但您的当前账户除外。 这不能被撤销。",
+      "reload": "重新加载",
+      "confirmTitle": "恢复将替换当前数据",
+      "confirmBody": "这会用所选备份永久替换当前实例中的全部数据，当前登录账号除外。此操作无法撤销。",
       "confirmRestore": "确认恢复并替换当前数据",
-      "secretsWarning": "备份文件可能包含明文敏感信息，例如旧版设置、账号凭据和 API 密钥。请妥善保管，并仅通过可信渠道传输。"
+      "secretsWarning": "备份文件可能含有未加密的敏感信息，例如账号凭据和 API 密钥。请妥善保管，仅通过可信渠道传输。"
     },
     "title": "备份管理",
-    "subtitle": "管理系统备份，配置自动备份，并从之前的备份中恢复.",
+    "subtitle": "管理系统备份、配置自动备份，并从已有备份中恢复。",
     "tabs": {
       "dashboard": "概览",
       "configuration": "配置",
@@ -2282,50 +2297,50 @@
       "coverage": "覆盖范围"
     },
     "coverage": {
-      "title": "备份覆盖",
-      "description": "显示下一个备份包含什么，跳过，或默默丢失。 数据库块确认倾置策略。 “ 拖动” 区域标记磁盘上存在的、 但不在备份配置中的子目录 —— 通常是一个没有匹配的备份_ paths 行运出的新特性的标志。",
+      "title": "备份覆盖范围",
+      "description": "查看下一次备份将包含、跳过或遗漏的内容。数据库区域显示数据库备份策略；“未纳入配置的目录”区域会列出磁盘上存在、但未加入备份路径配置的目录，帮助发现新增功能尚未纳入备份的情况。",
       "refresh": "刷新",
       "error": "无法加载覆盖报告：{{message}}",
-      "generatedAt": "覆盖率报告生成时间：{{when}}",
-      "fallbackInUse": "缺少 backup_paths 数据表。系统正在使用旧版内置回退逻辑。迁移 108 可能尚未执行；请检查服务器日志并重新运行数据库迁移。",
+      "generatedAt": "报告生成时间：{{when}}",
+      "fallbackInUse": "未找到 backup_paths 数据表，当前使用旧版内置路径配置。迁移 108 可能尚未执行；请检查服务器日志并重新运行数据库迁移。",
       "database": {
         "title": "数据库",
-        "mode": "模式",
-        "modeInline": "每个备份都内置垃圾堆",
-        "modeScheduled": "仅排行( 内置选中退出)",
-        "lastDump": "最后一个垃圾堆",
+        "mode": "备份方式",
+        "modeInline": "每次备份都包含数据库转储",
+        "modeScheduled": "仅定时备份包含数据库（实时备份已关闭）",
+        "lastDump": "最近一次数据库转储",
         "lastDumpSize": "大小",
-        "noDump": "尚未在文件中丢弃",
+        "noDump": "尚无数据库转储文件",
         "staleLabel": "状态",
-        "stale": "Stale——26岁以上"
+        "stale": "已过期（超过 26 小时）"
       },
       "summary": {
-        "title": "内容提要",
-        "willScan": "将扫描",
-        "skippedByToggle": "跳过( 切除)",
-        "skippedByFlag": "跳过( 地标)",
-        "skippedBySetting": "跳过( 备份设置)",
-        "missingOnDisk": "磁盘上丢失",
-        "drift": "磁盘上的未配置( 驱动)"
+        "title": "内容概览",
+        "willScan": "将纳入备份",
+        "skippedByToggle": "已关闭",
+        "skippedByFlag": "功能未启用",
+        "skippedBySetting": "备份设置已排除",
+        "missingOnDisk": "磁盘上不存在",
+        "drift": "未纳入配置的目录"
       },
       "paths": {
         "heading": "已配置路径",
         "path": "路径",
-        "coverage": "覆盖范围",
-        "featureFlag": "特征旗",
+        "coverage": "覆盖状态",
+        "featureFlag": "功能开关",
         "description": "说明"
       },
       "coverage": {
-        "willScan": "将扫描",
-        "skippedByToggle": "关闭",
-        "skippedByFlag": "关机",
-        "skippedBySetting": "关闭( 备份设置)",
-        "missingOnDisk": "磁盘上丢失"
+        "willScan": "将纳入备份",
+        "skippedByToggle": "已关闭",
+        "skippedByFlag": "功能未启用",
+        "skippedBySetting": "备份设置已排除",
+        "missingOnDisk": "磁盘上不存在"
       },
       "drift": {
-        "heading": "检测到漂流: 任何备份路径行未覆盖的子目录@ info: whatsthis",
-        "caption": "这些目录存在于磁盘上，但行读者会跳过它们。 要么添加备份_ paths 行，将文件移动到覆盖位置，要么—— 如果它们是运行时缓存，则确认它们可以安全排除。",
-        "none": "没有检测到漂移——STORAGE_PATH下的每一个顶级子目录要么在备份_路径中，要么在预期的非备份允许列表中."
+        "heading": "发现未纳入配置的目录",
+        "caption": "这些目录存在于磁盘上，但目前的备份路径配置不会扫描它们。你可以将其加入备份路径、移动到已纳入备份的位置，或在确认属于运行时缓存后将其排除。",
+        "none": "未发现遗漏目录。STORAGE_PATH 下的顶层目录都已纳入备份，或属于预期排除项。"
       }
     },
     "status": {
@@ -2405,6 +2420,19 @@
         "completed": "已完成",
         "failed": "失败",
         "running": "运行"
+      },
+      "noDuration": "暂无记录",
+      "minuteShort": "分钟",
+      "destinationBucket": "存储桶：{{value}}",
+      "destinationPath": "路径：{{value}}",
+      "destinationHost": "主机：{{value}}",
+      "backupTypeNames": {
+        "manual": "手动",
+        "scheduled": "定时",
+        "full": "完整",
+        "sqlite": "SQLite 数据库",
+        "postgres": "PostgreSQL 数据库",
+        "postgresql": "PostgreSQL 数据库"
       }
     },
     "configuration": {
@@ -2578,13 +2606,13 @@
           "description": "从 S3 桶恢复"
         },
         "upload": {
-          "name": "上传备份",
-          "description": "上传备份文件",
-          "comingSoon": "上传功能即将到来",
+          "name": "便携备份文件",
+          "description": "从 .picpeak 文件恢复",
           "picpeak": {
             "name": ".picpeak 备份",
             "description": "便携式完整备份，可恢复数据和文件；恢复时会保留当前管理员账号。"
-          }
+          },
+          "directRestore": "请在下方选择 .picpeak 备份文件并确认恢复。此操作会直接替换当前数据，不需要继续向导。"
         },
         "configuration": {
           "s3": "S3 配置",
@@ -2599,16 +2627,16 @@
         "subtitle": "从可用的备份中选择",
         "noBackupsFound": "选定来源中找不到备份",
         "encrypted": "加密备份",
-        "encryptedMessage": "您需要提供加密密码句来恢复备份。",
-        "enterPassphrase": "输入加密密码句",
+        "encryptedMessage": "请输入备份密码以继续恢复。",
+        "enterPassphrase": "输入备份密码",
         "at": "时间",
-        "filesOnlyHint": "此备份不含数据库。恢复后，数据库记录、用户账号和设置都无法恢复。",
-        "filesOnlyBadge": "无 DB",
-        "corruptHint": "显示文件是不可读的——备份可能不完整或损坏.",
-        "corruptBadge": "腐败",
+        "filesOnlyHint": "此备份不包含数据库。恢复后无法找回数据库记录、账号和设置。",
+        "filesOnlyBadge": "仅文件",
+        "corruptHint": "备份文件无法读取，可能已损坏或不完整。",
+        "corruptBadge": "已损坏",
         "filesOnlyWarning": {
-          "title": "选中的备份没有数据库堆放",
-          "message": "恢复此备份会恢复照片等文件，但不会恢复数据库记录、用户账号或设置。如果有包含数据库的备份，请改选该备份；只有确认只需恢复文件时才继续。"
+          "title": "此备份不含数据库",
+          "message": "恢复后只会还原照片等文件，不会还原数据库记录、账号或设置。若有包含数据库的备份，请优先选择该备份。"
         }
       },
       "restoreTypes": {
@@ -2626,11 +2654,6 @@
           "name": "仅文件",
           "description": "只恢复照片和档案",
           "warning": "现有文件可能被覆盖"
-        },
-        "selective": {
-          "name": "选择性还原",
-          "description": "选择要恢复的特定项目",
-          "warning": "只恢复选中的项目"
         }
       },
       "options": {
@@ -2867,7 +2890,7 @@
       "keybindColors": "颜色快捷键",
       "keybindColorsDesc": "1 = 绿色标记，2 = 黄色标记，3 = 红色标记；快捷键只修改颜色标记",
       "keybindLightroom": "Lightroom 默认快捷键",
-      "keybindLightroomDesc": "1–5 设置星级，6–9 设置红／黄／绿／蓝标记",
+      "keybindLightroomDesc": "1–5 设置星级，6–9 设置红／黄／绿／蓝颜色标记。Picflow 中紫色标记编号为 10；Lightroom 没有对应的两位数快捷键。",
       "guestIdentity": "客户身份"
     },
     "settingsUpdated": "选片设置已更新",
@@ -3580,7 +3603,7 @@
       "delivered": "精修完成",
       "cancelled": "已撤回精修选择"
     },
-    "retainedDeliveredVersion": "已保留精修 V{{version}}",
+    "retainedDeliveredVersion": "精修成片 V{{version}} 已保留",
     "cancelledSelectionNote": "已撤回精修选择；已交付成片仍保留在相册中。",
     "quickFilterTitle": "按精修进度筛选照片",
     "quickFilter": {
@@ -3695,9 +3718,9 @@
     "creating": "正在创建…",
     "createError": "创建账号失败，请检查填写内容和账号权限。"
   },
-  "mobileDownload": {
-    "title": "下载已选照片",
-    "instructions": "请逐张点击保存，浏览器可能要求确认。在微信内无法保存时，请从右上角菜单选择在浏览器打开。下载保留原文件名，不打包。",
+  "downloadQueue": {
+    "title": "下载所选照片",
+    "instructions": "请逐个点击文件开始下载。浏览器可能会要求确认。文件会保留原名，不会打包成 ZIP。",
     "file": "第 {{number}} 张照片",
     "opened": "已发起下载"
   }

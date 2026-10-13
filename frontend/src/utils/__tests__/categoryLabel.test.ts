@@ -11,6 +11,16 @@ describe('categoryLabel', () => {
   });
 
   it('translates legacy default photo type labels without slugs', () => {
+    for (const [name, key] of [
+      ['Ceremony', 'ceremony'],
+      ['Details', 'details'],
+      ['Group Photos', 'groupPhotos'],
+      ['Party', 'party'],
+      ['Portraits', 'portraits'],
+      ['Reception', 'reception'],
+    ]) {
+      expect(categoryLabel({ name }, (value) => value)).toBe(`categories.defaults.${key}`);
+    }
     expect(categoryLabel({ name: 'Individual Photos' }, (key) => key)).toBe('categories.defaults.individualPhotos');
     expect(categoryLabel({ name: 'Collages' }, (key) => key)).toBe('categories.defaults.collages');
   });

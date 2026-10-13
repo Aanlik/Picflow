@@ -12,6 +12,12 @@ const BUILT_IN_CATEGORY_KEYS: Record<string, string> = {
 };
 
 const BUILT_IN_CATEGORY_NAMES: Record<string, string> = {
+  ceremony: 'categories.defaults.ceremony',
+  reception: 'categories.defaults.reception',
+  portraits: 'categories.defaults.portraits',
+  'group photos': 'categories.defaults.groupPhotos',
+  details: 'categories.defaults.details',
+  party: 'categories.defaults.party',
   'individual photos': 'categories.defaults.individualPhotos',
   collages: 'categories.defaults.collages',
 };

@@ -28,7 +28,7 @@ export const VersionInfo: React.FC = () => {
         <span className="font-medium">{t('admin.version', 'Version')}</span>
       </div>
       <div className="mt-1 space-y-0.5 text-xs text-neutral-500">
-        <div>Picflow v{data?.build || '1.0.1'}</div>
+        <div>Picflow v{data?.build || '1.0.2'}</div>
         {data?.revision && <div>{t('admin.buildRevision', 'Build')}: {data.revision.slice(0, 12)}</div>}
       </div>
     </div>

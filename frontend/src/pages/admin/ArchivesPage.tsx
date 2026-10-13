@@ -12,7 +12,7 @@ import {
   ChevronLeft,
   ChevronRight
 } from 'lucide-react';
-import { format, parseISO, isValid } from 'date-fns';
+import { parseISO, isValid } from 'date-fns';
 import { toast } from 'react-toastify';
 
 import { Button, Input, Card, Loading } from '../../components/common';
@@ -26,7 +26,7 @@ import { useMutationWithToast } from '../../hooks';
 
 export const ArchivesPage: React.FC = () => {
   const { t } = useTranslation();
-  const { formatTime: fmtTime } = useLocalizedDate();
+  const { format: fmtDate, formatTime: fmtTime } = useLocalizedDate();
   const [searchTerm, setSearchTerm] = useState('');
   const [debouncedSearchTerm, setDebouncedSearchTerm] = useState('');
   const [sortBy, setSortBy] = useState<ArchiveSortBy>('date');
@@ -45,11 +45,11 @@ export const ArchivesPage: React.FC = () => {
   }, [debouncedSearchTerm, sortBy]);
 
   // Helper function to safely format dates
-  const formatDate = (dateString: string | null | undefined, formatStr: string): string => {
+  const formatDate = (dateString: string | null | undefined): string => {
     if (!dateString) return '';
     try {
       const date = parseISO(dateString);
-      return isValid(date) ? format(date, formatStr) : '';
+      return isValid(date) ? fmtDate(date) : '';
     } catch {
       return '';
     }
@@ -92,9 +92,9 @@ export const ArchivesPage: React.FC = () => {
 
   const handleDownload = async (archive: typeof archives[0]) => {
     try {
-      toast.info(t('gallery.downloading', { count: 1 }).replace('photo', 'archive'));
+      toast.info(t('archives.downloadStarting', { name: archive.eventName }));
       await archiveService.downloadArchive(archive.id, `${archive.slug}-archive.zip`);
-      toast.success(t('common.download'));
+      toast.success(t('archives.downloadSuccess'));
     } catch {
       toast.error(t('errors.somethingWentWrong'));
     }
@@ -247,13 +247,13 @@ export const ArchivesPage: React.FC = () => {
                       <div>
                         <p className="text-sm font-medium text-neutral-900 dark:text-neutral-100">{archive.eventName}</p>
                         <p className="text-xs text-neutral-500 dark:text-neutral-400">
-                          {t('archives.eventDateNA').replace('N/A', formatDate(archive.eventDate, 'MMM d, yyyy') || 'N/A')}
+                          {t('archives.eventDate', { date: formatDate(archive.eventDate) || t('archives.dateUnknown') })}
                         </p>
                       </div>
                     </td>
                     <td className="px-6 py-4 text-sm text-neutral-700 dark:text-neutral-300">
                       <div>
-                        <p>{formatDate(archive.archivedAt, 'MMM d, yyyy') || t('archives.processing')}</p>
+                        <p>{formatDate(archive.archivedAt) || t('archives.processing')}</p>
                         <p className="text-xs text-neutral-500 dark:text-neutral-400">
                           {archive.archivedAt ? fmtTime(archive.archivedAt) : ''}
                         </p>

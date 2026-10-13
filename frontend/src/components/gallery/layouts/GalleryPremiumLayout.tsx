@@ -19,7 +19,7 @@ import { useInView } from 'react-intersection-observer';
 
 import type { BaseGalleryLayoutProps } from './BaseGalleryLayout';
 import type { Photo } from '../../../types';
-import { AuthenticatedImage, PoweredBy } from '../../common';
+import { AuthenticatedImage } from '../../common';
 import { thumbnailUrlForTile } from '../imageTiers';
 import { feedbackService, type ColorLabel } from '../../../services/feedback.service';
 import { PhotoFeedback } from '../PhotoFeedback';
@@ -625,12 +625,6 @@ export const GalleryPremiumLayout: React.FC<GalleryPremiumLayoutProps> = ({
           spacing={16}
         />
       </main>
-
-      {/* Footer */}
-      <footer className="gallery-premium-footer">
-        <PoweredBy />
-        <p>© {new Date().getFullYear()} {t('gallery.allRightsReserved', 'All rights reserved')}</p>
-      </footer>
 
       {/* Lightbox */}
       <Lightbox

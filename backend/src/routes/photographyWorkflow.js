@@ -108,7 +108,7 @@ router.get('/:eventId/requests', (req, res, next) => parseId(req.params.eventId)
     const rows = await db('photo_retouch_requests as r')
       .join('photos as p', 'p.id', 'r.photo_id')
       .where('r.event_id', Number(req.params.eventId))
-      .select('r.id', 'r.photo_id', 'p.filename', 'p.original_filename', 'p.source_filename', 'r.request_type', 'r.base_version', 'r.target_version', 'r.delivery_folder', 'r.customer_message', 'r.status', 'r.photographer_reply', 'r.created_at', 'r.updated_at')
+      .select('r.id', 'r.photo_id', 'p.filename', 'p.original_filename', 'p.source_filename', 'r.guest_name', 'r.request_type', 'r.base_version', 'r.target_version', 'r.delivery_folder', 'r.customer_message', 'r.status', 'r.photographer_reply', 'r.created_at', 'r.updated_at')
       .orderBy('r.created_at', 'desc');
     res.json({ requests: rows });
   } catch {
@@ -133,6 +133,13 @@ router.post('/:eventId/auto-bind', requirePermission('events.edit'), (req, res, 
   const location = new URL(result.location || '/', 'http://bridge.local');
   const setupError = location.searchParams.get('setup_error');
   if (setupError) return res.status(400).json({ error: setupError });
+  // Creating the binding alone leaves `connected=false` until an operator
+  // presses Sync. Run the initial snapshot as part of auto-bind so the first
+  // status shown in the workflow card reflects the actual NAS/Picflow link.
+  const initialSync = await bridgeRequest(`/api/projects/${eventId}/sync`, { method: 'POST', body: {} });
+  if (initialSync.status !== 200) {
+    return res.status(503).json({ error: '项目已关联，但首次同步未完成；请检查 NAS 文件夹并重试同步' });
+  }
   const detail = await getProjectDetail(eventId);
   if (detail.status !== 200) return res.status(503).json({ error: '项目已创建，但暂时无法读取同步状态' });
   res.status(201).json({ ...detail.data, configured: true });
@@ -140,6 +147,11 @@ router.post('/:eventId/auto-bind', requirePermission('events.edit'), (req, res, 
 
 router.post('/:eventId/stage', requirePermission('events.edit'), (req, res, next) => parseId(req.params.eventId) ? next() : res.sendStatus(400), requireEventOwnership, async (req, res) => {
   if (!['SELECTING', 'EDITING', 'DELIVERED', 'ARCHIVED'].includes(req.body?.stage)) return res.status(400).json({ error: '无效的项目阶段' });
+  const event = await db('events').where({ id: Number(req.params.eventId) }).first();
+  if (!event) return res.sendStatus(404);
+  if (event.is_archived || event.is_archiving) {
+    return res.status(409).json({ error: '已归档的项目不能直接更改阶段，请先恢复项目' });
+  }
   const result = await setWorkflowStage(Number(req.params.eventId), req.body.stage);
   if (result.status !== 200) return res.status(result.status === 400 ? 400 : 503).json({ error: '无法更新项目阶段' });
   res.json(result.data);

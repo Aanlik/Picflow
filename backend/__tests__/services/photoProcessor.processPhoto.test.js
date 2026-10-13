@@ -211,6 +211,30 @@ describe('photoProcessor.processPhoto', () => {
     expect(watermarkService.generateForPhoto).not.toHaveBeenCalled();
   });
 
+  it('rejects a corrupt image when sharp cannot read its metadata', async () => {
+    dbModule.__setPhoto({
+      id: 204,
+      event_id: 9,
+      filename: 'corrupt.jpg',
+      original_filename: 'corrupt.jpg',
+      mime_type: 'image/jpeg',
+      media_type: 'image',
+      size_bytes: 128,
+      captured_at: '2026-10-13T00:00:00.000Z',
+      processing_status: 'processing',
+    });
+    dbModule.__setEvent({ id: 9, slug: 'wedding', event_name: 'Wedding' });
+    imageProcessor.generateThumbnail.mockResolvedValueOnce(null);
+    require('sharp').mockImplementationOnce(() => ({
+      metadata: jest.fn().mockRejectedValue(new Error('Input file contains unsupported image format')),
+    }));
+
+    const { processPhoto } = require('../../src/services/photoProcessor');
+    await expect(processPhoto(204)).rejects.toThrow(/unsupported image format/);
+    expect(dbModule.__recorded().updateCalls).toHaveLength(0);
+    expect(watermarkService.generateForPhoto).not.toHaveBeenCalled();
+  });
+
   it('keeps a video complete with a placeholder thumbnail when ffmpeg fails', async () => {
     dbModule.__setPhoto({
       id: 203,

@@ -143,14 +143,14 @@ describe('gallery retouch workflow and client requests', () => {
 
   it('stores a revision against the current delivered version and returns it to that customer', async () => {
     const submitted = await post(`/api/gallery/${slug}/photos/${visiblePhoto}/retouch-requests`)
-      .send({ request_type: 'revision', base_version: 2, message: '请把肤色调暖一些' });
+      .send({ request_type: 'revision', base_version: 2, message: '请把肤色调暖一些', guest_name: '验收客户 A' });
     expect(submitted.status).toBe(201);
-    expect(submitted.body.request).toMatchObject({ request_type: 'revision', base_version: 2, status: 'open' });
+    expect(submitted.body.request).toMatchObject({ request_type: 'revision', base_version: 2, status: 'open', guest_name: '验收客户 A' });
     expect(global.fetch.mock.calls.some(([url, options]) => String(url).includes('/photos/1/version-folder') && options.method === 'POST')).toBe(true);
     expect(await db('photo_retouch_requests').where({ id: submitted.body.request.id }).first()).toMatchObject({ target_version: 3, delivery_folder: '/nas/Camera/Project/04_FINAL/V3' });
     const listed = await get(`/api/gallery/${slug}/retouch-workflow`);
     expect(listed.body.requests).toHaveLength(2);
-    expect(listed.body.requests.find((request) => request.customer_message === '请把肤色调暖一些')).toMatchObject({ status: 'open' });
+    expect(listed.body.requests.find((request) => request.customer_message === '请把肤色调暖一些')).toMatchObject({ status: 'open', guest_name: '验收客户 A' });
     expect(listed.body.requests.find((request) => request.customer_message === '请稍微降低高光')).toMatchObject({ status: 'cancelled' });
   });
 

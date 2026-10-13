@@ -391,13 +391,12 @@ export const BrandingPage: React.FC = () => {
                 onChange={(e) => handleBrandingChange('footer_text', e.target.value)}
                 className="w-full px-3 py-2 border border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 rounded-lg focus:ring-2 focus:ring-primary-500"
                 rows={2}
-                placeholder={`© ${new Date().getFullYear()} Your Company. All rights reserved.`}
+                placeholder={t('branding.footerPlaceholder', { year: new Date().getFullYear() })}
               />
             </div>
           </div>
 
-          {/* Social media links (#441) — appear as icons in the gallery
-              footer above the legal-links row. Empty = hidden. */}
+          {/* Social media links (#441) appear as icons in the gallery footer. Empty = hidden. */}
           <div className="mt-6 pt-6 border-t border-neutral-200 dark:border-neutral-700">
             <h3 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100 mb-3">
               {t('branding.socialMedia.title', 'Social Media')}

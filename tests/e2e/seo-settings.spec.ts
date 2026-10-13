@@ -95,7 +95,7 @@ test.describe('SEO Settings Tab', () => {
     await loginAndGoToSeoSettings(page);
 
     // Find the blocked agents section
-    const agentInput = page.getByPlaceholder(/Enter agent name|Agentenname eingeben|输入代理名称/i);
+    const agentInput = page.getByPlaceholder(/Enter agent name|输入爬虫标识/i);
     await expect(agentInput).toBeVisible();
 
     // Add a new agent

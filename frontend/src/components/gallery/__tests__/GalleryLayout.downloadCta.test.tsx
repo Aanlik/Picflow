@@ -61,6 +61,30 @@ const renderLayout = (headerStyle: HeaderStyleType) => {
 };
 
 describe('GalleryLayout header batch-selection CTA', () => {
+  it('omits the copyright and platform-branding row from the customer footer', () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <GalleryLayout
+            event={{ event_name: 'ZZTEST Wedding' }}
+            headerStyle="standard"
+            brandingSettings={{ company_name: 'Test Studio', instagram_url: 'https://instagram.com/test' }}
+          >
+            <div>photos</div>
+          </GalleryLayout>
+        </MemoryRouter>
+      </QueryClientProvider>
+    );
+
+    const footer = screen.getByRole('contentinfo');
+    expect(footer).not.toHaveTextContent('©');
+    expect(footer).not.toHaveTextContent('All rights reserved');
+    expect(footer).not.toHaveTextContent('Powered by');
+    expect(footer).not.toHaveTextContent('Test Studio');
+    expect(footer.querySelector('a')).not.toBeNull();
+  });
+
   it.each<HeaderStyleType>(['standard', 'minimal', 'hero', 'none', 'banner'])(
     'renders the batch-selection CTA with headerStyle "%s"',
     (headerStyle) => {

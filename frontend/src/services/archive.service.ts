@@ -1,4 +1,5 @@
 import { api } from '../config/api';
+import { parseContentDispositionFilename } from '../utils/contentDisposition';
 
 export interface Archive {
   id: number;
@@ -84,7 +85,7 @@ export const archiveService = {
     const url = window.URL.createObjectURL(new Blob([response.data]));
     const link = document.createElement('a');
     link.href = url;
-    link.setAttribute('download', filename);
+    link.setAttribute('download', parseContentDispositionFilename(response.headers?.['content-disposition']) || filename);
     document.body.appendChild(link);
     link.click();
     link.remove();

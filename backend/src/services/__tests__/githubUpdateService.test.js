@@ -66,6 +66,16 @@ describe('Picflow GitHub update check', () => {
     expect(result).toMatchObject({ status: 'update_available', latestVersion: 'v1.1.0', releaseName: 'Picflow 1.1', releaseNotes: 'Fixes' });
   });
 
+  it('distinguishes a development build newer than the latest release', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      status: 200,
+      ok: true,
+      json: async () => ({ tag_name: 'v1.0.0', name: 'Picflow 1.0', body: '' }),
+    });
+    const result = await checkLatestRelease('1.0.1');
+    expect(result).toMatchObject({ status: 'current_ahead', currentVersion: '1.0.1', latestVersion: 'v1.0.0' });
+  });
+
   it('caches the manually requested public API result', async () => {
     global.fetch = jest.fn().mockResolvedValue({ status: 404, ok: false });
     await checkLatestRelease('1.0');

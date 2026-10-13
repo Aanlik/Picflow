@@ -280,7 +280,6 @@
       "actions": "Actions"
     },
     "noArchivesFound": "No archives found",
-    "eventDateNA": "Event date: N/A",
     "processing": "Processing...",
     "download": "Download",
     "restore": "Restore",
@@ -293,7 +292,11 @@
     "confirmDelete": "Are you sure you want to permanently delete this archive? This action cannot be undone.",
     "restoreSuccess": "Archive restored successfully",
     "deleteSuccess": "Archive deleted permanently",
-    "deleteSuccessCleanupPending": "Archive deleted. NAS delivery cleanup is queued and will retry automatically."
+    "deleteSuccessCleanupPending": "Archive deleted. NAS delivery cleanup is queued and will retry automatically.",
+    "eventDate": "Shoot date: {{date}}",
+    "dateUnknown": "unknown",
+    "downloadStarting": "Downloading archive for {{name}}…",
+    "downloadSuccess": "Archive download started."
   },
   "auth": {
     "password": "Password",
@@ -469,7 +472,12 @@
     "videoFormatUnsupported": "This video format cannot be played in this browser. Download it to watch it.",
     "videoLoadFailed": "This video could not be loaded.",
     "batchSelect": "Select multiple photos",
-    "selectPhoto": "Select {{filename}}"
+    "selectPhoto": "Select {{filename}}",
+    "sortLabelDate": "date",
+    "sortLabelName": "name",
+    "sortLabelSize": "file size",
+    "sortLabelCaptureDate": "capture time",
+    "sortLabelRating": "rating"
   },
   "categories": {
     "title": "Photo Categories",
@@ -736,7 +744,7 @@
     "expired": "Expired",
     "draft": "Draft",
     "publishAndNotify": "Publish & Notify Client",
-    "publishSuccess": "Gallery published and client notified!",
+    "publishSuccess": "Project published. The client share link is ready.",
     "publishDialog": {
       "title": "Publish gallery",
       "justPublish": "Publish",
@@ -765,7 +773,7 @@
     "failedToLoadEvents": "Failed to load events",
     "tryAgain": "Try Again",
     "bulkArchivePartial": "Archived {{success}} events, {{failed}} failed",
-    "deleteSelected": "Delete Selected",
+    "deleteSelected": "Delete Selected Projects",
     "bulkDelete": {
       "warning": "This will permanently delete the selected events, all their photos, archives, and audit logs. This action cannot be undone.",
       "confirmLabel": "Type {{literal}} to confirm",
@@ -1142,7 +1150,8 @@
       "rateLimited": "The GitHub public API rate limit has been reached. Please try again later.",
       "checkFailed": "Could not reach GitHub. Please try again later.",
       "viewRelease": "View releases",
-      "viewRepository": "Open GitHub repository"
+      "viewRepository": "Open GitHub repository",
+      "currentAhead": "This build is newer than the latest published release."
     },
     "photoDimensions": {
       "title": "Photo Dimensions",
@@ -1245,6 +1254,7 @@
       "lightboxToggle": "Enable eager preview generation",
       "lightboxToggleHelp": "Off by default: each preview is built the first time a guest opens that photo. Turning this on unlocks the button below, which builds them all up front.",
       "regeneratePreviewsButton": "Regenerate All Previews",
+      "regeneratePreviewsError": "Could not start the preview regeneration task",
       "previewsRegenerateStarted": "Lightbox preview regeneration started",
       "previewsRegenerateError": "Failed to start preview regeneration",
       "saveSuccess": "Thumbnail settings saved",
@@ -1416,6 +1426,7 @@
     "companyTagline": "Company Tagline",
     "companyTaglineHelp": "A short description of your business",
     "footerText": "Footer Text",
+    "footerPlaceholder": "© {{year}} Your Company. All rights reserved.",
     "logo": "Logo",
     "uploadLogo": "Upload Logo",
     "logoHelp": "Recommended size: 200x60px, PNG or JPEG",
@@ -2244,6 +2255,10 @@
         "stories": "Stories",
         "contact": "Contact"
       }
+    },
+    "systemPageTitles": {
+      "gallery-not-found": "Gallery Not Found page",
+      "not-found": "Page Not Found page"
     }
   },
   "backup": {
@@ -2405,6 +2420,19 @@
         "completed": "Completed",
         "failed": "Failed",
         "running": "Running"
+      },
+      "noDuration": "Not available",
+      "minuteShort": "min",
+      "destinationBucket": "Bucket: {{value}}",
+      "destinationPath": "Path: {{value}}",
+      "destinationHost": "Host: {{value}}",
+      "backupTypeNames": {
+        "manual": "manual",
+        "scheduled": "scheduled",
+        "full": "full",
+        "sqlite": "SQLite database",
+        "postgres": "PostgreSQL database",
+        "postgresql": "PostgreSQL database"
       }
     },
     "configuration": {
@@ -2578,13 +2606,13 @@
           "description": "Restore from S3 bucket"
         },
         "upload": {
-          "name": "Upload Backup",
-          "description": "Upload a backup file",
-          "comingSoon": "Upload functionality coming soon",
+          "name": "Portable backup file",
+          "description": "Restore from a .picpeak file",
           "picpeak": {
             "name": ".picpeak backup",
             "description": "Portable full backup — restores everything (full override, keeps your current account)."
-          }
+          },
+          "directRestore": "Choose a .picpeak backup below and confirm the restore. This replaces the current data directly; you do not need to continue through the wizard."
         },
         "configuration": {
           "s3": "S3 Configuration",
@@ -2626,11 +2654,6 @@
           "name": "Files Only",
           "description": "Restore only photos and archives",
           "warning": "Existing files may be overwritten"
-        },
-        "selective": {
-          "name": "Selective Restore",
-          "description": "Choose specific items to restore",
-          "warning": "Only selected items will be restored"
         }
       },
       "options": {
@@ -2867,7 +2890,7 @@
       "keybindColors": "Colors only (simplest)",
       "keybindColorsDesc": "1 = green label, 2 = yellow label, 3 = red label; shortcuts change color labels only",
       "keybindLightroom": "Lightroom defaults",
-      "keybindLightroomDesc": "1-5 set the star rating, 6-9 set red / yellow / green / blue",
+      "keybindLightroomDesc": "1–5 set the star rating; 6–9 set red, yellow, green, or blue labels. In Picflow, purple is label 10; Lightroom has no two-digit shortcut for it.",
       "guestIdentity": "Guest identity"
     },
     "settingsUpdated": "Feedback settings updated",
@@ -3580,7 +3603,7 @@
       "delivered": "Retouched",
       "cancelled": "Retouch selection withdrawn"
     },
-    "retainedDeliveredVersion": "retouch V{{version}} kept",
+    "retainedDeliveredVersion": "Retouched V{{version}} kept",
     "quickFilterTitle": "Filter photos by retouching stage",
     "quickFilter": {
       "all": "All",
@@ -3695,9 +3718,9 @@
     "creating": "Creating…",
     "createError": "Could not create the account. Check the details and your permissions."
   },
-  "mobileDownload": {
+  "downloadQueue": {
     "title": "Download selected photos",
-    "instructions": "Tap each file to save it. Your browser may ask for confirmation. In WeChat, use the menu to open this page in your browser if saving is blocked. Files keep their original names; no ZIP is created.",
+    "instructions": "Select each file to start its download. Your browser may ask for confirmation. Files keep their original names; no ZIP is created.",
     "file": "Photo {{number}}",
     "opened": "Download requested"
   }

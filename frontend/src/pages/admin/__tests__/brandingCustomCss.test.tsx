@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 import { GALLERY_THEME_PRESETS } from '../../../types/theme.types';
 
-const CSS = '.gallery-premium-footer p:first-child { display: none; }';
+const CSS = '.gallery-premium-layout { background-color: #fefefe; }';
 const savedTheme = { ...GALLERY_THEME_PRESETS.galleryPremium.config, customCss: CSS };
 
 // --- mocks -----------------------------------------------------------------

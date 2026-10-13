@@ -130,6 +130,7 @@ async function persistUnbindIntent(eventId, executor = db) {
 }
 
 async function persistDeleteDeliveryIntent(eventId, executor = db) {
+  if (!bridgeConfig()) return;
   await executor('workflow_unbind_intents')
     .insert({ event_id: Number(eventId), delete_delivery: true, error: null })
     .onConflict('event_id').merge({ delete_delivery: true, error: null });

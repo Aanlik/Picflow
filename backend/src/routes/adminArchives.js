@@ -2,6 +2,7 @@ const express = require('express');
 const path = require('path');
 const fs = require('fs').promises;
 const { db } = require('../database/db');
+const { buildContentDisposition } = require('../utils/filenameSanitizer');
 const { deleteWithHistory } = require('../services/changeHistory');
 const { formatBoolean } = require('../utils/dbCompat');
 const { slugify } = require('../utils/slug');
@@ -666,7 +667,7 @@ router.get('/:id/download', adminAuth, requirePermission('archives.download'), r
 
     // Set headers for download
     res.setHeader('Content-Type', 'application/zip');
-    res.setHeader('Content-Disposition', `attachment; filename="${archive.slug}.zip"`);
+    res.setHeader('Content-Disposition', buildContentDisposition(`${archive.event_name || archive.slug}.zip`));
 
     // Stream the file
     const fileStream = require('fs').createReadStream(fullArchivePath);

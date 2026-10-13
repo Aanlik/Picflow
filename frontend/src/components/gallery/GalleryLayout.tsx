@@ -3,7 +3,7 @@ import { Calendar, Clock, Download, LogOut, ListChecks, X, Facebook, Instagram, 
 import { parseISO } from 'date-fns';
 import { useTranslation } from 'react-i18next';
 import { useLocalizedDate } from '../../hooks/useLocalizedDate';
-import { Button, MarkdownContent, PoweredBy } from '../common';
+import { Button, MarkdownContent } from '../common';
 import { DynamicFavicon } from '../common/DynamicFavicon';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useGuestIdentityOptional } from '../../contexts/GuestIdentityContext';
@@ -36,8 +36,6 @@ interface GalleryLayoutProps {
   heroLogoSize?: 'small' | 'medium' | 'large' | 'xlarge' | 'custom';
   brandingSettings?: {
     company_name?: string;
-    company_tagline?: string;
-    footer_text?: string;
     favicon_url?: string;
     logo_url?: string;
     logo_url_dark?: string;
@@ -701,70 +699,62 @@ export const GalleryLayout: React.FC<GalleryLayoutProps> = ({
       {promoPosition === 'above_footer' && promoSlot}
 
       {/* Footer */}
-      <footer className="gallery-footer mt-8 sm:mt-12 py-6 sm:py-8 border-t border-surface">
-        <div className="container text-center px-4">
-          <p className="text-xs sm:text-sm text-muted-theme">
-            {brandingSettings?.footer_text || `© ${new Date().getFullYear()}${brandingSettings?.company_name ? ` ${brandingSettings.company_name}` : ''}. ${t('gallery.allRightsReserved')}.`}
-            <PoweredBy inline />
-          </p>
-          {brandingSettings?.company_name && brandingSettings?.company_tagline && (
-            <p className="text-xs text-muted-theme mt-2">
-              {brandingSettings.company_name} - {brandingSettings.company_tagline}
-            </p>
-          )}
-
-          {/* Socials row (#441) — only rendered when at least one URL is set. */}
-          {socialLinks.length > 0 && (
-            <div className="mt-4 flex items-center justify-center gap-3 flex-wrap" aria-label={t('gallery.footer.socials', 'Social media')}>
-              {socialLinks.map(({ key, href, label, Icon }) => (
-                <a
-                  key={key}
-                  href={href}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  aria-label={label}
-                  className="text-muted-theme hover:text-accent transition-colors"
-                >
-                  <Icon className="w-5 h-5" />
-                </a>
-              ))}
-            </div>
-          )}
-
-          {hasFooterRow && (
-            <div className="mt-4 flex items-center justify-center gap-4 flex-wrap">
-              {guestIdentity?.identity && (
-                <>
-                  <button
-                    type="button"
-                    className="text-xs text-muted-theme hover:text-theme transition-colors"
-                    onClick={async () => {
-                      if (window.confirm(t('gallery.footer.forgetMeConfirm', 'Your name and selections will be removed from this gallery.'))) {
-                        await guestIdentity.forget();
-                      }
-                    }}
+      {(socialLinks.length > 0 || hasFooterRow) && (
+        <footer className="gallery-footer mt-8 sm:mt-12 py-6 sm:py-8 border-t border-surface">
+          <div className="container text-center px-4">
+            {/* Socials row (#441) — only rendered when at least one URL is set. */}
+            {socialLinks.length > 0 && (
+              <div className="mt-4 flex items-center justify-center gap-3 flex-wrap" aria-label={t('gallery.footer.socials', 'Social media')}>
+                {socialLinks.map(({ key, href, label, Icon }) => (
+                  <a
+                    key={key}
+                    href={href}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    aria-label={label}
+                    className="text-muted-theme hover:text-accent transition-colors"
                   >
-                    {t('gallery.footer.forgetMe', 'Forget me ({{name}})', { name: guestIdentity.identity.name })}
-                  </button>
-                  {/* Non-destructive counterpart to "Forget me". Identity now
-                      survives a tab close (#1265), so someone else on a shared
-                      device can be greeted by the previous visitor's name —
-                      and "Forget me" would delete that person's selections.
-                      This only clears the identity on this device. */}
-                  <span className="text-xs text-muted-theme">|</span>
-                  <button
-                    type="button"
-                    className="text-xs text-muted-theme hover:text-theme transition-colors"
-                    onClick={() => guestIdentity.openPrompt()}
-                  >
-                    {t('gallery.footer.managePickers', '切换/新增选片人')}
-                  </button>
-                </>
-              )}
-            </div>
-          )}
-        </div>
-      </footer>
+                    <Icon className="w-5 h-5" />
+                  </a>
+                ))}
+              </div>
+            )}
+
+            {hasFooterRow && (
+              <div className="mt-4 flex items-center justify-center gap-4 flex-wrap">
+                {guestIdentity?.identity && (
+                  <>
+                    <button
+                      type="button"
+                      className="text-xs text-muted-theme hover:text-theme transition-colors"
+                      onClick={async () => {
+                        if (window.confirm(t('gallery.footer.forgetMeConfirm', 'Your name and selections will be removed from this gallery.'))) {
+                          await guestIdentity.forget();
+                        }
+                      }}
+                    >
+                      {t('gallery.footer.forgetMe', 'Forget me ({{name}})', { name: guestIdentity.identity.name })}
+                    </button>
+                    {/* Non-destructive counterpart to "Forget me". Identity now
+                        survives a tab close (#1265), so someone else on a shared
+                        device can be greeted by the previous visitor's name —
+                        and "Forget me" would delete that person's selections.
+                        This only clears the identity on this device. */}
+                    <span className="text-xs text-muted-theme">|</span>
+                    <button
+                      type="button"
+                      className="text-xs text-muted-theme hover:text-theme transition-colors"
+                      onClick={() => guestIdentity.openPrompt()}
+                    >
+                      {t('gallery.footer.managePickers', '切换/新增选片人')}
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+        </footer>
+      )}
 
       {/* Promotional banner (#440) — rendered below the footer when
           branding_promo_position = 'below_footer'. */}

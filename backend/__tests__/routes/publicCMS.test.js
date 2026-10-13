@@ -19,7 +19,7 @@ describe('public CMS language selection', () => {
       content_zh: '<p>请联系摄影师确认。</p>',
       title_de: 'Galerie nicht gefunden',
       content_de: '<p>Bitte kontaktieren.</p>',
-      show_in_footer: false,
+      show_in_footer: true,
     };
     db.mockReturnValue({
       where: jest.fn().mockReturnValue({ first: jest.fn().mockImplementation(async () => page) }),
@@ -34,6 +34,7 @@ describe('public CMS language selection', () => {
     const response = await request(app).get('/api/public/pages/gallery-not-found?lang=zh-SG');
     expect(response.status).toBe(200);
     expect(response.body).toMatchObject({ title: '选片项目不存在', content: '<p>请联系摄影师确认。</p>' });
+    expect(response.body).not.toHaveProperty('show_in_footer');
   });
 
   it('falls back to English for retired and unsupported language codes', async () => {

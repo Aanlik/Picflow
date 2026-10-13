@@ -539,7 +539,9 @@ export const CMSPage: React.FC = () => {
                         that don't have a fixed translation key (e.g. the new
                         not-found / gallery-not-found error pages). */}
                     <p className="font-medium truncate">
-                      {t(`legal.${page.slug}`, { defaultValue: page.title_en || page.slug })}
+                      {t(`cms.systemPageTitles.${page.slug}`, {
+                        defaultValue: t(`legal.${page.slug}`, { defaultValue: page.title_en || page.slug }),
+                      })}
                     </p>
                     <p className="text-sm text-neutral-500 dark:text-neutral-400">/{page.slug}</p>
                   </div>
@@ -605,7 +607,9 @@ export const CMSPage: React.FC = () => {
           <Card padding="md">
             <div className="flex items-center justify-between mb-6">
               <h2 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">
-                {t('cms.editPage', { page: t(`legal.${selectedPage}`, { defaultValue: currentPage?.title_en || selectedPage }) })}
+                {t('cms.editPage', { page: t(`cms.systemPageTitles.${selectedPage}`, {
+                  defaultValue: t(`legal.${selectedPage}`, { defaultValue: currentPage?.title_en || selectedPage }),
+                }) })}
               </h2>
 
               {/* Language Tabs */}

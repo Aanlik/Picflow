@@ -75,7 +75,7 @@ async function checkLatestRelease(currentVersion) {
     const latestVersion = typeof release.tag_name === 'string' ? release.tag_name.trim() : '';
     const comparison = compareVersions(latestVersion, currentVersion);
     value = {
-      status: comparison > 0 ? 'update_available' : 'up_to_date',
+      status: comparison > 0 ? 'update_available' : comparison < 0 ? 'current_ahead' : 'up_to_date',
       currentVersion,
       latestVersion,
       repositoryUrl,
