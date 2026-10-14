@@ -575,6 +575,7 @@ async function parseManifestMetadata(filePath) {
     completed,
     source: 'disk',
     databaseIncluded: Boolean(parsed?.database?.backup_file),
+    backupType: parsed?.backup?.type || parsed?.backup_type || (parsed?.database?.backup_file ? 'full' : 'files'),
     // Helpful for the UI: lets it show "This backup has no DB" warning
     // — exactly the surface that would have caught Ralf's original
     // four files-only manifests if it had existed.
@@ -628,6 +629,7 @@ router.post('/list-backups', requirePermission('backup.view'), async (req, res) 
       completedAt: b.completed,
       startedAt: b.completed,
       status: 'completed',
+      backup_type: b.backupType || b.backup_type || 'files',
       // Stage A-aware: when the source is a disk-scanned manifest we
       // can tell the wizard whether the DB dump is present, so the
       // UI can warn before the admin picks a files-only backup.

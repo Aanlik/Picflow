@@ -48,6 +48,7 @@ export const RoleEditorModal: React.FC<RoleEditorModalProps> = ({
   const [description, setDescription] = useState('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [nameError, setNameError] = useState<string | undefined>();
+  const [displayNameError, setDisplayNameError] = useState<string | undefined>();
 
   useEffect(() => {
     if (!isOpen) return;
@@ -56,6 +57,7 @@ export const RoleEditorModal: React.FC<RoleEditorModalProps> = ({
     setDescription(localizedSystemRoleDescription ?? role?.description ?? '');
     setSelected(new Set(role?.permissions ?? []));
     setNameError(undefined);
+    setDisplayNameError(undefined);
   }, [isOpen, mode, role, localizedSystemRoleName, localizedSystemRoleDescription]);
 
   // Group the catalog by category, preserving a stable order.
@@ -99,6 +101,11 @@ export const RoleEditorModal: React.FC<RoleEditorModalProps> = ({
   const handleSave = () => {
     if (mode === 'create') {
       const normalized = name.trim().toLowerCase();
+      if (!displayName.trim()) {
+        setDisplayNameError(t('roleEditor.displayNameRequired', 'Please enter a role name.'));
+        return;
+      }
+      setDisplayNameError(undefined);
       if (!/^[a-z][a-z0-9_]{1,48}$/.test(normalized)) {
         setNameError(t('roleEditor.nameError', 'Use lowercase letters, numbers and underscores (2–49 chars, starting with a letter).'));
         return;
@@ -131,7 +138,9 @@ export const RoleEditorModal: React.FC<RoleEditorModalProps> = ({
               <h2 className="text-xl font-semibold text-neutral-900 dark:text-neutral-100">
                 {mode === 'create'
                   ? t('roleEditor.createTitle', 'Create role')
-                  : t('roleEditor.editTitle', 'Edit role: {{name}}', { name: role?.isSystem ? localizedSystemRoleName : role?.displayName })}
+                  : readOnly
+                    ? t('roleEditor.viewTitle', 'Role permissions: {{name}}', { name: localizedSystemRoleName || role?.displayName })
+                    : t('roleEditor.editTitle', 'Edit role: {{name}}', { name: role?.isSystem ? localizedSystemRoleName : role?.displayName })}
               </h2>
             </div>
             <button
@@ -160,10 +169,11 @@ export const RoleEditorModal: React.FC<RoleEditorModalProps> = ({
               </label>
               <Input
                 value={displayName}
-                onChange={(e) => setDisplayName(e.target.value)}
+                onChange={(e) => { setDisplayName(e.target.value); setDisplayNameError(undefined); }}
                 placeholder={t('roleEditor.displayNamePlaceholder', 'e.g. Photographer')}
                 disabled={isLoading || readOnly}
               />
+              {displayNameError && <p className="mt-1 text-sm text-red-600">{displayNameError}</p>}
             </div>
             <div>
               <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">

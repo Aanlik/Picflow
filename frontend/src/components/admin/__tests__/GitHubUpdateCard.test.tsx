@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string, fallback?: string) => fallback || key }) }));
+vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string, fallback?: string | Record<string, unknown>) => typeof fallback === 'string' ? fallback : key }) }));
 vi.mock('../../../config/api', () => ({ api: { get: vi.fn() } }));
 vi.mock('../../common', () => ({
   Button: ({ children, onClick, isLoading, leftIcon }: React.PropsWithChildren<{ onClick: () => void; isLoading?: boolean; leftIcon?: React.ReactNode }>) => (
@@ -13,7 +13,7 @@ vi.mock('../../common', () => ({
 }));
 
 import { api } from '../../../config/api';
-import { GitHubUpdateCard } from '../GitHubUpdateCard';
+import { getGitHubUpdateDiagnostic, GitHubUpdateCard } from '../GitHubUpdateCard';
 
 function setup() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
@@ -50,5 +50,14 @@ describe('GitHubUpdateCard', () => {
     fireEvent.click(screen.getByRole('button', { name: '检查更新' }));
     await waitFor(() => expect(screen.getByText(/尚未发布版本/)).toBeInTheDocument());
     expect(screen.queryByText(/当前已是最新版本/)).not.toBeInTheDocument();
+  });
+
+  it('maps safe GitHub diagnostics without exposing raw connection errors', () => {
+    expect(getGitHubUpdateDiagnostic({ response: { data: { code: 'GITHUB_DNS_ERROR', error: 'ENOTFOUND api.github.com' } } }))
+      .toEqual({ key: 'settings.systemStatus.dnsError' });
+    expect(getGitHubUpdateDiagnostic({ response: { data: { code: 'GITHUB_HTTP_ERROR', upstream_status: 429 } } }))
+      .toEqual({ key: 'settings.systemStatus.httpError', values: { status: '429' } });
+    expect(getGitHubUpdateDiagnostic(new Error('ENOTFOUND api.github.com')))
+      .toEqual({ key: 'settings.systemStatus.checkFailed' });
   });
 });

@@ -50,6 +50,7 @@ type Workflow = {
   name?: string;
   stage?: string;
   connected?: boolean;
+  connection_state?: 'connected' | 'syncing' | 'not_synced' | 'disconnected';
   summary?: Record<string, number>;
   photos?: PhotoState[];
   delivery_path?: string | null;
@@ -130,12 +131,25 @@ export function PhotographyWorkflowCard({ eventId }: { eventId: number }) {
     if (replyDrafts.current[id] === submitted) delete replyDrafts.current[id];
   };
 
-  const perform = async (action: () => Promise<unknown>, successKey?: string) => {
+  const perform = async (action: () => Promise<unknown>, successKey?: 'photographyWorkflow.syncComplete' | 'photographyWorkflow.rescanComplete') => {
     setBusy(true);
     try {
-      await action();
+      const response = await action() as any;
       await refresh();
-      if (successKey) setError('');
+      if (successKey) {
+        const result = response?.data || {};
+        const message = t(successKey, {
+          photos: result.photos_processed ?? 0,
+          errors: result.error_count ?? 0,
+        });
+        if (result.success === false || Number(result.error_count) > 0) {
+          toast.warning(message);
+          if (Array.isArray(result.errors) && result.errors.length > 0) setError(result.errors.slice(0, 3).join('；'));
+        } else {
+          toast.success(message);
+          setError('');
+        }
+      }
     } catch (cause: any) {
       setError(translatedWorkflowError(cause, t, 'photographyWorkflow.actionError'));
     } finally {
@@ -168,16 +182,22 @@ export function PhotographyWorkflowCard({ eventId }: { eventId: number }) {
     <div className="flex flex-wrap items-center justify-between gap-3">
       <div>
         <h3 className="text-lg font-semibold">{t('photographyWorkflow.title')}</h3>
-        {isBound && <p className="mt-1 text-sm text-neutral-500">{workflow?.name} · {workflow?.connected ? t('photographyWorkflow.connected') : t('photographyWorkflow.disconnected')}</p>}
+        {isBound && <p className="mt-1 text-sm text-neutral-500">{workflow?.name} · {workflow?.connection_state === 'syncing'
+          ? t('photographyWorkflow.initialSyncing')
+          : workflow?.connection_state === 'not_synced'
+            ? t('photographyWorkflow.notSynced')
+            : workflow?.connected
+              ? t('photographyWorkflow.connected')
+              : t('photographyWorkflow.disconnected')}</p>}
       </div>
       {isBound && <div className="flex flex-wrap items-center gap-2">
         <select aria-label={t('photographyWorkflow.projectStage')} value={workflow?.stage || 'SELECTING'} disabled={busy || workflow?.stage === 'ARCHIVED'} onChange={(event) => void perform(() => api.post(`/admin/photography-workflow/${eventId}/stage`, { stage: event.target.value }))} className="h-9 min-w-[132px] shrink-0 rounded-md border border-neutral-300 bg-white px-3 text-sm leading-none dark:border-neutral-700 dark:bg-neutral-900">
           {stageValues.map((stage) => <option key={stage} value={stage}>{t(`photographyWorkflow.stage.${stage}`)}</option>)}
         </select>
-        <Button variant="outline" size="sm" disabled={busy} onClick={() => void perform(() => api.post(`/admin/photography-workflow/${eventId}/sync`, {}))}>
+        <Button variant="outline" size="sm" disabled={busy} onClick={() => void perform(() => api.post(`/admin/photography-workflow/${eventId}/sync`, {}), 'photographyWorkflow.syncComplete')}>
           <RefreshCw className="mr-2 h-4 w-4" />{t('photographyWorkflow.syncNow')}
         </Button>
-        <Button variant="outline" size="sm" disabled={busy} onClick={() => void perform(() => api.post(`/admin/photography-workflow/${eventId}/rescan`, {}))}>
+        <Button variant="outline" size="sm" disabled={busy} onClick={() => void perform(() => api.post(`/admin/photography-workflow/${eventId}/rescan`, {}), 'photographyWorkflow.rescanComplete')}>
           {t('photographyWorkflow.rescan')}
         </Button>
         {(workflow?.summary?.['异常'] || 0) > 0 && <Button variant="outline" size="sm" disabled={busy} onClick={() => {
@@ -273,7 +293,7 @@ export function PhotographyWorkflowCard({ eventId }: { eventId: number }) {
           <p className="whitespace-pre-wrap text-sm text-neutral-700 dark:text-neutral-300">{request.customer_message}</p>
           <div className="flex gap-2">
             <input value={replies[request.id] || ''} onChange={(event) => { replyDrafts.current[request.id] = event.target.value; setReplies((old) => ({ ...old, [request.id]: event.target.value })); }} maxLength={1000} placeholder={t('photographyWorkflow.replyPlaceholder')} className="min-w-0 flex-1 rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-900" />
-            <Button variant="outline" size="sm" disabled={busy} aria-label={t('photographyWorkflow.saveReply')} onClick={() => void perform(() => saveReply(request.id, request.status))}><Save className="h-4 w-4" /></Button>
+            <Button variant="outline" size="sm" disabled={busy || (replies[request.id] || '').trim() === (request.photographer_reply || '').trim()} aria-label={t('photographyWorkflow.saveReply')} onClick={() => void perform(() => saveReply(request.id, request.status))}><Save className="h-4 w-4" /></Button>
           </div>
         </div>;
         }) : <p className="text-sm text-neutral-500">{t('photographyWorkflow.noRequests')}</p>}

@@ -5,6 +5,7 @@ export interface AdminPhoto {
   id: number;
   filename: string;
   original_filename?: string;
+  source_filename?: string | null;
   path: string;
   url: string;
   thumbnail_url: string | null;

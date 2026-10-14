@@ -115,6 +115,7 @@ export const GalleryFilter: React.FC<GalleryFilterProps> = ({
               size="sm"
               onClick={() => onFilterChange('all')}
               className="text-xs flex-1 min-w-[80px]"
+              aria-label={t('gallery.all', 'All')}
             >
               {t('gallery.all', 'All')}
             </Button>
@@ -124,6 +125,7 @@ export const GalleryFilter: React.FC<GalleryFilterProps> = ({
               size="sm"
               onClick={() => onFilterChange('liked')}
               className="text-xs flex-1 min-w-[80px] flex items-center justify-center gap-1"
+              aria-label={t('gallery.liked', 'Liked')}
             >
               <Heart className="w-3 h-3" />
               <span>{likeCount > 0 ? likeCount : t('gallery.liked', 'Liked')}</span>
@@ -134,6 +136,7 @@ export const GalleryFilter: React.FC<GalleryFilterProps> = ({
               size="sm"
               onClick={() => onFilterChange('favorited')}
               className="text-xs flex-1 min-w-[80px] flex items-center justify-center gap-1"
+              aria-label={t('gallery.favorited', 'Saved')}
             >
               <Bookmark className="w-3 h-3" />
               <span>{favoriteCount > 0 ? favoriteCount : t('gallery.favorited', 'Saved')}</span>
@@ -144,6 +147,7 @@ export const GalleryFilter: React.FC<GalleryFilterProps> = ({
               size="sm"
               onClick={() => onFilterChange('rated')}
               className="text-xs flex-1 min-w-[80px] flex items-center justify-center gap-1"
+              aria-label={t('gallery.rated', 'Rated')}
             >
               <Star className="w-3 h-3" />
               <span>{ratedCount > 0 ? ratedCount : t('gallery.rated', 'Rated')}</span>

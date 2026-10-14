@@ -215,7 +215,15 @@ router.get('/:slug/photo/:photoId',
       const orientationVersion = photo.orientation_checked_at
         ? `-o${new Date(photo.orientation_checked_at).getTime()}`
         : '';
-      const etag = `"${photoId}-${mtimeMs}${watermarkHash}${orientationVersion}"`;
+      // A replacement can update the canonical managed rendition while its
+      // external NAS source keeps the same mtime. Include the Bridge's
+      // retouch version in validators as well as in the URL, otherwise a
+      // conditional request may reuse the previous ETag and return 304 for V1.
+      const requestedRetouchVersion = Number.parseInt(req.query.retouch_v, 10);
+      const retouchVersion = Number.isSafeInteger(requestedRetouchVersion) && requestedRetouchVersion > 0
+        ? `-r${requestedRetouchVersion}`
+        : '';
+      const etag = `"${photoId}-${mtimeMs}${watermarkHash}${orientationVersion}${retouchVersion}"`;
 
       if (req.headers['if-none-match'] === etag) {
         return res.status(304).end();

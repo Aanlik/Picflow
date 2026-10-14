@@ -10,6 +10,7 @@ import { render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { PhotoFilterBar } from '../PhotoFilterBar';
+import { GalleryFilter } from '../GalleryFilter';
 
 vi.mock('react-i18next', async () => {
   const actual = await vi.importActual<typeof import('react-i18next')>('react-i18next');
@@ -73,5 +74,22 @@ describe('PhotoFilterBar feedback chips (#802)', () => {
   it('keeps the current sort visible on narrow screens beside the icon', () => {
     render(<PhotoFilterBar {...baseProps} />);
     expect(screen.getByText('gallery.sortLabelDate')).toBeInTheDocument();
+  });
+
+  it('gives mobile feedback filters accessible names even when they show only counts', () => {
+    render(
+      <GalleryFilter
+        activeFilters={[]}
+        onFilterChange={vi.fn()}
+        feedbackEnabled
+        likeCount={3}
+        favoriteCount={2}
+        ratedCount={4}
+        isMobile
+      />
+    );
+    expect(screen.getByRole('button', { name: 'Liked' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Saved' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Rated' })).toBeInTheDocument();
   });
 });

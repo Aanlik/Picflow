@@ -71,7 +71,11 @@ export function PhotoRetouchRequests({ slug, photo }: {
         <p className="mt-1 text-xs text-neutral-500">
           {t(`photographyWorkflow.clientState.${photo.retouch_state || 'proof'}`)}{photo.retouch_state === 'delivered' && photo.retouch_version ? ` · V${photo.retouch_version}` : ''}
         </p>
-        {photo.retouch_selection_cancelled && <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">{t('photographyWorkflow.cancelledSelectionNote')}</p>}
+        {photo.retouch_selection_cancelled && <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">
+          {photo.retouch_delivered_retained
+            ? t('photographyWorkflow.cancelledSelectionNote')
+            : t('photographyWorkflow.cancelledSelectionReturnedNote')}
+        </p>}
       </div>
       <Button variant="outline" size="sm" onClick={() => setOpen((current) => !current)}>
         {open ? t('retouchRequest.closeForm') : t('retouchRequest.newRequest')}

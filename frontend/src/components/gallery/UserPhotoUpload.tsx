@@ -6,6 +6,7 @@ import { Button } from '../common';
 import { api } from '../../config/api';
 import { usePublicSettings } from '../../hooks/usePublicSettings';
 import { extensionsToMimeTypes, buildUploadAcceptString, extensionsToLabel, normalizeFileMimeType } from '../../utils/fileTypes';
+import { meetsMinimumUploadImageDimensions } from '../../utils/uploadImageDimensions';
 
 interface UserPhotoUploadProps {
   slug: string;
@@ -92,19 +93,24 @@ export const UserPhotoUpload: React.FC<UserPhotoUploadProps> = ({
   };
 
   // Shared filter pipeline for both <input> change and drag-and-drop (#504).
-  const addFiles = (incoming: File[]) => {
-    const validFiles = incoming.filter((file) => {
+  const addFiles = async (incoming: File[]) => {
+    const validFiles: File[] = [];
+    for (const file of incoming) {
       if (!allowedMimeTypes.includes(normalizeFileMimeType(file.name, file.type))) {
         toast.error(t('ui.invalidFileType', { name: file.name }));
-        return false;
+        continue;
       }
       // Check file size against the configured per-file limit.
       if (file.size > maxFileSizeBytes) {
         toast.error(t('upload.fileTooLarge', { name: file.name, limit: maxFileSizeMb }));
-        return false;
+        continue;
       }
-      return true;
-    });
+      if (!(await meetsMinimumUploadImageDimensions(file))) {
+        toast.error(t('upload.imageTooSmall', { name: file.name, minimum: 10 }));
+        continue;
+      }
+      validFiles.push(file);
+    }
     if (validFiles.length === 0) return;
 
     // #613 — per-batch file count guard. Mirrors what the admin's

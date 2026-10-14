@@ -6,6 +6,7 @@ import { useTranslation } from 'react-i18next';
 
 import { Button, Input, Card } from '../common';
 import { adminService } from '../../services/admin.service';
+import { getAdminPasswordErrorKey } from '../../utils/adminPasswordPolicy';
 
 interface PasswordChangeModalProps {
   isOpen: boolean;
@@ -55,8 +56,9 @@ export const PasswordChangeModal: React.FC<PasswordChangeModalProps> = ({ isOpen
 
     if (!formData.newPassword) {
       newErrors.newPassword = t('passwordChange.newRequired');
-    } else if (formData.newPassword.length < 6) {
-      newErrors.newPassword = t('passwordChange.minLengthError');
+    } else {
+      const passwordErrorKey = getAdminPasswordErrorKey(formData.newPassword);
+      if (passwordErrorKey) newErrors.newPassword = t(passwordErrorKey);
     }
 
     if (!formData.confirmPassword) {
@@ -203,6 +205,9 @@ export const PasswordChangeModal: React.FC<PasswordChangeModalProps> = ({ isOpen
                   <p className="font-medium">{t('passwordChange.requirements')}</p>
                   <ul className="list-disc list-inside mt-1 space-y-1">
                     <li>{t('passwordChange.minLength')}</li>
+                    <li>{t('mandatoryPasswordChange.mustContainUpperLower')}</li>
+                    <li>{t('mandatoryPasswordChange.mustContainNumbers')}</li>
+                    <li>{t('mandatoryPasswordChange.mustContainSpecial')}</li>
                     <li>{t('passwordChange.mustDiffer')}</li>
                   </ul>
                 </div>

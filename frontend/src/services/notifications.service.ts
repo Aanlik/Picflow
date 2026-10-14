@@ -249,7 +249,10 @@ export const notificationsService = {
         // activity key (the log's snake_case type). Prefer that specific
         // copy before the legacy notification-message aliases, so customer
         // feedback never collapses to the generic system line.
-        const activityKey = `admin.activities.${notification.type}`;
+        const action = notification.metadata.action
+          || (notification.metadata.result?.removed ? 'removed' : notification.metadata.result?.updated ? 'updated' : '');
+        const actionKey = action ? `admin.activities.${notification.type}_${action}` : '';
+        const activityKey = actionKey && i18n.exists(actionKey) ? actionKey : `admin.activities.${notification.type}`;
         const activityCount = notification.metadata.count
           ?? notification.metadata.applied_count
           ?? (Array.isArray(notification.metadata.photo_ids) ? notification.metadata.photo_ids.length : undefined);

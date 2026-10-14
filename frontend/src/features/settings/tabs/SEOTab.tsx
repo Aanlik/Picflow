@@ -185,6 +185,7 @@ export const SEOTab: React.FC<SEOTabProps> = ({
                     <button
                       onClick={() => handleRemoveAgent(agent)}
                       className="text-neutral-400 hover:text-red-500 transition-colors"
+                      aria-label={t('settings.seo.removeAgent', { name: agent, defaultValue: `Remove ${agent}` })}
                     >
                       <X className="w-3.5 h-3.5" />
                     </button>

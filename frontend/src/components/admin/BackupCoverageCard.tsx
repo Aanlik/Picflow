@@ -166,12 +166,9 @@ const DatabaseStatusCard: React.FC<{
   database: BackupCoverageReport['database'];
 }> = ({ database }) => {
   const { t } = useTranslation();
-  const { formatDateTime } = useLocalizedDate();
+  const { formatDateTime, formatDistanceToNow } = useLocalizedDate();
   const isInline = database.mode === 'inline';
   const tone: Tone = database.ok ? 'green' : 'red';
-  const dumpAge = database.lastDumpAgeMs !== null
-    ? formatAge(database.lastDumpAgeMs)
-    : null;
 
   return (
     <div className={`rounded-lg p-4 ${TONE_BG[tone]}`}>
@@ -198,7 +195,9 @@ const DatabaseStatusCard: React.FC<{
             <Row
               label={t('backup.coverage.database.lastDump', 'Last dump')}
               value={`${formatDateTime(new Date(database.lastDumpAt))}${
-                dumpAge ? ` (${dumpAge})` : ''
+                database.lastDumpAgeMs !== null
+                  ? ` (${formatDistanceToNow(new Date(database.lastDumpAt), { addSuffix: true })})`
+                  : ''
               }`}
             />
             <Row
@@ -438,15 +437,4 @@ function formatBytes(bytes: number): string {
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
   const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
   return `${(bytes / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
-}
-
-function formatAge(ms: number): string {
-  const sec = Math.floor(ms / 1000);
-  if (sec < 60) return `${sec}s ago`;
-  const min = Math.floor(sec / 60);
-  if (min < 60) return `${min}m ago`;
-  const hr = Math.floor(min / 60);
-  if (hr < 48) return `${hr}h ago`;
-  const day = Math.floor(hr / 24);
-  return `${day}d ago`;
 }

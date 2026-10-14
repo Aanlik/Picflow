@@ -1,27 +1,27 @@
-const DEFAULT_PUBLIC_SITE_TITLE = 'Picflow — Curated Galleries, Effortless Sharing';
+const DEFAULT_PUBLIC_SITE_TITLE = 'Picflow｜摄影作品展示与交付';
 
 const DEFAULT_PUBLIC_SITE_HTML = `
 <section class="hero" id="welcome">
   <div class="hero__inner">
-    <span class="hero__badge">Picflow Showcase</span>
-    <h1>Share the story of {{company_name}}</h1>
+    <span class="hero__badge">Picflow 作品展示</span>
+    <h1>用影像讲述 {{company_name}} 的故事</h1>
     <p class="hero__lead">{{company_tagline}}</p>
     <div class="hero__cta">
-      <a href="#features" class="button button--primary">Explore Features</a>
-      <a href="#collections" class="button button--ghost">View Sample Galleries</a>
+      <a href="#features" class="button button--primary">了解功能</a>
+      <a href="#collections" class="button button--ghost">浏览作品</a>
     </div>
     <dl class="hero__stats">
       <div>
-        <dt>Private invites</dt>
-        <dd>Secure links for every guest</dd>
+        <dt>专属访问</dt>
+        <dd>为每位客户提供安全的访问链接</dd>
       </div>
       <div>
-        <dt>Curated delivery</dt>
-        <dd>Highlight every favourite instantly</dd>
+        <dt>精选交付</dt>
+        <dd>快速整理客户选中的照片</dd>
       </div>
       <div>
-        <dt>Fully branded</dt>
-        <dd>Colours, typography, and logo that match you</dd>
+        <dt>品牌呈现</dt>
+        <dd>使用符合工作室风格的颜色、字体和标志</dd>
       </div>
     </dl>
   </div>
@@ -29,100 +29,100 @@ const DEFAULT_PUBLIC_SITE_HTML = `
     <article class="deck deck--primary">
       <header class="deck__header">
         <img src="{{brand_logo_url}}" alt="{{company_name}} logo" class="deck__logo" loading="lazy" decoding="async" />
-        <span class="deck__title">Picflow Gallery</span>
+        <span class="deck__title">Picflow 摄影作品</span>
       </header>
       <ul class="deck__list">
-        <li>Guided cover stories</li>
-        <li>Guest uploads with approvals</li>
-        <li>Protected high-res downloads</li>
+        <li>清晰的作品展示</li>
+        <li>客户上传与选片</li>
+        <li>安全的高清照片下载</li>
       </ul>
     </article>
     <article class="deck deck--secondary">
-      <p class="deck__quote">“Picflow makes delivery feel like part of the celebration. Our couples relive the day the moment they open the link.”</p>
-      <p class="deck__author">— Studio Miraval</p>
+      <p class="deck__quote">“从打开作品链接的那一刻起，客户就能轻松浏览、选片并下载照片。”</p>
+      <p class="deck__author">— 摄影工作室</p>
     </article>
   </div>
 </section>
 
 <section class="features" id="features">
   <div class="section-head">
-    <span class="section-badge">Why teams pick Picflow</span>
-    <h2>Design-first galleries with the workflow you already love</h2>
-    <p>Bring the Picflow admin experience to your clients with branded, secure, and responsive public pages.</p>
+    <span class="section-badge">为什么选择 Picflow</span>
+    <h2>让作品展示与交付流程更简单</h2>
+    <p>通过品牌化、安全且适配手机的作品页面，为客户提供顺畅的选片体验。</p>
   </div>
   <div class="feature-grid">
     <article>
-      <h3>Beautiful by default</h3>
-      <p>Every gallery inherits your Picflow theme, typography, and colour palette automatically.</p>
+      <h3>统一的视觉风格</h3>
+      <p>作品页面会自动应用你的 Picflow 主题、字体和颜色设置。</p>
     </article>
     <article>
-      <h3>Guided storytelling</h3>
-      <p>Create anchored sections, spotlight favourite collections, and embed testimonials that build trust.</p>
+      <h3>灵活展示作品</h3>
+      <p>整理照片分类，突出重点作品，并添加客户评价。</p>
     </article>
     <article>
-      <h3>Secure sharing</h3>
-      <p>Password gates, expiring links, and download protection keep every celebration personal.</p>
+      <h3>安心分享</h3>
+      <p>使用访问密码、有效期和下载保护，控制作品的访问方式。</p>
     </article>
   </div>
 </section>
 
 <section class="workflow" id="workflow">
   <div class="workflow__content">
-    <h2>Launch in minutes</h2>
+    <h2>几步即可开始</h2>
     <ol class="workflow__steps">
       <li>
-        <h4>Brand it once</h4>
-        <p>Picflow automatically applies your logo, colours, and support details.</p>
+        <h4>设置品牌样式</h4>
+        <p>设置一次标志、颜色和联系方式，即可应用到作品页面。</p>
       </li>
       <li>
-        <h4>Curate sections</h4>
-        <p>Highlight hero stories, featured galleries, and timeline moments with simple HTML blocks.</p>
+        <h4>整理项目内容</h4>
+        <p>按分类展示照片，也可以突出封面和重要时刻。</p>
       </li>
       <li>
-        <h4>Share confidently</h4>
-        <p>Send a single link that greets guests before they enter their private gallery.</p>
+        <h4>分享给客户</h4>
+        <p>发送项目链接，让客户浏览、选片并获取最终照片。</p>
       </li>
     </ol>
   </div>
   <div class="workflow__media">
     <figure class="workflow__browser">
-      <img src="/picflow-icon.png" alt="Picflow interface" loading="lazy" decoding="async" />
-      <figcaption>Picflow dashboard &mdash; trusted by studios worldwide.</figcaption>
+      <img src="/picflow-icon.png" alt="Picflow 界面" loading="lazy" decoding="async" />
+      <figcaption>Picflow 工作台</figcaption>
     </figure>
   </div>
 </section>
 
 <section class="collections" id="collections">
   <div class="section-head">
-    <span class="section-badge">Showcase highlights</span>
-    <h2>Curated sample galleries that mirror your client experience</h2>
-    <p>Drop in featured stories, welcome messages, and callouts that prepare guests for what comes next.</p>
+    <span class="section-badge">作品展示</span>
+    <h2>按项目整理并分享摄影作品</h2>
+    <p>用清晰的内容结构介绍项目，让客户知道如何浏览和下载。</p>
   </div>
   <div class="collection-showcase">
     <article>
-      <h3>Signature Galleries</h3>
-      <p>Use responsive cards to preview your most loved collections or vendor partnerships.</p>
+      <h3>精选作品</h3>
+      <p>通过适配不同屏幕的卡片展示代表作品或合作项目。</p>
     </article>
     <article>
-      <h3>Welcome timelines</h3>
-      <p>Guide guests from arrival to download with steps that feel effortless and on-brand.</p>
+      <h3>清晰的客户流程</h3>
+      <p>引导客户完成浏览、选片和下载。</p>
     </article>
   </div>
 </section>
 
 <section class="stories" id="stories">
   <div class="section-head section-head--center">
-    <span class="section-badge">Client notes</span>
-    <h2>Experiences that keep guests coming back</h2>
+    <span class="section-badge">客户评价</span>
+    <h2>让每次交付都更顺畅</h2>
   </div>
   <div class="story-grid">
     <figure>
-      <blockquote>“From the welcome page to the final download, everything felt like us. Picflow turned our gallery into part of the celebration.”</blockquote>
-      <figcaption>— Harper &amp; Elias</figcaption>
+      <blockquote>“从打开页面到下载照片，整个流程都很清晰，客户也能很快找到喜欢的作品。”</blockquote>
+      <figcaption>— 客户反馈</figcaption>
     </figure>
     <figure>
-      <blockquote>“The public landing page gives every collection a narrative. Our couples feel the care we put into every image.”</blockquote>
-      <figcaption>— Jordan Rivera, Photographer</figcaption>
+      <blockquote>“项目页面让照片展示更有条理，客户可以专注于挑选和交流。”</blockquote>
+      <figcaption>— 摄影师反馈</figcaption>
     </figure>
   </div>
 </section>
@@ -130,11 +130,11 @@ const DEFAULT_PUBLIC_SITE_HTML = `
 <section class="cta" id="contact">
   <div class="cta__inner">
     <div>
-      <h2>Ready to welcome your guests?</h2>
-      <p>Create a Picflow landing page that matches your studio and introduces every celebration with confidence.</p>
+        <h2>准备好分享你的作品了吗？</h2>
+        <p>创建符合工作室风格的 Picflow 页面，开始向客户交付摄影作品。</p>
     </div>
     <div class="cta__actions">
-      <a href="#features" class="button button--ghost">Review features</a>
+      <a href="#features" class="button button--ghost">查看功能</a>
     </div>
   </div>
 </section>
@@ -143,11 +143,7 @@ const DEFAULT_PUBLIC_SITE_HTML = `
   <div class="footer-inner">
     <div>
       <h2>{{company_name}}</h2>
-      <p>Powered by Picflow to keep every celebration beautifully organised.</p>
-    </div>
-    <div class="footer-links">
-      <a href="/datenschutz">Privacy Policy</a>
-      <a href="/impressum">Impressum</a>
+      <p>由 Picflow 提供支持，让作品整理与交付更加轻松。</p>
     </div>
   </div>
 </footer>
@@ -644,22 +640,6 @@ img {
   margin: 0;
   color: var(--brand-muted-text, rgba(15, 23, 42, 0.65));
   line-height: 1.6;
-}
-
-.footer-links {
-  display: flex;
-  flex-direction: column;
-  gap: 0.65rem;
-  font-weight: 600;
-  color: var(--brand-primary);
-}
-
-.footer-links a {
-  color: inherit;
-}
-
-.footer-links a:hover {
-  text-decoration: underline;
 }
 
 @media (max-width: 960px) {

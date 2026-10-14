@@ -54,7 +54,7 @@ export const AdminGuestDetail: React.FC<AdminGuestDetailProps> = ({ eventId, gue
   };
   liked.forEach((p) => add(p, 'like'));
   favorited.forEach((p) => add(p, 'favorite'));
-  rated.forEach((r) => add(r.photo, t('admin.guests.detail.rated', '评分')));
+  rated.forEach((r) => add(r.photo, t('admin.guests.detail.ratingBadge', { rating: r.rating })));
   reacted.forEach((r) => add(r.photo, r.reaction));
   labeled.forEach((r) => add(r.photo, colorBadge(r.color_label)));
 
@@ -66,7 +66,7 @@ export const AdminGuestDetail: React.FC<AdminGuestDetailProps> = ({ eventId, gue
       : tab === 'favorited'
       ? favorited.map((p) => ({ photo: p, badges: ['favorite'] }))
       : tab === 'rated'
-      ? rated.map((r) => ({ photo: r.photo, badges: [`${r.rating}★`] }))
+      ? rated.map((r) => ({ photo: r.photo, badges: [t('admin.guests.detail.ratingBadge', { rating: r.rating })] }))
       : tab === 'reacted'
       ? reacted.map((r) => ({ photo: r.photo, badges: [r.reaction] }))
       : tab === 'labeled'
@@ -74,7 +74,7 @@ export const AdminGuestDetail: React.FC<AdminGuestDetailProps> = ({ eventId, gue
       : [];
 
   return (
-    <div className="fixed inset-0 z-40 flex items-start justify-center overflow-y-auto p-4 pt-16">
+    <div className="fixed inset-0 z-[60] flex items-start justify-center overflow-y-auto p-4 pt-16">
       <div className="fixed inset-0 bg-black/50" onClick={onClose} />
       <div className="relative bg-white dark:bg-neutral-900 rounded-lg shadow-xl w-full max-w-5xl max-h-[90vh] overflow-hidden flex flex-col">
         <div className="p-4 border-b border-neutral-200 dark:border-neutral-700 flex items-center justify-between">

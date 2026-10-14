@@ -54,8 +54,17 @@ async function pickAndUpload(container: HTMLElement, user: ReturnType<typeof use
 }
 
 describe('UserPhotoUpload rejected file', () => {
-  beforeEach(() => postMock.mockReset());
-  afterEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    postMock.mockReset();
+    // These fixtures are intentionally not decodable images. The component
+    // should leave decode failures to the server rather than block the test
+    // upload behind a browser-dependent image decoder.
+    vi.stubGlobal('createImageBitmap', vi.fn().mockRejectedValue(new Error('unsupported test image')));
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
 
   it('does not report success for a 202 that queued nothing', async () => {
     postMock.mockResolvedValue({

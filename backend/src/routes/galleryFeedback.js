@@ -100,16 +100,20 @@ router.post('/:slug/photos/batch-feedback',
         try {
           const result = await feedbackService.submitFeedback(photoId, event.id, payload, guestIdentifier);
           if (result?.guest_missing) failed.push(photoId);
-          else applied.push(photoId);
+          else if (!result?.exists) applied.push(photoId);
         } catch (error) {
           logger.error('Batch photo feedback failed', { eventId: event.id, photoId, error: error.message });
           failed.push(photoId);
         }
       }
-      await logActivity(`guest_feedback_batch_${feedbackType}`, {
-        photo_ids: applied,
-        failed_photo_ids: failed,
-      }, event.id, { type: 'guest', id: guestIdentifier.substring(0, 16), name: req.guest?.name || req.body.guest_name || 'Anonymous' });
+      if (applied.length > 0) {
+        await logActivity(`guest_feedback_batch_${feedbackType}`, {
+          photo_ids: applied,
+          count: applied.length,
+          failed_photo_ids: failed,
+          action: 'updated',
+        }, event.id, { type: 'guest', id: guestIdentifier.substring(0, 16), name: req.guest?.name || req.body.guest_name || 'Anonymous' });
+      }
 
       res.json({
         success: failed.length === 0,
@@ -436,14 +440,17 @@ router.post('/:slug/photos/:photoId/feedback',
       }
 
       // Log activity
-      await logActivity(`guest_feedback_${feedbackType}`, {
-        photo_id: photoId,
-        result
-      }, event.id, {
-        type: 'guest',
-        id: guestIdentifier.substring(0, 16),
-        name: req.guest?.name || req.body.guest_name || 'Anonymous'
-      });
+      if (!result?.exists) {
+        await logActivity(`guest_feedback_${feedbackType}`, {
+          photo_id: photoId,
+          result,
+          action: result?.removed ? 'removed' : result?.updated ? 'updated' : 'added',
+        }, event.id, {
+          type: 'guest',
+          id: guestIdentifier.substring(0, 16),
+          name: req.guest?.name || req.body.guest_name || 'Anonymous'
+        });
+      }
 
       res.json({
         success: true,

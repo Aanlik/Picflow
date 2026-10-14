@@ -190,9 +190,16 @@ router.patch('/:eventId/requests/:requestId', requirePermission('events.edit'), 
   const eventId = Number(req.params.eventId);
   const request = await db('photo_retouch_requests').where({ id, event_id: eventId }).first();
   if (!request) return res.sendStatus(404);
+  const nextReply = reply || null;
+  const currentReply = typeof request.photographer_reply === 'string'
+    ? request.photographer_reply.trim().slice(0, 1000) || null
+    : null;
+  if (request.status === status && currentReply === nextReply) {
+    return res.status(400).json({ error: '没有需要保存的变更', code: 'NO_CHANGE' });
+  }
   await db('photo_retouch_requests').where({ id, event_id: eventId }).update({
     status,
-    photographer_reply: reply || null,
+    photographer_reply: nextReply,
     updated_at: new Date(),
   });
   await logActivity('photo_retouch_request_updated', { request_id: id, status }, eventId, { type: 'admin', id: req.admin.id, name: req.admin.username || 'admin' });

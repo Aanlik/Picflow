@@ -12,6 +12,7 @@ const { errorResponse } = require('../utils/routeHelpers');
 const { ValidationError } = require('../utils/errors');
 const { formatBoolean } = require('../utils/dbCompat');
 const { getAbsoluteFrontendUrl } = require('../utils/frontendUrl');
+const { sanitizeForZipEntry } = require('../utils/filenameSanitizer');
 
 // ----------------------------------------------------------------------------
 // Helpers
@@ -131,6 +132,7 @@ router.get(
           'photos.id',
           'photos.filename',
           'photos.original_filename',
+          'photos.source_filename',
           db.raw('COUNT(DISTINCT photo_feedback.guest_id) AS picker_count')
         )
         .orderBy('picker_count', 'desc')
@@ -142,7 +144,7 @@ router.get(
           .map((p) => ({
             id: p.id,
             filename: p.filename,
-            original_filename: p.original_filename,
+            original_filename: p.original_filename || p.source_filename || p.filename,
             url: `/api/admin/photos/${eventId}/photo/${p.id}`,
             thumbnail_url: `/api/admin/photos/${eventId}/thumbnail/${p.id}`,
             picker_count: parseInt(p.picker_count, 10),
@@ -348,9 +350,9 @@ router.get(
           .join('photos', 'photo_feedback.photo_id', 'photos.id')
           .where('photo_feedback.guest_id', g.id)
           .whereIn('photo_feedback.feedback_type', ['like', 'favorite'])
-          .select('photos.filename', 'photos.original_filename', 'photo_feedback.feedback_type');
+          .select('photos.filename', 'photos.original_filename', 'photos.source_filename', 'photo_feedback.feedback_type');
 
-        const safeName = g.name.replace(/[^a-zA-Z0-9_-]/g, '_') || `guest_${g.id}`;
+        const safeName = `${sanitizeForZipEntry(g.name).slice(0, 80) || '客户'}_${g.id}`;
         const filename = `${safeName}.${format}`;
 
         let body;
@@ -360,12 +362,12 @@ router.get(
           const header = 'filename,original_filename,feedback_type';
           const rows = selections.map(
             (s) =>
-              `${escapeCsvCell(s.filename)},${escapeCsvCell(s.original_filename)},${escapeCsvCell(s.feedback_type)}`
+              `${escapeCsvCell(s.filename)},${escapeCsvCell(s.original_filename || s.source_filename || s.filename)},${escapeCsvCell(s.feedback_type)}`
           );
           body = [header, ...rows].join('\n');
         } else {
           // txt — just filenames
-          body = selections.map((s) => s.original_filename || s.filename).join('\n');
+          body = selections.map((s) => s.original_filename || s.source_filename || s.filename).join('\n');
         }
         archive.append(body, { name: filename });
       }
@@ -410,6 +412,7 @@ router.get(
           'photos.id as photo_id',
           'photos.filename',
           'photos.original_filename',
+          'photos.source_filename',
           'photos.type'
         )
         .orderBy('photo_feedback.created_at', 'desc');
@@ -417,7 +420,7 @@ router.get(
       const photoFor = (row) => ({
         id: row.photo_id,
         filename: row.filename,
-        original_filename: row.original_filename,
+        original_filename: row.original_filename || row.source_filename || row.filename,
         type: row.type,
         url: `/api/admin/photos/${eventId}/photo/${row.photo_id}`,
         thumbnail_url: `/api/admin/photos/${eventId}/thumbnail/${row.photo_id}`,
@@ -492,9 +495,9 @@ router.get(
         .join('photos', 'photo_feedback.photo_id', 'photos.id')
         .where('photo_feedback.guest_id', guestId)
         .whereIn('photo_feedback.feedback_type', ['like', 'favorite'])
-        .select('photos.filename', 'photos.original_filename', 'photo_feedback.feedback_type');
+        .select('photos.filename', 'photos.original_filename', 'photos.source_filename', 'photo_feedback.feedback_type');
 
-      const safeName = guest.name.replace(/[^a-zA-Z0-9_-]/g, '_') || `guest_${guest.id}`;
+      const safeName = `${sanitizeForZipEntry(guest.name).slice(0, 80) || '客户'}_${guest.id}`;
       const filename = `${safeName}.${format}`;
 
       if (format === 'json') {
@@ -508,14 +511,14 @@ router.get(
         const header = 'filename,original_filename,feedback_type';
         const rows = selections.map(
           (s) =>
-            `${escapeCsvCell(s.filename)},${escapeCsvCell(s.original_filename)},${escapeCsvCell(s.feedback_type)}`
+            `${escapeCsvCell(s.filename)},${escapeCsvCell(s.original_filename || s.source_filename || s.filename)},${escapeCsvCell(s.feedback_type)}`
         );
         return res.send([header, ...rows].join('\n'));
       }
       // txt — one filename per line
       res.setHeader('Content-Type', 'text/plain');
       res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-      return res.send(selections.map((s) => s.original_filename || s.filename).join('\n'));
+      return res.send(selections.map((s) => s.original_filename || s.source_filename || s.filename).join('\n'));
     } catch (error) {
       errorResponse(res, error, 500, 'Failed to export guest');
     }

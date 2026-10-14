@@ -7,7 +7,7 @@ from urllib.parse import unquote_plus
 
 from pixcake_bridge.app import create_app, delivery_scope_for
 from pixcake_bridge.config import ProjectConfig
-from pixcake_bridge.models import Delivery, Photo, Project
+from pixcake_bridge.models import Delivery, Photo, Project, SyncRun
 from test_engine import setup
 
 
@@ -26,15 +26,12 @@ def test_internal_bridge_actions_need_no_second_login_and_keep_csrf_checks(tmp_p
     raw_job = cfg.raw_root / "2026" / "portrait"
     raw_job.mkdir(parents=True)
     cfg.delivery_root.mkdir()
-    db.dispose()
-
-
     with TestClient(create_app(cfg, remote, start_workers=False)) as client:
         assert client.get("/health").status_code == 200
         dashboard = client.get("/")
         assert dashboard.status_code == 200
         assert "www-authenticate" not in dashboard.headers
-        assert "精修同步工作台" in client.get("/").text
+        assert "精修同步工作台" in dashboard.text
         assert client.get("/api/projects").json()[0]["stage"] == "SELECTING"
         assert sum(1 for route in client.app.routes if getattr(route, "path", None) == "/api/projects/{event_id}/detail") == 1
         detail = client.get("/api/projects/7/detail").json()
@@ -83,6 +80,90 @@ def test_internal_bridge_actions_need_no_second_login_and_keep_csrf_checks(tmp_p
             "event_id": "12",
             "raw_subdir": "2026/portrait",
         }, follow_redirects=False).status_code == 303
+    db.dispose()
+
+
+def test_workflow_counts_are_exclusive_for_delivered_new_and_cancelled_photos(tmp_path):
+    engine, remote, cfg, db = setup(tmp_path, 1)
+    await_sync = __import__("asyncio").run(engine.sync())
+    assert await_sync["success"] is True
+    with engine.sessions() as session:
+        project = session.scalar(select(Project).where(Project.event_id == 7))
+        delivered = session.scalar(select(Photo).where(Photo.project_id == project.id, Photo.photo_id == 1))
+        delivered.delivery_hash = "delivered-hash"
+        active = Photo(
+            project_id=project.id, photo_id=2, source_filename="DSC00002.JPG",
+            selected=True, source_kind="RAW", raw_path=str(cfg.projects[0].raw / "DSC00002.ARW"),
+            selected_path=str(cfg.projects[0].selected / "DSC00002.ARW"), materialized_hash="raw-hash",
+        )
+        cancelled = Photo(
+            project_id=project.id, photo_id=3, source_filename="DSC00003.JPG",
+            selected=False, cancelled=True, delivery_hash="cancelled-delivery-hash",
+        )
+        session.add_all([active, cancelled])
+        session.flush()
+        session.add_all([
+            Delivery(photo_pk=delivered.id, sha256="delivered-hash", marker="DSC00001.JPG", snapshot="/history/1.jpg", state="SUCCESS"),
+            Delivery(photo_pk=cancelled.id, sha256="cancelled-delivery-hash", marker="DSC00003.JPG", snapshot="/history/3.jpg", state="SUCCESS"),
+        ])
+        session.commit()
+
+    with TestClient(create_app(cfg, remote, start_workers=False)) as client:
+        summary = client.get("/api/projects").json()[0]["summary"]
+        assert summary["客户已选"] == 1
+        assert summary["已精修"] == 1
+        detail = client.get("/api/projects/7/detail").json()
+        by_id = {photo["photo_id"]: photo for photo in detail["photos"]}
+        assert by_id[1]["selected"] is False
+        assert by_id[2]["selected"] is True
+        assert by_id[3]["selected"] is False
+    db.dispose()
+
+
+def test_successful_additional_delivery_returns_photo_to_delivered_state(tmp_path):
+    engine, _remote, cfg, db = setup(tmp_path, 1)
+    __import__("asyncio").run(engine.sync())
+    with engine.sessions() as session:
+        project = session.scalar(select(Project).where(Project.event_id == 7))
+        photo = session.scalar(select(Photo).where(Photo.project_id == project.id, Photo.photo_id == 1))
+        photo.selected = True
+        photo.added_during_editing = True
+        delivery = Delivery(
+            photo_pk=photo.id,
+            sha256="f" * 64,
+            marker="DSC00001.__bridge_" + "f" * 64 + ".jpg",
+            snapshot=str(cfg.projects[0].history / "new.jpg"),
+            state="UPLOADING",
+        )
+        session.add(delivery)
+        session.flush()
+        engine.success(session, cfg.projects[0], photo, delivery, complete_task=True)
+        assert photo.delivery_hash == "f" * 64
+        assert photo.added_during_editing is False
+    db.dispose()
+
+
+def test_first_sync_status_is_not_reported_as_a_connection_failure(tmp_path):
+    engine, remote, cfg, db = setup(tmp_path)
+    with TestClient(create_app(cfg, remote, start_workers=False)) as client:
+        assert client.get("/api/projects").json()[0]["connection_state"] == "not_synced"
+        with engine.sessions() as session:
+            project = session.scalar(select(Project).where(Project.event_id == 7))
+            session.add(SyncRun(project_id=project.id))
+            session.commit()
+        assert client.get("/api/projects").json()[0]["connection_state"] == "syncing"
+        with engine.sessions() as session:
+            project = session.scalar(select(Project).where(Project.event_id == 7))
+            project.connected = True
+            session.commit()
+        assert client.get("/api/projects").json()[0]["connection_state"] == "connected"
+        with engine.sessions() as session:
+            project = session.scalar(select(Project).where(Project.event_id == 7))
+            project.connected = False
+            project.last_sync = project.last_sync or __import__("datetime").datetime.now()
+            session.commit()
+        assert client.get("/api/projects").json()[0]["connection_state"] == "disconnected"
+    db.dispose()
 
 
 def test_archived_stage_requires_explicit_restore_in_api_and_dashboard(tmp_path):
@@ -128,6 +209,8 @@ def test_project_summary_counts_only_active_existing_source_references(tmp_path)
                   source_kind="UPLOAD", selected=True, selected_path=str(selected_dir / "missing.JPG"), remote_present=False),
             Photo(project_id=project.id, photo_id=104, source_filename="RAW_CANCELLED.JPG",
                   source_kind="RAW", selected=False, cancelled=True, raw_path=str(stale_raw)),
+            Photo(project_id=project.id, photo_id=105, source_filename="SELECTED_CANCELLED.JPG",
+                  source_kind="RAW", selected=True, cancelled=True, raw_path=str(stale_raw)),
         ])
         session.commit()
 

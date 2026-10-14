@@ -297,8 +297,12 @@ router.put('/config', adminAuth, requirePermission('backup.create'), async (req,
 // Get backup status and history
 router.get('/status', adminAuth, requirePermission('backup.view'), async (req, res) => {
   try {
-    const { limit } = getPagination(req, { limit: 10 });
-    const status = await getBackupStatus(limit);
+    const pagination = getPagination(req, { limit: 20, maxLimit: 100 });
+    const search = typeof req.query.search === 'string' ? req.query.search.trim().slice(0, 200) : '';
+    const filterStatus = typeof req.query.status === 'string' && ['completed', 'failed', 'running', 'partial'].includes(req.query.status)
+      ? req.query.status
+      : '';
+    const status = await getBackupStatus(10, { ...pagination, search, status: filterStatus, includeHistory: true });
 
     res.json(status);
   } catch (error) {

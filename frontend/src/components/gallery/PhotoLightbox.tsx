@@ -30,7 +30,7 @@ interface PhotoLightboxProps {
   useEnhancedProtection?: boolean;
   useCanvasRendering?: boolean;
   initialShowFeedback?: boolean;
-  onFeedbackChange?: () => void;
+  onFeedbackChange?: () => void | Promise<void>;
   disableRightClick?: boolean;
   enableDevtoolsProtection?: boolean;
   // When true, surface each photo's original camera filename in the
@@ -174,9 +174,11 @@ export const PhotoLightbox: React.FC<PhotoLightboxProps> = ({
     refetchOnWindowFocus: true,
   });
 
-  const refreshPhotoFeedback = () => {
-    if (currentPhotoId != null) void queryClient.invalidateQueries({ queryKey: feedbackQueryKey });
-    onFeedbackChange?.();
+  const refreshPhotoFeedback = async () => {
+    const refreshes: Promise<unknown>[] = [];
+    if (currentPhotoId != null) refreshes.push(queryClient.invalidateQueries({ queryKey: feedbackQueryKey }));
+    if (onFeedbackChange) refreshes.push(Promise.resolve(onFeedbackChange()));
+    await Promise.all(refreshes);
   };
 
   const { t } = useTranslation();
@@ -353,7 +355,7 @@ export const PhotoLightbox: React.FC<PhotoLightboxProps> = ({
           setLikeCount(c => Math.max(0, c + (next ? 1 : -1)));
           return next;
         });
-        refreshPhotoFeedback();
+        await refreshPhotoFeedback();
       } catch (err) {
         // Per-guest cap reached (#655) surfaces the shared modal.
         if (handleLimitError(err)) return;
@@ -384,7 +386,7 @@ export const PhotoLightbox: React.FC<PhotoLightboxProps> = ({
       // filter chips) in sync — the guest-mode path above already does
       // this; without it, likes made in the lightbox don't appear in
       // the Likes filter until a full page reload.
-      refreshPhotoFeedback();
+      await refreshPhotoFeedback();
     } catch (err) {
       if (handleLimitError(err)) return;
 
@@ -409,7 +411,7 @@ export const PhotoLightbox: React.FC<PhotoLightboxProps> = ({
           rating: value,
         });
         setMyRating(value);
-        refreshPhotoFeedback();
+        await refreshPhotoFeedback();
       } catch (err) {
 
         console.warn('Rating submit failed', err);
@@ -432,7 +434,7 @@ export const PhotoLightbox: React.FC<PhotoLightboxProps> = ({
     setMyRating(value);
     // Sync gallery photo list so the Rated filter reflects this rating
     // without a reload (parity with the guest-mode path above).
-    refreshPhotoFeedback();
+    await refreshPhotoFeedback();
   };
 
   /**
@@ -465,7 +467,7 @@ export const PhotoLightbox: React.FC<PhotoLightboxProps> = ({
           color_label: value,
         });
         setMyColorLabel(resolve(result));
-        refreshPhotoFeedback();
+        await refreshPhotoFeedback();
       } catch (err) {
         if (handleLimitError(err)) return;
         console.warn('Color label submit failed', err);
@@ -486,7 +488,7 @@ export const PhotoLightbox: React.FC<PhotoLightboxProps> = ({
         guest_name: savedIdentity?.name,
       });
       setMyColorLabel(resolve(result));
-      refreshPhotoFeedback();
+      await refreshPhotoFeedback();
     } catch (err) {
       if (handleLimitError(err)) return;
       console.warn('Color label submit failed', err);
@@ -1009,7 +1011,7 @@ export const PhotoLightbox: React.FC<PhotoLightboxProps> = ({
                   shortcutHints={colorShortcutHints(keybindMode)}
                   onColorLabelChange={(label) => {
                     setMyColorLabel(label);
-                    refreshPhotoFeedback();
+                    void refreshPhotoFeedback();
                   }}
                 />
               </div>
@@ -1020,7 +1022,7 @@ export const PhotoLightbox: React.FC<PhotoLightboxProps> = ({
                 photo={{ ...currentPhoto, my_color_label: myColorLabel }}
                 slug={slug}
                 placement="toolbar"
-                onFeedbackChange={refreshPhotoFeedback}
+                onFeedbackChange={() => { void refreshPhotoFeedback(); }}
                 onRequestClick={() => setShowFeedback(true)}
               />
             )}
@@ -1252,7 +1254,7 @@ export const PhotoLightbox: React.FC<PhotoLightboxProps> = ({
                 showComments={true}
                 className="space-y-4"
                 onFeedbackUpdate={() => {
-                  refreshPhotoFeedback();
+                  void refreshPhotoFeedback();
                 }}
               />
             )}
@@ -1301,7 +1303,7 @@ export const PhotoLightbox: React.FC<PhotoLightboxProps> = ({
           }
           // Sync gallery photo list (feedback filter chips) — parity with
           // the direct submit paths.
-          refreshPhotoFeedback();
+          await refreshPhotoFeedback();
           setPendingAction(null);
         }}
         feedbackType={

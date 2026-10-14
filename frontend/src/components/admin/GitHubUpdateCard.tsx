@@ -21,10 +21,29 @@ async function checkUpdates(): Promise<UpdateCheck> {
   return response.data;
 }
 
+export function getGitHubUpdateDiagnostic(error: unknown): { key: string; values?: { status: string } } {
+  const data = (error as any)?.response?.data;
+  switch (data?.code) {
+    case 'GITHUB_CONFIG_ERROR': return { key: 'settings.systemStatus.configError' };
+    case 'GITHUB_TIMEOUT_ERROR': return { key: 'settings.systemStatus.timeoutError' };
+    case 'GITHUB_DNS_ERROR': return { key: 'settings.systemStatus.dnsError' };
+    case 'GITHUB_TLS_ERROR': return { key: 'settings.systemStatus.tlsError' };
+    case 'GITHUB_HTTP_ERROR': return { key: 'settings.systemStatus.httpError', values: { status: String(data.upstream_status || '?') } };
+    case 'GITHUB_NETWORK_ERROR': return { key: 'settings.systemStatus.networkError' };
+    default: return { key: 'settings.systemStatus.checkFailed' };
+  }
+}
+
 export const GitHubUpdateCard: React.FC = () => {
   const { t } = useTranslation();
   const mutation = useMutation({ mutationFn: checkUpdates });
   const result = mutation.data;
+  const updateError = getGitHubUpdateDiagnostic(mutation.error);
+  const updateErrorMessage = updateError.values
+    ? t(updateError.key, updateError.values)
+    : updateError.key === 'settings.systemStatus.checkFailed'
+      ? t(updateError.key, '连接 GitHub 失败，请稍后重试。')
+      : t(updateError.key);
   const statusText = result?.status === 'update_available'
     ? t('settings.systemStatus.updateAvailable', '发现新版本')
     : result?.status === 'up_to_date'
@@ -84,7 +103,7 @@ export const GitHubUpdateCard: React.FC = () => {
       )}
       {mutation.isError && (
         <p role="alert" className="mt-3 text-sm text-red-700 dark:text-red-300">
-          {t('settings.systemStatus.checkFailed', '连接 GitHub 失败，请稍后重试。')}
+          {updateErrorMessage}
         </p>
       )}
     </Card>

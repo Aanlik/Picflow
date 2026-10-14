@@ -1536,7 +1536,7 @@ async function triggerManualBackup() {
   await service.runBackup(true); // Pass flag to indicate manual backup
 }
 
-async function getBackupStatus(limit = 10) {
+async function getBackupStatus(limit = 10, history = {}) {
   try {
     const rawRuns = await db('backup_runs')
       .orderBy('started_at', 'desc')
@@ -1572,6 +1572,48 @@ async function getBackupStatus(limit = 10) {
         statistics
       };
     });
+
+    let recentBackups = runs;
+    let pagination;
+    if (history.includeHistory) {
+      const page = Math.max(1, Number(history.page) || 1);
+      const historyLimit = Math.min(100, Math.max(1, Number(history.limit) || 20));
+      const historyQuery = db('backup_runs');
+      if (history.status) historyQuery.where('status', history.status);
+      if (history.search) {
+        const pattern = `%${String(history.search).toLowerCase()}%`;
+        historyQuery.where(function () {
+          this.whereRaw('LOWER(CAST(id AS TEXT)) LIKE ?', [pattern])
+            .orWhereRaw('LOWER(CAST(started_at AS TEXT)) LIKE ?', [pattern])
+            .orWhereRaw('LOWER(COALESCE(status, \'\')) LIKE ?', [pattern])
+            .orWhereRaw('LOWER(COALESCE(backup_type, \'\')) LIKE ?', [pattern])
+            .orWhereRaw('LOWER(COALESCE(destination_type, \'\')) LIKE ?', [pattern])
+            .orWhereRaw('LOWER(COALESCE(manifest_path, \'\')) LIKE ?', [pattern]);
+        });
+      }
+      const countRow = await historyQuery.clone().count({ count: '*' }).first();
+      const total = Number(countRow?.count) || 0;
+      const historyRows = await historyQuery.clone().orderBy('started_at', 'desc').limit(historyLimit).offset((page - 1) * historyLimit);
+      recentBackups = historyRows.map((run) => {
+        let statistics = run.statistics;
+        if (typeof statistics === 'string') {
+          try { statistics = JSON.parse(statistics); } catch { statistics = {}; }
+        }
+        const stats = statistics || {};
+        return {
+          ...run,
+          created_at: run.started_at,
+          statistics: {
+            ...stats,
+            files_processed: stats.filesBackedUp || stats.files_processed || 0,
+            total_size: stats.totalSize || stats.total_size || 0,
+            total_files_checked: stats.totalFilesChecked || stats.total_files_checked || 0,
+            average_file_size: stats.averageFileSize || stats.average_file_size || 0,
+          },
+        };
+      });
+      pagination = { page, limit: historyLimit, total, pages: Math.max(1, Math.ceil(total / historyLimit)) };
+    }
 
     const lastRun = runs[0];
     let manifestValid = false;
@@ -1622,7 +1664,8 @@ async function getBackupStatus(limit = 10) {
       lastSuccessfulBackup: lastSuccessful, // NEW — see comment above
       zombieRuns,                           // NEW — running >30min, likely crashed
       recentRuns: runs,
-      recentBackups: runs, // Alias for frontend compatibility
+      recentBackups,
+      ...(pagination && { pagination }),
       totalBackups: runs.filter(r => r.status === 'completed').length,
       nextScheduledRun: nextRun,
       nextBackup: nextRun // BackupManagement.tsx reads this name

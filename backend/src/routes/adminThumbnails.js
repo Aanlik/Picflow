@@ -32,6 +32,18 @@ function sameStorageKey(a, b) {
 // double the load and delete each other's freshly written renditions. Held per
 // process; another replica can still start its own.
 const runningJobs = { thumbnails: false, previews: false };
+const regenerationJobs = {
+  thumbnails: { running: false, total: 0, processed: 0, success: 0, failed: 0, failures: [] },
+  previews: { running: false, total: 0, processed: 0, success: 0, failed: 0, failures: [] },
+};
+
+function recordRegenerationFailure(kind, photo, reason) {
+  const job = regenerationJobs[kind];
+  job.failed += 1;
+  if (job.failures.length < 20) {
+    job.failures.push({ id: photo.id, filename: photo.filename || `#${photo.id}`, reason: String(reason || '无法生成').slice(0, 300) });
+  }
+}
 
 /**
  * Who may start a regeneration. Scoped to an event it is that event's photo
@@ -204,8 +216,11 @@ router.post('/regenerate', adminAuth, requirePermission('photos.edit'), async (r
     
     if (photos.length === 0) {
       runningJobs.thumbnails = false;
+      regenerationJobs.thumbnails = { running: false, total: 0, processed: 0, success: 0, failed: 0, failures: [] };
       return res.json({ message: 'No photos to regenerate' });
     }
+
+    regenerationJobs.thumbnails = { running: true, total: photos.length, processed: 0, success: 0, failed: 0, failures: [] };
     
     // Start regeneration in background
     res.json({ 
@@ -235,8 +250,10 @@ router.post('/regenerate', adminAuth, requirePermission('photos.edit'), async (r
           if (isVideo) {
             if (await ensureThumbnail(photo, { boundVideoSource: false })) {
               successCount++;
+              regenerationJobs.thumbnails.success++;
             } else {
               errorCount++;
+              recordRegenerationFailure('thumbnails', photo, '无法生成视频封面');
             }
             continue;
           }
@@ -291,17 +308,23 @@ router.post('/regenerate', adminAuth, requirePermission('photos.edit'), async (r
               });
             }
             successCount++;
+            regenerationJobs.thumbnails.success++;
             logger.info(`Regenerated thumbnail for photo ${photo.id}`);
           } else {
             errorCount++;
+            recordRegenerationFailure('thumbnails', photo, '无法生成缩略图；请检查源文件是否存在且可读取');
           }
         } catch (error) {
           logger.error(`Error regenerating thumbnail for photo ${photo.id}:`, error);
           errorCount++;
+          recordRegenerationFailure('thumbnails', photo, error.message);
+        } finally {
+          regenerationJobs.thumbnails.processed++;
         }
       }
       
       runningJobs.thumbnails = false;
+      regenerationJobs.thumbnails.running = false;
       logger.info(`Thumbnail regeneration complete: ${successCount} success, ${errorCount} errors`);
     });
     
@@ -343,8 +366,11 @@ router.post('/regenerate-previews', adminAuth, requirePermission('photos.edit'),
     const photos = await query;
     if (photos.length === 0) {
       runningJobs.previews = false;
+      regenerationJobs.previews = { running: false, total: 0, processed: 0, success: 0, failed: 0, failures: [] };
       return res.json({ message: 'No image photos to regenerate previews for', count: 0 });
     }
+
+    regenerationJobs.previews = { running: true, total: photos.length, processed: 0, success: 0, failed: 0, failures: [] };
 
     res.json({
       message: `Started regenerating ${photos.length} previews`,
@@ -369,15 +395,21 @@ router.post('/regenerate-previews', adminAuth, requirePermission('photos.edit'),
           const newPreviewPath = await ensurePreviewImage({ ...photo, preview_path: null }, { force: true });
           if (newPreviewPath) {
             successCount++;
+            regenerationJobs.previews.success++;
           } else {
             errorCount++;
+            recordRegenerationFailure('previews', photo, '无法生成预览图；请检查源文件是否存在且可读取');
           }
         } catch (error) {
           logger.error(`Error regenerating preview for photo ${photo.id}:`, error);
           errorCount++;
+          recordRegenerationFailure('previews', photo, error.message);
+        } finally {
+          regenerationJobs.previews.processed++;
         }
       }
       runningJobs.previews = false;
+      regenerationJobs.previews.running = false;
       logger.info(`Preview regeneration complete: ${successCount} success, ${errorCount} errors`);
     });
   } catch (error) {
@@ -401,7 +433,11 @@ router.get('/regenerate/status', adminAuth, requirePermission('photos.view'), as
       total: totalPhotos.count,
       withThumbnails: photosWithThumbnails.count,
       withoutThumbnails: totalPhotos.count - photosWithThumbnails.count,
-      percentage: Math.round((photosWithThumbnails.count / totalPhotos.count) * 100)
+      percentage: totalPhotos.count ? Math.round((photosWithThumbnails.count / totalPhotos.count) * 100) : 100,
+      jobs: {
+        thumbnails: { ...regenerationJobs.thumbnails, failures: [...regenerationJobs.thumbnails.failures] },
+        previews: { ...regenerationJobs.previews, failures: [...regenerationJobs.previews.failures] },
+      },
     });
   } catch (error) {
     logger.error('Error fetching regeneration status:', error);

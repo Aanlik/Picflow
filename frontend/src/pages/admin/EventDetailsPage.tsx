@@ -273,9 +273,15 @@ export const EventDetailsPage: React.FC = () => {
 
   const archiveMutation = useMutation({
     mutationFn: () => eventsService.archiveEvent(parseInt(id!)),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['admin-event', id] });
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['admin-event', id] }),
+        queryClient.invalidateQueries({ queryKey: ['admin-events'] }),
+        queryClient.invalidateQueries({ queryKey: ['admin-archives'] }),
+        queryClient.invalidateQueries({ queryKey: ['admin-storage'] }),
+      ]);
       toast.success(t('toast.eventArchived'));
+      navigate('/admin/archives', { replace: true });
     },
     onError: (error: any) => {
       toast.error(error.response?.data?.error || t('toast.saveError'));

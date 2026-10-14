@@ -597,12 +597,15 @@ export const StatusTab: React.FC<StatusTabProps> = ({
           </div>
 
           {dimensionStatus.lastResult && (
-            <p className="text-sm text-neutral-600 dark:text-neutral-400 mb-4">
+            <div className="text-sm text-neutral-600 dark:text-neutral-400 mb-4">
               {t('settings.photoDimensions.resultSuccess', {
                 success: dimensionStatus.lastResult.success,
                 failed: dimensionStatus.lastResult.failed,
               })}
-            </p>
+              {!!dimensionStatus.lastResult.failures?.length && <ul className="mt-2 list-disc space-y-1 pl-5">
+                {dimensionStatus.lastResult.failures.map((failure: { id: number; filename: string; reason: string }) => <li key={failure.id}>{failure.filename}：{failure.reason}</li>)}
+              </ul>}
+            </div>
           )}
 
           <div className="flex justify-end">

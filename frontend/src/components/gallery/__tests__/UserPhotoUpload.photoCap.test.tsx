@@ -49,8 +49,14 @@ async function pickTwoAndUpload(container: HTMLElement, user: ReturnType<typeof 
 }
 
 describe('UserPhotoUpload photo limit', () => {
-  beforeEach(() => { postState.calls = 0; });
-  afterEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    postState.calls = 0;
+    vi.stubGlobal('createImageBitmap', vi.fn().mockRejectedValue(new Error('unsupported test image')));
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
 
   it('shows the photo-limit message once and stops after a 409', async () => {
     postState.impl = () => Promise.reject(Object.assign(new Error('Request failed with status code 409'), {

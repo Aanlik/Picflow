@@ -24,6 +24,7 @@ export const AdminGuestsList: React.FC<AdminGuestsListProps> = ({ eventId, event
   const [view, setView] = useState<View>('list');
   const [selectedGuest, setSelectedGuest] = useState<AdminGuest | null>(null);
   const [mergeMode, setMergeMode] = useState(false);
+  const [showAllExports, setShowAllExports] = useState(false);
   const [mergeSelection, setMergeSelection] = useState<number[]>([]);
   // Which row absorbs the others. Never defaulted: see the grouping comment.
   const [keepId, setKeepId] = useState<number | null>(null);
@@ -168,7 +169,7 @@ export const AdminGuestsList: React.FC<AdminGuestsListProps> = ({ eventId, event
               <Button variant="primary" size="sm" onClick={performMerge} disabled={mergeSelection.length < 2 || keepId === null}>
                 {t('admin.guests.mergeNow', 'Merge selected')}
               </Button>
-              <Button variant="ghost" size="sm" onClick={() => { setMergeMode(false); setMergeSelection([]); setKeepId(null); }}>
+              <Button variant="ghost" size="sm" onClick={() => { setMergeMode(false); setMergeSelection([]); setKeepId(null); setShowAllExports(false); }}>
                 {t('common.cancel', 'Cancel')}
               </Button>
             </>
@@ -193,26 +194,26 @@ export const AdminGuestsList: React.FC<AdminGuestsListProps> = ({ eventId, event
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => setMergeMode(true)}
+                onClick={() => { setShowAllExports(false); setMergeMode(true); }}
                 disabled={guests.length < 2}
               >
                 {t('admin.guests.mergeMode', 'Merge')}
               </Button>
-              <div className="relative group">
-                <Button variant="outline" size="sm" leftIcon={<Download className="w-4 h-4" />}>
+              <div className="relative">
+                <Button variant="outline" size="sm" leftIcon={<Download className="w-4 h-4" />} aria-expanded={showAllExports} onClick={() => setShowAllExports((shown) => !shown)}>
                   {t('admin.guests.exportAll', 'Export all')}
                 </Button>
-                <div className="absolute right-0 top-full mt-1 hidden group-hover:block bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded shadow-lg z-10 min-w-[120px]">
+                {showAllExports && <div className="absolute right-0 top-full mt-1 bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded shadow-lg z-10 min-w-[120px]">
                   {(['csv', 'txt', 'json'] as const).map((fmt) => (
                     <button
                       key={fmt}
-                      onClick={() => handleExportAll(fmt)}
+                      onClick={() => { setShowAllExports(false); handleExportAll(fmt); }}
                       className="block w-full text-left px-3 py-2 text-sm hover:bg-neutral-100 dark:hover:bg-neutral-700"
                     >
                       {fmt.toUpperCase()}
                     </button>
                   ))}
-                </div>
+                </div>}
               </div>
             </>
           )}

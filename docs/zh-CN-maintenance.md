@@ -32,7 +32,7 @@ npm --prefix backend test -- --runInBand --silent
 uv sync --directory bridge --frozen --python 3.12 --extra test
 uv run --directory bridge pytest -q
 ./scripts/build-picflow.sh
-PICFLOW_IMAGE=picflow:1.0.4 bridge/docker/integrated/smoke.sh
+PICFLOW_IMAGE=picflow:1.0.5 bridge/docker/integrated/smoke.sh
 ```
 
 发布前对 Picflow `/data`、Bridge `/bridge-data` 以及摄影项目目录做一致性备份；先验证升级，再决定是否在生产切换镜像。若迁移后需回退，恢复升级前备份，不能只切换旧镜像。

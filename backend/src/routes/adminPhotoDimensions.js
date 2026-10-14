@@ -137,6 +137,10 @@ router.post('/repair-dimensions', adminAuth, requirePermission('system.manage'),
 
       let successCount = 0;
       let errorCount = 0;
+      const failures = [];
+      const recordFailure = (photo, reason) => {
+        if (failures.length < 20) failures.push({ id: photo.id, filename: photo.filename || `#${photo.id}`, reason: String(reason || '无法读取照片').slice(0, 300) });
+      };
       let lostClaim = false;
 
       // Everything below runs detached from the request, so an unexpected
@@ -158,6 +162,7 @@ router.post('/repair-dimensions', adminAuth, requirePermission('system.manage'),
             } catch (err) {
               logger.warn(`Photo ${photo.id} has no resolvable path, skipping dimension repair: ${err.message}`);
               errorCount++;
+              recordFailure(photo, err.message);
               continue;
             }
 
@@ -166,6 +171,7 @@ router.post('/repair-dimensions', adminAuth, requirePermission('system.manage'),
             } catch (err) {
               logger.warn(`File not found for photo ${photo.id}: ${fullPath}`);
               errorCount++;
+              recordFailure(photo, '找不到源文件或当前不可访问');
               continue;
             }
 
@@ -188,10 +194,12 @@ router.post('/repair-dimensions', adminAuth, requirePermission('system.manage'),
             } else {
               logger.warn(`Could not extract dimensions for photo ${photo.id}`);
               errorCount++;
+              recordFailure(photo, '无法从源文件读取尺寸信息');
             }
           } catch (error) {
             logger.error(`Error repairing dimensions for photo ${photo.id}:`, error);
             errorCount++;
+            recordFailure(photo, error.message);
           }
         }
 
@@ -202,12 +210,12 @@ router.post('/repair-dimensions', adminAuth, requirePermission('system.manage'),
           logger.warn(`Dimension repair stopped: claim taken over after ${successCount} updated, ${errorCount} errors`);
           return;
         }
-        await maintenanceJobs.release(JOB_DIMENSION_REPAIR, token, { success: successCount, failed: errorCount });
+        await maintenanceJobs.release(JOB_DIMENSION_REPAIR, token, { success: successCount, failed: errorCount, failures });
         logger.info(`Dimension repair complete: ${successCount} success, ${errorCount} errors`);
       } catch (err) {
         logger.error('Dimension repair aborted:', err);
         await maintenanceJobs
-          .release(JOB_DIMENSION_REPAIR, token, { success: successCount, failed: errorCount, error: err.message })
+          .release(JOB_DIMENSION_REPAIR, token, { success: successCount, failed: errorCount, failures, error: err.message })
           .catch(() => {});
       } finally {
         lease.stop();

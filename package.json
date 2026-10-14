@@ -1,6 +1,6 @@
 {
   "name": "picflow",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "private": true,
   "scripts": {
     "test:e2e": "playwright test"

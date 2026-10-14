@@ -189,14 +189,26 @@ def create_app(config=None, client=None, start_workers=True):
             for p in s.scalars(select(Project).where(Project.event_id.in_(configured))):
                 photos = list(s.scalars(select(Photo).where(Photo.project_id == p.id).order_by(Photo.photo_id)))
                 deliveries = list(s.scalars(select(Delivery).join(Photo).where(Photo.project_id == p.id)))
+                runs = list(s.scalars(select(SyncRun).where(SyncRun.project_id == p.id).order_by(SyncRun.id.desc()).limit(5)))
                 withdrawals = list(s.scalars(select(Withdrawal).join(Photo).where(Photo.project_id == p.id, Withdrawal.state != "SUCCESS")))
                 pending_withdrawal_ids = {item.photo_pk for item in withdrawals}
                 present_photo_ids = {photo.id for photo in photos if getattr(photo, "remote_present", True)}
                 active_selections = [
                     photo for photo in photos
-                    if photo.id in present_photo_ids and photo.selected and photo.id not in pending_withdrawal_ids
+                    if photo.id in present_photo_ids and photo.selected and not photo.cancelled
+                    and photo.id not in pending_withdrawal_ids
+                    # Keep lifecycle counters exclusive: an existing delivered
+                    # version is not also an active selection unless the client
+                    # selected it again as a new task during editing.
+                    and (not photo.delivery_hash or photo.added_during_editing)
                 ]
-                active_deliveries = [item for item in deliveries if item.photo_pk in present_photo_ids]
+                cancelled_photo_ids = {photo.id for photo in photos if photo.cancelled}
+                additional_photo_ids = {photo.id for photo in photos if photo.added_during_editing}
+                active_deliveries = [
+                    item for item in deliveries
+                    if item.photo_pk in present_photo_ids and item.photo_pk not in cancelled_photo_ids
+                    and item.photo_pk not in additional_photo_ids
+                ]
                 summary = {
                     "客户已选": len(active_selections),
                     "追加选片": sum(x.added_during_editing for x in active_selections),
@@ -209,6 +221,12 @@ def create_app(config=None, client=None, start_workers=True):
                     "取消待确认": sum(x.id in present_photo_ids and x.cancelled and is_file_reference(x.selected_path) for x in photos),
                     "异常": sum(bool(x.error) for x in photos) + sum(x.state in {"FAILED", "UNKNOWN"} for x in deliveries) + sum(bool(x.error) or x.state in {"UNKNOWN", "UPLOADING"} for x in withdrawals),
                 }
+                connection_state = (
+                    "connected" if p.connected else
+                    "syncing" if p.last_sync is None and any(run.finished is None for run in runs) else
+                    "not_synced" if p.last_sync is None else
+                    "disconnected"
+                )
                 project_config = next((c for c in engine.config.projects if c.event_id == p.event_id), None)
                 host_root = engine.config.delivery_host_root_for(p.event_id)
                 delivery_path = None
@@ -219,7 +237,7 @@ def create_app(config=None, client=None, start_workers=True):
                     "delivery_host_root": host_root, "delivery_host_path": delivery_path,
                     "photos": photos, "deliveries": deliveries, "summary": summary,
                     "errors": list(s.scalars(select(Error).where(Error.project_id == p.id, Error.resolved == False).order_by(Error.created.desc()).limit(30))),
-                    "runs": list(s.scalars(select(SyncRun).where(SyncRun.project_id == p.id).order_by(SyncRun.id.desc()).limit(5)))})
+                    "runs": runs, "connection_state": connection_state})
             return projects
 
     @app.get("/health")
@@ -239,7 +257,7 @@ def create_app(config=None, client=None, start_workers=True):
 
     @app.get("/api/projects", dependencies=[Depends(protect_request)])
     def projects(request: Request):
-        return [{"event_id": x["project"].event_id, "name": x["project"].name, "stage": x["project"].stage, "connected": x["project"].connected, "summary": x["summary"]} for x in view(request.app.state.engine)]
+        return [{"event_id": x["project"].event_id, "name": x["project"].name, "stage": x["project"].stage, "connected": x["project"].connected, "connection_state": x["connection_state"], "summary": x["summary"]} for x in view(request.app.state.engine)]
 
     @app.get("/api/projects/{event_id}/mount-status", dependencies=[Depends(protect_request)])
     def project_mount_status(request: Request, event_id: int):
@@ -310,7 +328,11 @@ def create_app(config=None, client=None, start_workers=True):
                 "photo_id": photo.photo_id,
                 "source_filename": photo.source_filename,
                 "remote_present": bool(getattr(photo, "remote_present", True)),
-                "selected": bool(getattr(photo, "remote_present", True) and photo.selected) and photo.id not in pending_withdrawals,
+                "selected": bool(
+                    getattr(photo, "remote_present", True)
+                    and photo.selected
+                    and (not photo.delivery_hash or photo.added_during_editing)
+                ) and photo.id not in pending_withdrawals,
                 "withdraw_pending": photo.id in pending_withdrawals,
                 "selection_cancelled": bool(photo.cancelled),
                 "added_during_editing": bool(photo.added_during_editing),
@@ -347,6 +369,7 @@ def create_app(config=None, client=None, start_workers=True):
             "name": project.name,
             "stage": project.stage,
             "connected": bool(project.connected),
+            "connection_state": entry["connection_state"],
             "delivery_path": delivery_path,
             "summary": entry["summary"],
             "photos": photos,
@@ -419,15 +442,14 @@ def create_app(config=None, client=None, start_workers=True):
     async def sync_project(request: Request, event_id: int):
         if event_id not in {p.event_id for p in request.app.state.config.projects}:
             raise HTTPException(404, "项目不存在")
-        await request.app.state.engine.sync(event_id)
-        return {"success": True}
+        return await request.app.state.engine.sync(event_id)
 
     @app.post("/api/projects/{event_id}/rescan", dependencies=[Depends(protect_request)])
     async def rescan_project(request: Request, event_id: int):
         if event_id not in {p.event_id for p in request.app.state.config.projects}:
             raise HTTPException(404, "项目不存在")
-        await request.app.state.engine.sync(event_id)
-        return {"success": True}
+        result = await request.app.state.engine.sync(event_id)
+        return {**result, "mode": "rescan"}
 
     @app.post("/api/projects/{event_id}/retry", dependencies=[Depends(protect_request)])
     async def retry_project(request: Request, event_id: int):

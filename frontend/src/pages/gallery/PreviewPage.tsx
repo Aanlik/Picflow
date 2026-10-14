@@ -15,7 +15,7 @@ const generateMockPhotos = (count: number) => {
     thumbnail_url: '',
     type: i % 3 === 0 ? 'collage' : 'individual',
     category_id: (i % 4) + 1,
-    category_name: ['Ceremony', 'Reception', 'Portraits', 'Party'][i % 4],
+    category_name: ['sampleCeremony', 'sampleReception', 'samplePortraits', 'sampleParty'][i % 4],
     category_slug: ['ceremony', 'reception', 'portraits', 'party'][i % 4],
     size: Math.floor(Math.random() * 5000000) + 1000000,
     uploaded_at: new Date().toISOString(),
@@ -23,10 +23,10 @@ const generateMockPhotos = (count: number) => {
 };
 
 const mockCategories = [
-  { id: 1, name: 'Ceremony', slug: 'ceremony', is_global: true },
-  { id: 2, name: 'Reception', slug: 'reception', is_global: true },
-  { id: 3, name: 'Portraits', slug: 'portraits', is_global: true },
-  { id: 4, name: 'Party', slug: 'party', is_global: true },
+  { id: 1, name: 'sampleCeremony', slug: 'ceremony', is_global: true },
+  { id: 2, name: 'sampleReception', slug: 'reception', is_global: true },
+  { id: 3, name: 'samplePortraits', slug: 'portraits', is_global: true },
+  { id: 4, name: 'sampleParty', slug: 'party', is_global: true },
 ];
 
 export const PreviewPage: React.FC = () => {
@@ -41,7 +41,7 @@ export const PreviewPage: React.FC = () => {
 
   const mockPhotos = useMemo(() => generateMockPhotos(12), []);
   const mockEvent = {
-    event_name: 'Preview Wedding Gallery',
+    event_name: tAudit('ui.themePreviewGalleryName', '相册主题预览'),
     event_date: new Date().toISOString(),
     expires_at: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
   };
@@ -108,7 +108,7 @@ export const PreviewPage: React.FC = () => {
             <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/60 to-transparent p-2">
               <p className="text-white text-xs truncate">{photo.filename}</p>
               {photo.category_name && (
-                <p className="text-white/70 text-xs">{photo.category_name}</p>
+                <p className="text-white/70 text-xs">{tAudit(`ui.${photo.category_name}`)}</p>
               )}
             </div>
           </div>

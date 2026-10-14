@@ -126,6 +126,31 @@ describe('gallery retouch workflow and client requests', () => {
     }));
   });
 
+  it('classifies a reselected delivered photo as editing when it is a new task', async () => {
+    global.fetch = jest.fn(async () => ({
+      status: 200,
+      json: async () => ({
+        event_id: eventId,
+        stage: 'EDITING',
+        photos: [{
+          ...bridgePhoto(visiblePhoto, true),
+          selected: true,
+          added_during_editing: true,
+          ready_for_editing: true,
+        }],
+      }),
+    }));
+    const result = await get(`/api/gallery/${slug}/retouch-workflow`);
+    expect(result.status).toBe(200);
+    expect(result.body.photos[0]).toMatchObject({ delivered: true, added_during_editing: true, state: 'editing' });
+    global.fetch = jest.fn(async (url) => ({
+      status: 200,
+      json: async () => String(url).includes('/version-folder')
+        ? { version: 3, folder: '/nas/Camera/Project/04_FINAL/V3' }
+        : { event_id: eventId, photos: [bridgePhoto(visiblePhoto), bridgePhoto(hiddenPhoto)] },
+    }));
+  });
+
   it('lets a customer withdraw an active request and clears its processing mark', async () => {
     const submitted = await post(`/api/gallery/${slug}/photos/${visiblePhoto}/retouch-requests`)
       .send({ request_type: 'revision', base_version: 2, message: '请稍微降低高光' });

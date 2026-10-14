@@ -43,6 +43,15 @@ interface FetchedSettings {
   formatOptions: Array<'jpeg' | 'png' | 'webp'>;
 }
 
+interface RegenerationJob {
+  running: boolean;
+  total: number;
+  processed: number;
+  success: number;
+  failed: number;
+  failures: Array<{ id: number; filename: string; reason: string }>;
+}
+
 export const ThumbnailsTab: React.FC = () => {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -62,6 +71,15 @@ export const ThumbnailsTab: React.FC = () => {
     queryFn: async () => {
       const response = await api.get('/admin/thumbnails/settings');
       return response.data;
+    },
+  });
+
+  const { data: regenerationStatus } = useQuery<{ jobs?: { thumbnails?: RegenerationJob; previews?: RegenerationJob } }>({
+    queryKey: ['thumbnail-regeneration-status'],
+    queryFn: async () => (await api.get('/admin/thumbnails/regenerate/status')).data,
+    refetchInterval: (query) => {
+      const jobs = query.state.data?.jobs;
+      return jobs?.thumbnails?.running || jobs?.previews?.running ? 1000 : false;
     },
   });
 
@@ -100,7 +118,8 @@ export const ThumbnailsTab: React.FC = () => {
       return response.data;
     },
     onSuccess: (data) => {
-      toast.success(data.message || t('settings.thumbnails.regenerateStarted', 'Thumbnail regeneration started'));
+      queryClient.invalidateQueries({ queryKey: ['thumbnail-regeneration-status'] });
+      toast.success(t('settings.thumbnails.regenerateStarted', { count: data.count ?? 0 }));
     },
     onError: (err) => {
       toast.error(regenerateErrorMessage(err, t('settings.thumbnails.regenerateError', 'Failed to start thumbnail regeneration')));
@@ -117,7 +136,8 @@ export const ThumbnailsTab: React.FC = () => {
       return response.data;
     },
     onSuccess: (data) => {
-      toast.success(data.message || t('settings.thumbnails.previewsRegenerateStarted', 'Lightbox preview regeneration started'));
+      queryClient.invalidateQueries({ queryKey: ['thumbnail-regeneration-status'] });
+      toast.success(t('settings.thumbnails.previewsRegenerateStarted', { count: data.count ?? 0 }));
     },
     onError: (err) => {
       toast.error(regenerateErrorMessage(err, t('settings.thumbnails.previewsRegenerateError', 'Failed to start preview regeneration')));
@@ -304,6 +324,12 @@ export const ThumbnailsTab: React.FC = () => {
         >
           {t('settings.thumbnails.regenerateButton', 'Regenerate All Thumbnails')}
         </Button>
+        {regenerationStatus?.jobs?.thumbnails && regenerationStatus.jobs.thumbnails.total > 0 && <div role="status" className="mt-4 rounded-md bg-neutral-50 p-3 text-sm text-neutral-700 dark:bg-neutral-800 dark:text-neutral-200">
+          <p>{regenerationStatus.jobs.thumbnails.running
+            ? t('settings.thumbnails.jobProgress', { processed: regenerationStatus.jobs.thumbnails.processed, total: regenerationStatus.jobs.thumbnails.total, success: regenerationStatus.jobs.thumbnails.success, failed: regenerationStatus.jobs.thumbnails.failed })
+            : t('settings.thumbnails.jobComplete', { total: regenerationStatus.jobs.thumbnails.total, success: regenerationStatus.jobs.thumbnails.success, failed: regenerationStatus.jobs.thumbnails.failed })}</p>
+          {!!regenerationStatus.jobs.thumbnails.failures.length && <ul className="mt-2 list-disc space-y-1 pl-5 text-red-700 dark:text-red-300">{regenerationStatus.jobs.thumbnails.failures.map((failure) => <li key={failure.id}>{failure.filename}：{failure.reason}</li>)}</ul>}
+        </div>}
       </Card>
 
       {/* Lightbox preview tier (#492). The toggle no longer decides whether
@@ -350,6 +376,12 @@ export const ThumbnailsTab: React.FC = () => {
         >
           {t('settings.thumbnails.regeneratePreviewsButton', 'Regenerate All Previews')}
         </Button>
+        {regenerationStatus?.jobs?.previews && regenerationStatus.jobs.previews.total > 0 && <div role="status" className="mt-4 rounded-md bg-neutral-50 p-3 text-sm text-neutral-700 dark:bg-neutral-800 dark:text-neutral-200">
+          <p>{regenerationStatus.jobs.previews.running
+            ? t('settings.thumbnails.jobProgress', { processed: regenerationStatus.jobs.previews.processed, total: regenerationStatus.jobs.previews.total, success: regenerationStatus.jobs.previews.success, failed: regenerationStatus.jobs.previews.failed })
+            : t('settings.thumbnails.jobComplete', { total: regenerationStatus.jobs.previews.total, success: regenerationStatus.jobs.previews.success, failed: regenerationStatus.jobs.previews.failed })}</p>
+          {!!regenerationStatus.jobs.previews.failures.length && <ul className="mt-2 list-disc space-y-1 pl-5 text-red-700 dark:text-red-300">{regenerationStatus.jobs.previews.failures.map((failure) => <li key={failure.id}>{failure.filename}：{failure.reason}</li>)}</ul>}
+        </div>}
       </Card>
 
       {/* Info Box */}

@@ -91,14 +91,14 @@ export const CategoryManager: React.FC = () => {
   };
 
   const handleDelete = (category: PhotoCategory) => {
-    if (window.confirm(t('categories.deleteConfirm', { name: category.name }))) {
+    if (window.confirm(t('categories.deleteConfirm', { name: categoryLabel(category, t) }))) {
       deleteMutation.mutate(category.id);
     }
   };
 
   const startEdit = (category: PhotoCategory) => {
     setEditingId(category.id);
-    setEditingName(category.name);
+    setEditingName(categoryLabel(category, t));
   };
 
   const cancelEdit = () => {

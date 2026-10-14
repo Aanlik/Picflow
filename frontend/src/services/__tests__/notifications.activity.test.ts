@@ -106,6 +106,23 @@ describe('client-activity notifications (#746)', () => {
     expect(messages[0]).toContain('IMG_001.jpg');
   });
 
+  it('uses separate copy when a customer removes or changes feedback', async () => {
+    await i18n.changeLanguage('zh-CN');
+    const added = notificationsService.formatNotificationMessage({
+      ...base, type: 'guest_feedback_like', metadata: { action: 'added' },
+    } as Notification);
+    const removed = notificationsService.formatNotificationMessage({
+      ...base, type: 'guest_feedback_like', metadata: { action: 'removed' },
+    } as Notification);
+    const changed = notificationsService.formatNotificationMessage({
+      ...base, type: 'guest_feedback_rating', metadata: { action: 'updated' },
+    } as Notification);
+    expect(added).toContain('点赞了');
+    expect(removed).toContain('取消了');
+    expect(removed).not.toBe(added);
+    expect(changed).toContain('调整了');
+  });
+
   it('uses a localized generic message for an unknown legacy notification', async () => {
     await i18n.changeLanguage('zh-CN');
     const message = notificationsService.formatNotificationMessage({

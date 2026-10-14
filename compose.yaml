@@ -1,7 +1,7 @@
 name: picflow
 services:
   picflow:
-    image: picflow:1.0.4
+    image: picflow:1.0.5
     build:
       context: .
       dockerfile: Dockerfile

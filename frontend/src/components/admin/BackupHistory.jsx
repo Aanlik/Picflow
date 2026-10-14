@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   Download,
@@ -60,6 +60,10 @@ export const BackupHistory = () => {
   // the setting, format(date) honors general_date_format, and
   // formatDistanceToNow returns "2 minutes ago" in the admin's i18n locale.
   const { format, formatTime, formatDistanceToNow } = useLocalizedDate();
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm, filterStatus]);
 
   // Fetch backup history
   const { data, isLoading, refetch } = useQuery({
@@ -274,7 +278,13 @@ export const BackupHistory = () => {
                                 <div className="text-sm space-y-1">
                                   <div className="flex justify-between">
                                     <span className="text-neutral-500 dark:text-neutral-400">{t('backup.history.details.destination')}:</span>
-                                    <span className="text-neutral-900 dark:text-neutral-100">{backup.destination_type || 'Unknown'}</span>
+                                    <span className="text-neutral-900 dark:text-neutral-100">{(() => {
+                                      const rawType = String(backup.destination_type || '').trim().toLowerCase();
+                                      const type = ['local', 's3', 'rsync'].includes(rawType)
+                                        ? rawType
+                                        : String(backup.manifest_path || '').startsWith('s3://') ? 's3' : 'local';
+                                      return t(`backup.configuration.destinationTypes.${type}.name`, { defaultValue: t('backup.history.destinationUnknown', 'Local storage') });
+                                    })()}</span>
                                   </div>
                                   <div className="flex justify-between">
                                     <span className="text-neutral-500 dark:text-neutral-400">{t('backup.history.details.started')}:</span>

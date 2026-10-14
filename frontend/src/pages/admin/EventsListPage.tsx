@@ -525,6 +525,7 @@ export const EventsListPage: React.FC = () => {
                           {/* Context menu for additional actions */}
                           <div className="relative inline-block text-left dropdown-container">
                             <button
+                              aria-label={t('events.moreActions', 'More actions')}
                               onClick={(e) => {
                                 e.stopPropagation();
                                 if (activeDropdown === event.id) {

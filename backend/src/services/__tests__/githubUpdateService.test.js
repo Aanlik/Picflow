@@ -83,8 +83,19 @@ describe('Picflow GitHub update check', () => {
     expect(global.fetch).toHaveBeenCalledTimes(1);
   });
 
-  it('surfaces API/network failures to the caller', async () => {
+  it('classifies an API error without exposing the upstream body', async () => {
     global.fetch = jest.fn().mockResolvedValue({ status: 403, ok: false });
-    await expect(checkLatestRelease('1.0')).rejects.toThrow('403');
+    await expect(checkLatestRelease('1.0')).rejects.toMatchObject({ code: 'GITHUB_HTTP_ERROR', status: 403 });
+  });
+
+  it.each([
+    [{ name: 'TimeoutError', code: 'ETIMEDOUT' }, 'GITHUB_TIMEOUT_ERROR'],
+    [{ name: 'Error', code: 'ENOTFOUND' }, 'GITHUB_DNS_ERROR'],
+    [{ name: 'Error', code: 'CERT_HAS_EXPIRED' }, 'GITHUB_TLS_ERROR'],
+    [{ name: 'TypeError', code: 'ECONNRESET' }, 'GITHUB_NETWORK_ERROR'],
+    [{ name: 'TypeError', cause: { code: 'ENOTFOUND' } }, 'GITHUB_DNS_ERROR'],
+  ])('classifies network errors for diagnosis', async (networkError, expectedCode) => {
+    global.fetch = jest.fn().mockRejectedValue(networkError);
+    await expect(checkLatestRelease('1.0')).rejects.toMatchObject({ code: expectedCode });
   });
 });

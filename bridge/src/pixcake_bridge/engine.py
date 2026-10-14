@@ -159,27 +159,36 @@ class Engine:
 
     async def sync(self, event_id=None):
         async with self.lock:
+            outcomes = []
             from .checkpoints import refresh
             refresh(self)
             if self.maintenance_until > time.monotonic():
-                return
+                return {"success": False, "blocked": True, "projects": [], "error": self.maintenance_reason or "正在执行维护"}
             for cfg in self.config.projects:
                 if event_id is not None and cfg.event_id != event_id:
                     continue
                 with self.sessions() as s:
                     project = s.scalar(select(Project).where(Project.event_id == cfg.event_id))
+                    if project is None:
+                        outcomes.append({"event_id": cfg.event_id, "success": False, "photos_processed": 0,
+                                         "error_count": 1, "errors": ["Bridge 中不存在此项目记录"]})
+                        continue
                     if project.stage == "ARCHIVED":
+                        outcomes.append({"event_id": cfg.event_id, "success": False, "photos_processed": 0,
+                                         "error_count": 1, "errors": ["项目已归档，未执行同步"]})
                         continue
                     withdrawal_failed = await self.resume_withdrawals(cfg, s, project)
                     run = SyncRun(project_id=project.id)
                     s.add(run)
                     s.commit()
                     failed = withdrawal_failed
+                    photos_processed = 0
                     try:
                         # Use a complete, unfiltered snapshot: filtering green
                         # would hide cancellations. Fetch all pages before any
                         # filesystem change so an API failure cannot delete RAW.
                         remote = await self.client.photos(cfg.event_id)
+                        photos_processed = len(remote)
                         project.connected = True
                         # PixCakeDelivery lives inside the referenced shoot
                         # folder, but contains selected RAW copies and final
@@ -217,14 +226,15 @@ class Engine:
                                 # have been migrated. Keep those picks intact
                                 # during that one-time compatibility window.
                                 photo.selected = (item.get("color_label") == "green") if retouch_selected is None else bool(retouch_selected)
-                                if photo.selected and photo.delivery_hash:
-                                    # Keeping an existing retouch means this is
-                                    # still the delivered photo, not a new pick.
-                                    photo.added_during_editing = False
-                                elif photo.selected and not was_selected and project.last_sync is not None and project.stage in {"EDITING", "DELIVERED"}:
+                                if photo.selected and not was_selected and project.last_sync is not None and project.stage in {"EDITING", "DELIVERED"}:
                                     # A deleted retouch is treated as a fresh
-                                    # additional selection if the client picks it again.
+                                    # additional selection if the client picks it again,
+                                    # including a new task after a retained delivery.
                                     photo.added_during_editing = True
+                                elif photo.selected and photo.delivery_hash and not photo.added_during_editing:
+                                    # Keeping the existing selection remains a
+                                    # completed delivery, not another active task.
+                                    photo.added_during_editing = False
                                 photo.cancelled = not photo.selected and (was_selected or photo.cancelled or bool(photo.selected_path))
                                 if not photo.upload_source_key and counts[stem_key(source)] != 1:
                                     raise ValueError("Proof stem 冲突，无法唯一映射 RAW/FINAL")
@@ -252,10 +262,28 @@ class Engine:
                         project.connected = False
                         self.record_error(s, project, exc)
                     run.success, run.finished = not failed, now()
+                    run_errors = list(s.scalars(
+                        select(Error.message).where(Error.project_id == project.id, Error.resolved == False)
+                        .order_by(Error.id.desc()).limit(20)
+                    ))
                     if not failed:
                         for error in s.scalars(select(Error).where(Error.project_id == project.id, Error.resolved == False)):
                             error.resolved = True
                     s.commit()
+                    outcomes.append({
+                        "event_id": cfg.event_id,
+                        "success": bool(run.success),
+                        "photos_processed": photos_processed,
+                        "error_count": len(run_errors) if failed else 0,
+                        "errors": run_errors if failed else [],
+                    })
+            return {
+                "success": bool(outcomes) and all(item["success"] for item in outcomes),
+                "projects": outcomes,
+                "photos_processed": sum(item["photos_processed"] for item in outcomes),
+                "error_count": sum(item["error_count"] for item in outcomes),
+                "errors": [error for item in outcomes for error in item["errors"]][:20],
+            }
 
     def _uploaded_source_snapshot(self, cfg, photo):
         if photo.upload_snapshot_path:
@@ -585,6 +613,11 @@ class Engine:
                     raise ValueError("FINAL 超过 100MB/配置上传限制")
                 digest = await asyncio.to_thread(sha256, source)
                 if digest == photo.delivery_hash:
+                    # The selected V folder still contains the exact latest
+                    # delivered bytes. The new request is therefore already
+                    # satisfied; clear the temporary "additional pick" state.
+                    photo.added_during_editing = False
+                    s.commit()
                     continue
                 # Preserve a verified immutable snapshot BEFORE any remote
                 # upload; editor may continue exporting to the same filename.
@@ -604,9 +637,9 @@ class Engine:
                     delivery = Delivery(photo_pk=photo.id, sha256=digest, marker=marker, snapshot=str(staged))
                     s.add(delivery)
                 elif delivery.state == "SUCCESS":
-                    # A byte-identical render was already delivered for this
-                    # photo. Keep the existing remote version instead of
-                    # uploading the same content again from a later folder.
+                    # The same bytes were already delivered for this photo.
+                    # Preserve hash-based idempotency instead of uploading a
+                    # historical render again from a later V folder.
                     staged.unlink()
                     continue
                 else:
@@ -616,7 +649,7 @@ class Engine:
                         delivery.snapshot = str(staged)
                 s.commit()
                 if photo.remote_filename == delivery.marker:
-                    self.success(s, cfg, photo, delivery)
+                    self.success(s, cfg, photo, delivery, complete_task=True)
                     continue
                 if delivery.state == "UNKNOWN":
                     # Exactly-once cannot be guaranteed without upstream
@@ -648,7 +681,7 @@ class Engine:
                     failed = True
                     s.commit()
                 else:
-                    self.success(s, cfg, photo, delivery)
+                    self.success(s, cfg, photo, delivery, complete_task=True)
             except (OSError, ValueError) as exc:
                 failed = True
                 photo.error = str(exc)
@@ -656,8 +689,10 @@ class Engine:
                 s.commit()
         return failed
 
-    def success(self, s, cfg, photo, delivery):
+    def success(self, s, cfg, photo, delivery, complete_task=False):
         photo.delivery_hash, photo.remote_filename = delivery.sha256, delivery.marker
+        if complete_task:
+            photo.added_during_editing = False
         delivery.state, delivery.error, delivery.updated = "SUCCESS", None, now()
         s.commit()
         rows = list(s.scalars(select(Delivery).where(Delivery.photo_pk == photo.id, Delivery.state == "SUCCESS").order_by(Delivery.updated.desc())))

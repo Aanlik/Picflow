@@ -33,8 +33,12 @@ router.get('/updates', adminAuth, requirePermission(['settings.view', 'system.vi
     const currentVersion = buildVersion;
     res.json(await checkLatestRelease(currentVersion));
   } catch (error) {
-    logger.warn('Picflow GitHub update check failed:', error.message);
-    res.status(502).json({ error: '暂时无法连接 GitHub 检查更新，请稍后重试。' });
+    logger.warn('Picflow GitHub update check failed:', { code: error.code || 'GITHUB_NETWORK_ERROR', status: error.status || null });
+    res.status(502).json({
+      error: '暂时无法连接 GitHub 检查更新，请稍后重试。',
+      code: error.code || 'GITHUB_NETWORK_ERROR',
+      ...(error.status ? { upstream_status: error.status } : {}),
+    });
   }
 });
 

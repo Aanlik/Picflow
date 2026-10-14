@@ -155,7 +155,7 @@ export const RoleManagementTab: React.FC = () => {
                   variant="outline"
                   size="sm"
                   leftIcon={<Copy className="w-3.5 h-3.5" />}
-                  onClick={() => setEditor({ mode: 'create', role: { ...role, displayName: `${roleDisplayName(role)} ${t('roleEditor.cloneSuffix', 'copy')}` } })}
+                  onClick={() => setEditor({ mode: 'create', role: { ...role, description: '', displayName: `${roleDisplayName(role)} ${t('roleEditor.cloneSuffix', 'copy')}` } })}
                 >
                   {t('roleEditor.clone', 'Clone')}
                 </Button>

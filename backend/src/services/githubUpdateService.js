@@ -2,10 +2,36 @@ const DEFAULT_REPOSITORY = 'Aanlik/Picflow';
 const CACHE_TTL_MS = 10 * 60 * 1000;
 let cached = null;
 
+function updateError(code, message, status = null) {
+  const error = new Error(message);
+  error.code = code;
+  if (Number.isInteger(status)) error.status = status;
+  return error;
+}
+
+function classifyNetworkError(error) {
+  // Node's fetch wraps DNS/TLS/socket errors in a TypeError and keeps the
+  // actionable OS error on `cause`; inspect both levels without returning the
+  // raw message (which may contain internal proxy or host details).
+  const cause = error?.cause || error;
+  const code = String(cause?.code || error?.code || '');
+  const name = String(error?.name || cause?.name || '');
+  if (['TimeoutError', 'AbortError'].includes(name) || ['ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT'].includes(code)) {
+    return updateError('GITHUB_TIMEOUT_ERROR', 'GitHub request timed out');
+  }
+  if (['ENOTFOUND', 'EAI_AGAIN', 'EAI_FAIL', 'ENODATA'].includes(code)) {
+    return updateError('GITHUB_DNS_ERROR', 'GitHub hostname could not be resolved');
+  }
+  if (/CERT_|SELF_SIGNED|UNABLE_TO_VERIFY|ERR_TLS|ERR_SSL|DEPTH_ZERO/i.test(code)) {
+    return updateError('GITHUB_TLS_ERROR', 'TLS verification failed for GitHub');
+  }
+  return updateError('GITHUB_NETWORK_ERROR', 'GitHub network request failed');
+}
+
 function repository() {
   const value = process.env.PICFLOW_GITHUB_REPOSITORY || process.env.PHOFLOW_GITHUB_REPOSITORY || DEFAULT_REPOSITORY;
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(value)) {
-    throw new Error('Invalid PICFLOW_GITHUB_REPOSITORY');
+    throw updateError('GITHUB_CONFIG_ERROR', 'Invalid GitHub repository setting');
   }
   return value;
 }
@@ -35,14 +61,19 @@ async function checkLatestRelease(currentVersion) {
 
   const repositoryUrl = `https://github.com/${repo}`;
   const releasesUrl = `${repositoryUrl}/releases`;
-  const response = await fetch(`https://api.github.com/repos/${repo}/releases/latest`, {
-    headers: {
-      Accept: 'application/vnd.github+json',
-      'X-GitHub-Api-Version': '2022-11-28',
-      'User-Agent': 'Picflow-update-check',
-    },
-    signal: AbortSignal.timeout(8000),
-  });
+  let response;
+  try {
+    response = await fetch(`https://api.github.com/repos/${repo}/releases/latest`, {
+      headers: {
+        Accept: 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+        'User-Agent': 'Picflow-update-check',
+      },
+      signal: AbortSignal.timeout(8000),
+    });
+  } catch (error) {
+    throw classifyNetworkError(error);
+  }
 
   let value;
   if (response.status === 404) {
@@ -66,10 +97,10 @@ async function checkLatestRelease(currentVersion) {
         checkedAt: new Date().toISOString(),
       };
     } else {
-      throw new Error(`GitHub API returned ${response.status}`);
+      throw updateError('GITHUB_HTTP_ERROR', `GitHub API returned ${response.status}`, response.status);
     }
   } else if (!response.ok) {
-    throw new Error(`GitHub API returned ${response.status}`);
+    throw updateError('GITHUB_HTTP_ERROR', `GitHub API returned ${response.status}`, response.status);
   } else {
     const release = await response.json();
     const latestVersion = typeof release.tag_name === 'string' ? release.tag_name.trim() : '';
