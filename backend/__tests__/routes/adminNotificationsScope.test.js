@@ -95,11 +95,13 @@ describe('admin notifications — owner scope and audit retention', () => {
     expect(scoped.status).toBe(200);
     expect(scoped.body.notifications.map((n) => n.id)).toEqual([own]);
     expect(Number(scoped.body.unreadCount)).toBe(1);
+    expect(Number(scoped.body.totalCount)).toBe(1);
 
     const sup = await auth(request(app).get('/api/admin/notifications'), superTok);
     expect(sup.status).toBe(200);
     expect(sup.body.notifications).toHaveLength(3);
     expect(Number(sup.body.unreadCount)).toBe(3);
+    expect(Number(sup.body.totalCount)).toBe(3);
   });
 
   it('does not mark a foreign row read', async () => {

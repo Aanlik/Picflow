@@ -69,4 +69,9 @@ describe('PhotoFilterBar feedback chips (#802)', () => {
     render(<PhotoFilterBar {...baseProps} />);
     expect(screen.queryByText('Feedback Filter')).toBeNull();
   });
+
+  it('keeps the current sort visible on narrow screens beside the icon', () => {
+    render(<PhotoFilterBar {...baseProps} />);
+    expect(screen.getByText('gallery.sortLabelDate')).toBeInTheDocument();
+  });
 });

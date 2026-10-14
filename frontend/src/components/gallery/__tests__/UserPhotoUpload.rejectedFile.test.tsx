@@ -77,14 +77,15 @@ describe('UserPhotoUpload rejected file', () => {
     expect(onUploadComplete).not.toHaveBeenCalled();
   });
 
-  it('still reports success and hands over the upload id when the file lands', async () => {
+  it('reports that a file was queued, not completed, and hands over the upload id', async () => {
     postMock.mockResolvedValue({ data: { upload_id: 'u1', count: 1 } });
     const user = userEvent.setup();
     const { container, onUploadComplete } = renderUploader();
 
     await pickAndUpload(container, user, 'good.png');
 
-    await waitFor(() => expect(toastMock.success).toHaveBeenCalled());
+    await waitFor(() => expect(toastMock.info).toHaveBeenCalledWith('upload.processingQueued'));
+    expect(toastMock.success).not.toHaveBeenCalled();
     expect(onUploadComplete).toHaveBeenCalledWith(['u1']);
   });
 });

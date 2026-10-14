@@ -179,7 +179,7 @@ export const ArchivesPage: React.FC = () => {
               <p className="text-2xl font-bold text-neutral-900 dark:text-neutral-100">
                 {totals.archives > 0
                   ? archiveService.formatBytes(totals.archiveSize / totals.archives)
-                  : '0 Bytes'
+                  : archiveService.formatBytes(0)
                 }
               </p>
             </div>

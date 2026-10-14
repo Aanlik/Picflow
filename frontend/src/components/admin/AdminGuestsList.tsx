@@ -32,6 +32,10 @@ export const AdminGuestsList: React.FC<AdminGuestsListProps> = ({ eventId, event
   const { data, isLoading, refetch } = useQuery({
     queryKey: ['admin-guests', eventId],
     queryFn: () => guestsService.getEventGuests(eventId),
+    // Customer actions arrive from separate browsers, so no local mutation
+    // can invalidate this list. Poll only while this project tab is mounted.
+    refetchInterval: 2_000,
+    refetchIntervalInBackground: false,
   });
 
   const deleteMutation = useMutationWithToast({

@@ -171,6 +171,18 @@ describe('PhotoUpload completion toast', () => {
     await waitFor(() => expect(toastMock.success).toHaveBeenCalled());
     expect(toastMock.warning).not.toHaveBeenCalled();
   });
+
+  it('switches to background processing even if the browser omits its final upload-progress event', async () => {
+    postMock.mockResolvedValue({ data: { count: 1, upload_id: 'u1', errors: [] } });
+    hoisted.aggregate = { ...idle, total: 1, pending: 1, isReady: true };
+    const user = userEvent.setup();
+    const { container } = renderWithClient(<PhotoUpload eventId={1} />);
+
+    await uploadFiles(container, user, ['good.png']);
+
+    expect(await screen.findByText('upload.processing')).toBeInTheDocument();
+    expect(screen.getByText('upload.processingHint')).toBeInTheDocument();
+  });
 });
 
 describe('host refresh callback', () => {

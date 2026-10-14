@@ -141,6 +141,9 @@ export const BackupDashboard: React.FC<BackupDashboardProps> = ({ status, config
       if (lastBackup?.status === 'failed') {
         return { score: 0, status: 'critical', message: t('backup.dashboard.healthMessages.lastBackupFailed') };
       }
+      if (!isConfigured || !isEnabled) {
+        return { score: 0, status: 'warning', message: t('backup.dashboard.healthMessages.notConfigured') };
+      }
       return { score: 0, status: 'critical', message: t('backup.dashboard.healthMessages.noBackups') };
     }
 
@@ -384,11 +387,15 @@ export const BackupDashboard: React.FC<BackupDashboardProps> = ({ status, config
                 <Database className="h-5 w-5 text-neutral-400" />
                 <span className="text-neutral-700 dark:text-neutral-300">{tAudit("ui.database")}</span>
               </div>
-              <span className={`px-2 py-1 rounded text-xs font-medium ${
-                statistics.database_backed_up ? 'bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300' : 'bg-neutral-100 dark:bg-neutral-700 text-neutral-700 dark:text-neutral-300'
-              }`}>
-                {statistics.database_backed_up ? t('backup.dashboard.coverage.included') : t('backup.dashboard.coverage.excluded')}
-              </span>
+              {typeof statistics.database_backed_up === 'boolean' ? (
+                <span className={`px-2 py-1 rounded text-xs font-medium ${
+                  statistics.database_backed_up ? 'bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300' : 'bg-neutral-100 dark:bg-neutral-700 text-neutral-700 dark:text-neutral-300'
+                }`}>
+                  {statistics.database_backed_up ? t('backup.dashboard.coverage.included') : t('backup.dashboard.coverage.excluded')}
+                </span>
+              ) : (
+                <span className="text-sm text-neutral-500 dark:text-neutral-400">{t('backup.dashboard.coverage.notRecorded')}</span>
+              )}
             </div>
 
             <div className="flex items-center justify-between">
@@ -397,7 +404,9 @@ export const BackupDashboard: React.FC<BackupDashboardProps> = ({ status, config
                 <span className="text-neutral-700 dark:text-neutral-300">{t('backup.configuration.whatToBackup.photos')}</span>
               </div>
               <span className="text-sm text-neutral-500 dark:text-neutral-400">
-                {statistics.photos_backed_up || 0} {t('common.of')} {statistics.total_photos || 0}
+                {typeof statistics.photos_backed_up === 'number' && typeof statistics.total_photos === 'number'
+                  ? `${statistics.photos_backed_up} ${t('common.of')} ${statistics.total_photos}`
+                  : t('backup.dashboard.coverage.notRecorded')}
               </span>
             </div>
 
@@ -407,7 +416,9 @@ export const BackupDashboard: React.FC<BackupDashboardProps> = ({ status, config
                 <span className="text-neutral-700 dark:text-neutral-300">{t('backup.configuration.whatToBackup.archives')}</span>
               </div>
               <span className="text-sm text-neutral-500 dark:text-neutral-400">
-                {statistics.archives_backed_up || 0} {t('backup.dashboard.stats.files')}
+                {typeof statistics.archives_backed_up === 'number'
+                  ? `${statistics.archives_backed_up} ${t('backup.dashboard.stats.files')}`
+                  : t('backup.dashboard.coverage.notRecorded')}
               </span>
             </div>
           </div>

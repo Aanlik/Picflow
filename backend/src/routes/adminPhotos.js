@@ -302,6 +302,13 @@ router.post('/:eventId/upload', adminAuth, requirePermission('photos.upload'), r
     if (!req.files || req.files.length === 0) {
       logger.error('No files in request. req.files:', req.files);
       logger.error('Request body keys:', Object.keys(req.body));
+      if (Array.isArray(req.invalidFiles) && req.invalidFiles.length > 0) {
+        return res.status(400).json({
+          error: 'No valid files were uploaded',
+          code: 'UPLOAD_VALIDATION_FAILED',
+          errors: req.invalidFiles,
+        });
+      }
       return res.status(400).json({ error: 'No files uploaded' });
     }
 

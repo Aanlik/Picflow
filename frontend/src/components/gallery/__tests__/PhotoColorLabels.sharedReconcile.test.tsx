@@ -81,7 +81,7 @@ describe('shared colour tag reconciliation', () => {
   it('shows Lightroom label number 10 beside the purple swatch without implying a shortcut', () => {
     renderLabels('purple');
 
-    const purpleButton = screen.getByTitle('purple');
+    const purpleButton = screen.getByTitle('feedback.purpleColorNumber');
     expect(purpleButton).toHaveAttribute('aria-pressed', 'true');
     expect(within(purpleButton).getByText('10')).toBeInTheDocument();
     expect(purpleButton.querySelector('span')).toHaveStyle({ backgroundColor: 'rgb(155, 89, 208)' });

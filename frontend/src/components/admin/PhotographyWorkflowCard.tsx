@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { toast } from 'react-toastify';
 import { RefreshCw, Save } from 'lucide-react';
 import { api } from '../../config/api';
 import { Card, Button } from '../common';
@@ -182,11 +183,13 @@ export function PhotographyWorkflowCard({ eventId }: { eventId: number }) {
         {(workflow?.summary?.['异常'] || 0) > 0 && <Button variant="outline" size="sm" disabled={busy} onClick={() => {
           void perform(async () => {
             try {
-              await api.post(`/admin/photography-workflow/${eventId}/retry`, { confirm_unknown: false });
+              const result = await api.post(`/admin/photography-workflow/${eventId}/retry`, { confirm_unknown: false });
+              toast.success(t('photographyWorkflow.retryQueued', { count: result.data?.total_requeued ?? 0 }));
             } catch (cause: any) {
               if (cause?.response?.status !== 409 || cause?.response?.data?.code !== 'UNKNOWN_CONFIRMATION_REQUIRED') throw cause;
               if (!window.confirm(t('photographyWorkflow.confirmUnknownRetry', { count: cause.response.data.count || 1 }))) return;
-              await api.post(`/admin/photography-workflow/${eventId}/retry`, { confirm_unknown: true });
+              const result = await api.post(`/admin/photography-workflow/${eventId}/retry`, { confirm_unknown: true });
+              toast.success(t('photographyWorkflow.retryQueued', { count: result.data?.total_requeued ?? 0 }));
             }
           });
         }}>{t('photographyWorkflow.retryFailed')}</Button>}

@@ -109,6 +109,7 @@ export const PhotoFilterBar: React.FC<PhotoFilterBarProps> = ({
             })}
             className="w-full md:w-auto text-sm md:text-base"
           >
+            <span className="md:hidden">{t(`gallery.sortLabel${sortBy === 'capture_date' ? 'CaptureDate' : sortBy.charAt(0).toUpperCase() + sortBy.slice(1)}`)}</span>
             <span className="hidden md:inline">{t('common.sortBy')}{" "}
             {sortBy === 'date' ? t('gallery.sortByDate').replace(t('common.sortBy'), '') :
              sortBy === 'name' ? t('gallery.sortByName').replace(t('common.sortBy'), '') :

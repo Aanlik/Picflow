@@ -39,7 +39,9 @@ const saveBlob = (blob: Blob, filename: string) => {
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  // Browsers begin the download after the click handler returns. Revoking in
+  // the same task can invalidate the blob before the download manager opens it.
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
 };
 
 interface ShareLinkCardProps {
@@ -136,6 +138,7 @@ export const ShareLinkCard: React.FC<ShareLinkCardProps> = ({ event, setShowPass
         const lang = (i18n.language || 'en').split('-')[0];
         saveBlob(await eventsService.getQrPrintBlob(event.id, kind, lang), `qr-${kind}-${event.slug}.pdf`);
       }
+      toast.success(t('events.downloadStarted', 'Download started'));
     } catch {
       toast.error(t('errors.downloadFailed', 'Download failed'));
     }

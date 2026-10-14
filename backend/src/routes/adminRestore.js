@@ -863,10 +863,35 @@ async function checkRestorePathsAllowed({ source, manifestPath }) {
         : null; // non-JSON (e.g. YAML) manifests are re-checked inside restoreService
       const dbBackupFile = parsed?.database?.backup_file;
       if (typeof dbBackupFile === 'string' && path.isAbsolute(dbBackupFile) && !isInsideRoots(dbBackupFile)) {
-        logger.warn('Refusing restore: manifest database.backup_file escapes configured backup roots', {
-          manifestPath, backupFile: dbBackupFile,
-        });
-        return 'Manifest database.backup_file must be inside a configured backup location';
+        // A backup manifest can be moved between NAS/container installations.
+        // Its absolute path then describes the original host, while the same
+        // database dump is present under <configured-root>/database. The
+        // restore service already resolves that basename only within the
+        // selected root and verifies the manifest checksum before restoring.
+        // Permit that portable fallback only when a regular file actually
+        // exists inside an allowed root; arbitrary manifest paths still fail
+        // closed and the restore service remains the final containment gate.
+        const portableCandidates = resolvedRoots.map((root) =>
+          path.join(root, 'database', path.basename(dbBackupFile))
+        );
+        let portableCandidateExists = false;
+        for (const candidate of portableCandidates) {
+          try {
+            const stat = await fs.stat(candidate);
+            if (stat.isFile() && isInsideRoots(candidate)) {
+              portableCandidateExists = true;
+              break;
+            }
+          } catch (_) {
+            // Try the next configured root.
+          }
+        }
+        if (!portableCandidateExists) {
+          logger.warn('Refusing restore: manifest database.backup_file escapes configured backup roots', {
+            manifestPath, backupFile: dbBackupFile,
+          });
+          return 'Manifest database.backup_file must be inside a configured backup location';
+        }
       }
     } catch (_) {
       // Unreadable/corrupt/non-JSON manifest: let the normal restore flow

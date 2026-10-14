@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PhotographyWorkflowCard } from '../PhotographyWorkflowCard';
 import { api } from '../../../config/api';
 vi.mock('../../../config/api', () => ({ api: { get: vi.fn(), post: vi.fn(), patch: vi.fn() } }));
+vi.mock('react-toastify', () => ({ toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() } }));
+import { toast } from 'react-toastify';
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.clearAllMocks(); });
 describe('photography workflow summary', () => {
   it('shows actual later selections, revision and cancellation counts', async () => {
@@ -54,6 +56,20 @@ describe('photography workflow summary', () => {
     render(<PhotographyWorkflowCard eventId={9} />);
     await waitFor(() => expect(screen.getByText(/The shared PixCakeDelivery folder is not available/)).toBeTruthy());
     expect(screen.queryByRole('button', { name: 'Connect project folder automatically' })).toBeNull();
+  });
+
+  it('reports how many failed jobs were actually requeued', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => url.endsWith('/requests')
+      ? { data: { requests: [] } } as any
+      : { data: { configured: true, stage: 'EDITING', connected: true, summary: { '异常': 2 }, photos: [] } } as any);
+    vi.mocked(api.post).mockResolvedValue({ data: { success: true, total_requeued: 3 } } as any);
+
+    render(<PhotographyWorkflowCard eventId={7} />);
+    const retry = await screen.findByRole('button', { name: 'Retry failed tasks' });
+    fireEvent.click(retry);
+
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith(expect.stringMatching(/3/)));
+    expect(api.post).toHaveBeenCalledWith('/admin/photography-workflow/7/retry', { confirm_unknown: false });
   });
 });
 

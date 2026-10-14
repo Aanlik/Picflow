@@ -676,16 +676,25 @@ class Engine:
 
     def retry(self, event_id):
         self.require_writable()
+        deliveries_requeued = 0
+        withdrawals_requeued = 0
         with self.sessions() as s:
             photo_ids = select(Photo.id).join(Project).where(Project.event_id == event_id)
             for delivery in s.scalars(select(Delivery).where(Delivery.photo_pk.in_(photo_ids), Delivery.state.in_(["FAILED", "UNKNOWN"]))):
                 delivery.state, delivery.error = "PENDING", None
+                deliveries_requeued += 1
             for task in s.scalars(select(Withdrawal).where(Withdrawal.photo_pk.in_(photo_ids), Withdrawal.state != "SUCCESS")):
                 if task.state in {"UNKNOWN", "UPLOADING", "FAILED"}:
                     task.state = "PENDING"
+                    withdrawals_requeued += 1
                 task.error = None
             s.commit()
         self.wake.set()
+        return {
+            "deliveries_requeued": deliveries_requeued,
+            "withdrawals_requeued": withdrawals_requeued,
+            "total_requeued": deliveries_requeued + withdrawals_requeued,
+        }
 
     async def loop(self):
         while True:

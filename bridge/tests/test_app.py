@@ -168,6 +168,8 @@ def test_retry_requires_confirmation_for_unknown_upload(tmp_path):
         assert blocked.json()["detail"]["count"] == 1
         confirmed = client.post("/api/projects/7/retry", json={"confirm_unknown": True})
         assert confirmed.status_code == 200
+        assert confirmed.json()["total_requeued"] == 1
+        assert confirmed.json()["deliveries_requeued"] == 1
         with engine.sessions() as session:
             delivery = session.scalar(select(Delivery))
             assert delivery.state == "PENDING"

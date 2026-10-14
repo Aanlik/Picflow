@@ -58,6 +58,10 @@ router.get('/', adminAuth, requirePermission(['settings.view', 'notifications.vi
 
     const notifications = await query;
 
+    const total = await bellRows(req.admin)
+      .count('activity_logs.id as count')
+      .first();
+
     // Format notifications
     const formattedNotifications = notifications.map(notification => ({
       id: notification.id,
@@ -91,7 +95,8 @@ router.get('/', adminAuth, requirePermission(['settings.view', 'notifications.vi
 
     res.json({
       notifications: formattedNotifications,
-      unreadCount: unreadCount.count || 0
+      unreadCount: Number(unreadCount?.count) || 0,
+      totalCount: Number(total?.count) || 0,
     });
   } catch (error) {
     logger.error('Notifications fetch error:', error);

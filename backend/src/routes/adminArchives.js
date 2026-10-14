@@ -227,6 +227,17 @@ router.post('/:id/restore', adminAuth, requirePermission('archives.restore'), re
       .first();
 
     if (!archive) {
+      // Extraction and the event-state update may finish even if the client
+      // times out before receiving the response. Treat a repeated restore as
+      // successful when the project is already active, so retrying the UI
+      // cannot turn a completed restore into a misleading 404.
+      const existingEvent = await db('events')
+        .where('id', req.params.id)
+        .where('is_archived', formatBoolean(false))
+        .first();
+      if (existingEvent) {
+        return res.json({ message: 'Archive already restored', alreadyRestored: true });
+      }
       return res.status(404).json({ error: 'Archive not found' });
     }
 
@@ -635,15 +646,22 @@ router.post('/:id/restore', adminAuth, requirePermission('archives.restore'), re
       logger.warn(`Bridge workflow state restore failed for event ${archive.id}: HTTP ${workflowRestore.status}`);
     }
 
-    // Log activity
-    await db('activity_logs').insert({
-      activity_type: 'archive_restored',
-      actor_type: 'admin',
-      actor_id: req.admin.id,
-      actor_name: req.admin.username,
-      event_id: archive.id,
-      metadata: JSON.stringify({ event_name: archive.event_name })
-    });
+    // The project and files are already restored at this point. Audit-log
+    // storage is ancillary: a logging failure must not turn a completed,
+    // destructive restore into a client-visible failure that invites a
+    // duplicate retry and leaves the operator unsure whether it succeeded.
+    try {
+      await db('activity_logs').insert({
+        activity_type: 'archive_restored',
+        actor_type: 'admin',
+        actor_id: req.admin.id,
+        actor_name: req.admin.username,
+        event_id: archive.id,
+        metadata: JSON.stringify({ event_name: archive.event_name })
+      });
+    } catch (auditError) {
+      logger.warn(`Archive ${archive.id} restored, but its audit event could not be saved: ${auditError.message}`);
+    }
 
     res.json({ message: 'Archive restored successfully' });
   } catch (error) {

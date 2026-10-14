@@ -250,7 +250,12 @@ export const UserPhotoUpload: React.FC<UserPhotoUploadProps> = ({
     setUploading(false);
 
     if (successCount > 0) {
-      toast.success(t('toast.uploadSuccess') + ` (${successCount} ${t('common.photos')})`);
+      // The request only confirms that bytes were queued. The image decoder
+      // runs asynchronously and can still reject a corrupt JPG, so only the
+      // status poll may announce a completed upload.
+      if (uploadIds.length > 0) {
+        toast.info(t('upload.processingQueued', { count: successCount }));
+      }
       onUploadComplete(uploadIds);
     }
     

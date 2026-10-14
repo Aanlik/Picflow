@@ -12,7 +12,7 @@
  *  - a video over the photo cap but under the video cap is accepted
  *  - a video over the video cap is dropped too
  */
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -111,5 +111,17 @@ describe('PhotoUpload pre-flight size guard', () => {
 
     expect(toastError).toHaveBeenCalledWith('upload.fileTooLarge:long.mp4:5');
     expect(screen.queryByText('long.mp4')).not.toBeInTheDocument();
+  });
+
+  it('explains why an unsupported file was skipped', async () => {
+    const user = userEvent.setup();
+    const { container } = renderWithClient(<PhotoUpload eventId={1} />);
+    await waitFor(() => expect(screen.getByText('upload.videoSizeLimit')).toBeInTheDocument());
+
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(input, { target: { files: [new File(['notes'], 'notes.txt', { type: 'text/plain' })] } });
+
+    expect(toastError).toHaveBeenCalledWith('upload.unsupportedFilesSkipped');
+    expect(screen.queryByText('notes.txt')).not.toBeInTheDocument();
   });
 });

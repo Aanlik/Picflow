@@ -23,26 +23,26 @@ interface PhotoExportMenuProps {
 const EXPORT_FORMATS = [
   {
     value: 'txt',
-    label: 'Filename List (TXT)',
-    description: 'Simple text list for Lightroom search',
+    labelKey: 'export.formats.txt.label',
+    descriptionKey: 'export.formats.txt.description',
     icon: FileText
   },
   {
     value: 'csv',
-    label: 'Filename List (CSV)',
-    description: 'Spreadsheet with metadata',
+    labelKey: 'export.formats.csv.label',
+    descriptionKey: 'export.formats.csv.description',
     icon: FileSpreadsheet
   },
   {
     value: 'xmp',
-    label: 'XMP Sidecar Files (ZIP)',
-    description: 'Import ratings into Lightroom/Bridge',
+    labelKey: 'export.formats.xmp.label',
+    descriptionKey: 'export.formats.xmp.description',
     icon: Archive
   },
   {
     value: 'json',
-    label: 'Metadata (JSON)',
-    description: 'Structured data for automation',
+    labelKey: 'export.formats.json.label',
+    descriptionKey: 'export.formats.json.description',
     icon: FileJson
   },
 ];
@@ -225,10 +225,10 @@ export const PhotoExportMenu: React.FC<PhotoExportMenuProps> = ({
                     <Icon className="w-5 h-5 text-neutral-500 dark:text-neutral-400 mt-0.5" />
                     <div>
                       <div className="text-sm font-medium text-neutral-900 dark:text-neutral-100">
-                        {format.label}
+                        {t(format.labelKey)}
                       </div>
                       <div className="text-xs text-neutral-500 dark:text-neutral-400">
-                        {format.description}
+                        {t(format.descriptionKey)}
                       </div>
                     </div>
                   </button>

@@ -53,6 +53,17 @@ describe('client-activity notifications (#746)', () => {
     expect(message).not.toContain('The password');
   });
 
+  it('localizes legacy settings notification categories instead of leaking System', async () => {
+    await i18n.changeLanguage('zh-CN');
+    const message = notificationsService.formatNotificationMessage({
+      ...base,
+      type: 'settings_updated',
+      metadata: { type: 'System' },
+    } as Notification);
+    expect(message).toBe('设置已更新：系统设置');
+    expect(message).not.toContain('System');
+  });
+
   it('uses concrete customer feedback and retouch details instead of the generic activity line', async () => {
     await i18n.changeLanguage('zh-CN');
     const messages = [

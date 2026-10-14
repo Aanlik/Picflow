@@ -194,7 +194,15 @@ async def test_unknown_withdrawal_requires_confirmation_before_manual_retry(tmp_
         # verified it and explicitly confirms retrying the proof replacement.
         allowed = await client.post('/api/projects/7/retry', json={'confirm_unknown': True})
         assert allowed.status_code == 200
+        assert allowed.json() == {
+            'success': True,
+            'deliveries_requeued': 0,
+            'withdrawals_requeued': 1,
+            'total_requeued': 1,
+        }
     with engine.sessions() as s:
-        assert s.scalar(select(Withdrawal)).state == 'SUCCESS'
-    assert not final.exists()
+        assert s.scalar(select(Withdrawal)).state == 'PENDING'
+    # The API acknowledges persisted work; the background worker performs the
+    # destructive withdrawal after the response has been returned.
+    assert final.exists()
     db.dispose()

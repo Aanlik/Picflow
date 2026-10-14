@@ -311,6 +311,8 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({ onMenuClick }) => {
               <button
                 onClick={notificationsModal.toggle}
                 className="relative p-2 text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded-lg transition-colors"
+                aria-label={t('admin.notifications')}
+                title={t('admin.notifications')}
               >
                 <Bell className="w-5 h-5" />
                 {unreadCount > 0 && (
@@ -335,7 +337,13 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({ onMenuClick }) => {
                         </button>
                       )}
                       <button
-                        onClick={() => clearAllMutation.mutate()}
+                        onClick={() => {
+                          const total = notificationsData?.totalCount || 0;
+                          if (total === 0) return;
+                          if (window.confirm(t('admin.clearAllConfirm', { count: total }))) {
+                            clearAllMutation.mutate();
+                          }
+                        }}
                         className="text-xs text-neutral-600 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-300 flex items-center gap-1"
                         title={t('admin.clearAll')}
                       >

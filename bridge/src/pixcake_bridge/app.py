@@ -453,9 +453,12 @@ def create_app(config=None, client=None, start_workers=True):
                     "code": "UNKNOWN_CONFIRMATION_REQUIRED",
                     "count": len(unknown),
                 })
-            engine.retry(event_id)
-        await engine.sync(event_id)
-        return {"success": True}
+            result = engine.retry(event_id)
+        # retry() has already persisted the pending state and woken the
+        # background worker. Do not run a second full sync in this request:
+        # uploads may take minutes, while the UI only needs an immediate,
+        # truthful queued count.
+        return {"success": True, **result}
 
     @app.post("/api/state/checkpoint", dependencies=[Depends(protect_request)])
     async def checkpoint(request: Request):

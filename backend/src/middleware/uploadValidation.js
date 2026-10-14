@@ -11,7 +11,9 @@ async function validateUploadedFile(filePath) {
     // Check file exists and has size
     const stats = await fs.stat(filePath);
     if (stats.size === 0) {
-      throw new Error('File is empty');
+      const error = new Error('File is empty');
+      error.code = 'EMPTY_FILE';
+      throw error;
     }
     
     // For image files, verify they can be read by Sharp
@@ -28,16 +30,22 @@ async function validateUploadedFile(filePath) {
         }).metadata();
       } catch (metadataError) {
         // If metadata reading fails, the file is likely incomplete
-        throw new Error(`Invalid image file: ${metadataError.message}`);
+        const error = new Error(`Invalid image file: ${metadataError.message}`);
+        error.code = 'INVALID_IMAGE';
+        throw error;
       }
       
       if (!metadata || !metadata.width || !metadata.height) {
-        throw new Error('Invalid image dimensions - file may be incomplete');
+        const error = new Error('Invalid image dimensions - file may be incomplete');
+        error.code = 'INVALID_IMAGE';
+        throw error;
       }
       
       // Check for reasonable dimensions
       if (metadata.width < 10 || metadata.height < 10) {
-        throw new Error('Image dimensions too small');
+        const error = new Error('Image dimensions too small');
+        error.code = 'IMAGE_TOO_SMALL';
+        throw error;
       }
       
       // Additional check: verify we can actually decode a small portion of the image
@@ -49,7 +57,9 @@ async function validateUploadedFile(filePath) {
           .resize(10, 10) // Try to resize to very small size
           .toBuffer();
       } catch (decodeError) {
-        throw new Error(`Image decode failed - file may be corrupted: ${decodeError.message}`);
+        const error = new Error(`Image decode failed - file may be corrupted: ${decodeError.message}`);
+        error.code = 'INVALID_IMAGE';
+        throw error;
       }
       
       return true;
@@ -82,7 +92,8 @@ async function validateUploadedFiles(req, res, next) {
       logger.warn(`Removing invalid upload ${file.originalname}: ${error.message}`);
       invalidFiles.push({
         filename: file.originalname,
-        error: error.message
+        error: error.message,
+        code: error.code || 'INVALID_IMAGE',
       });
       
       // Delete the invalid file

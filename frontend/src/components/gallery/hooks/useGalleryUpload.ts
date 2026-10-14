@@ -66,6 +66,8 @@ export function useGalleryUpload(slug: string, refetch: (options?: { cancelRefet
           await finish(() => {
             if (status.failed > 0) {
               toast.error(t('upload.processingFailed', { count: status.failed }));
+            } else if (status.complete > 0) {
+              toast.success(t('upload.uploadCompleteCount', { count: status.complete }));
             }
           });
         } else if (Date.now() > deadline) {

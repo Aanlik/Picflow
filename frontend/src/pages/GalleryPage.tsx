@@ -407,6 +407,7 @@ export const GalleryPage: React.FC = () => {
         // Admin preview is an authenticated workbench route, not a customer
         // gallery session. Don't expose the customer "log out" action here.
         requiresPassword={false}
+        adminPreview
       />
     );
   }

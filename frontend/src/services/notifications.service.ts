@@ -17,6 +17,7 @@ export interface Notification {
 export interface NotificationsResponse {
   notifications: Notification[];
   unreadCount: number;
+  totalCount: number;
 }
 
 function withCustomerName(message: string, notification: Notification): string {
@@ -28,6 +29,20 @@ function withCustomerName(message: string, notification: Notification): string {
   return i18n.language.toLocaleLowerCase().startsWith('zh')
     ? `${message}（${name}）`
     : `${message} (${name})`;
+}
+
+function localizeSettingsCategory(value: unknown, t: (key: string, options?: any) => string): string {
+  const normalized = String(value || 'system').trim().toLocaleLowerCase();
+  switch (normalized) {
+    case 'security': return t('admin.notificationMessages.settingsCategories.security');
+    case 'general': return t('admin.notificationMessages.settingsCategories.general');
+    case 'branding': return t('admin.notificationMessages.settingsCategories.branding');
+    case 'features': return t('admin.notificationMessages.settingsCategories.features');
+    case 'backup': return t('admin.notificationMessages.settingsCategories.backup');
+    case 'seo': return t('admin.notificationMessages.settingsCategories.seo');
+    case 'system':
+    default: return t('admin.notificationMessages.settingsCategories.system');
+  }
 }
 
 export const notificationsService = {
@@ -112,7 +127,7 @@ export const notificationsService = {
         });
       case 'settings_updated':
         return t('admin.notificationMessages.settingsUpdated', {
-          type: notification.metadata.type || 'System'
+          type: localizeSettingsCategory(notification.metadata.type, t)
         });
       case 'bulk_download':
         return t('admin.notificationMessages.bulkDownload', {

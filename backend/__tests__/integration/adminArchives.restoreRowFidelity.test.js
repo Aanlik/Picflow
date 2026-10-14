@@ -142,6 +142,23 @@ describe('archive restore rebuilds the photo row faithfully', () => {
     expect(restored.sort()).toEqual(['clip.mp4', 'still.jpg']);
   });
 
+  it('treats a repeated restore as successful after the first restore completed', async () => {
+    const archiveRelPath = await writeArchive('idempotent.zip', {
+      'individual/still.jpg': BYTES,
+      'photos_manifest.json': manifestOf([
+        { filename: 'still.jpg', original_filename: 'DSC_0001.jpg', type: 'individual' },
+      ]),
+    });
+    const eventId = await seedArchivedEvent(archiveRelPath, 'idempotent-event');
+
+    await restore(eventId);
+    const repeated = await request(app).post(`/admin/archives/${eventId}/restore`).send({});
+
+    expect(repeated.status).toBe(200);
+    expect(repeated.body.alreadyRestored).toBe(true);
+    expect(await db('photos').where('event_id', eventId).pluck('filename')).toEqual(['still.jpg']);
+  });
+
   it('restores a DNG, which is an accepted upload the gate does not list', async () => {
     const archiveRelPath = await writeArchive('dng.zip', {
       'individual/raw.dng': BYTES,

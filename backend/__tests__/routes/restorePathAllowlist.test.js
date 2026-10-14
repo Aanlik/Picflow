@@ -149,6 +149,21 @@ describe('restore path allowlist — manifest database.backup_file containment (
     expect(err).toBeNull();
   });
 
+  it('accepts a portable NAS database dump when the manifest records the path from another host', async () => {
+    const dbFile = path.join(tmpRoot, 'database', 'picpeak-db-sqlite-portable.sql.gz');
+    fs.mkdirSync(path.dirname(dbFile), { recursive: true });
+    fs.writeFileSync(dbFile, 'portable dump fixture');
+    const manifestPath = writeManifest('portable.json', {
+      backup_file: '/volume1/docker/picflow/backup/database/picpeak-db-sqlite-portable.sql.gz',
+    });
+
+    // The restore service safely resolves this basename inside the selected
+    // backup root and verifies its checksum before use. A host-specific
+    // absolute path in the manifest must not block that portable fallback.
+    const err = await checkRestorePathsAllowed({ source: 'local', manifestPath });
+    expect(err).toBeNull();
+  });
+
   it('does not choke on a manifest whose database.backup_file is a legitimate relative path', async () => {
     // Relative candidates are resolved against restoreService's own
     // `backupPath` (which this route-level pre-check doesn't have — it only

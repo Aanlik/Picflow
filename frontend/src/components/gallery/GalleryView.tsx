@@ -52,6 +52,7 @@ import { BatchFeedbackControls } from './BatchFeedbackControls';
 import { categoryLabel } from '../../utils/categoryLabel';
 import { versionedRetouchUrl } from '../../utils/versionedRetouchUrl';
 import { photoDisplayFilename } from '../../utils/photoFilename';
+import { shouldShowGalleryLogoutControl } from '../../utils/gallerySessionControls';
 
 interface GalleryViewProps {
   slug: string;
@@ -85,6 +86,8 @@ interface GalleryViewProps {
    * credential provides the only way back to the guest view.
    */
   requiresPassword?: boolean;
+  /** Admin previews use the workbench session, never a customer logout action. */
+  adminPreview?: boolean;
 }
 
 // Convert default_photo_sort DB value to internal sortBy state
@@ -106,7 +109,7 @@ const parseDefaultPhotoSort = (defaultSort?: string): { sortBy: 'date' | 'name' 
   }
 };
 
-export const GalleryView: React.FC<GalleryViewProps> = ({ slug, event, requiresPassword = true }) => {
+export const GalleryView: React.FC<GalleryViewProps> = ({ slug, event, requiresPassword = true, adminPreview = false }) => {
   const { t } = useTranslation();
   const { logout, isClient } = useGalleryAuth();
   const { setTheme, theme } = useTheme();
@@ -788,7 +791,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ slug, event, requiresP
       return <PasswordChangeRequiredNotice reason="session" />;
     }
 
-    if (is401Error) {
+    if (is401Error && !adminPreview) {
       // Authentication failed - logout and let the parent component handle re-authentication
       logout();
       return null;
@@ -918,7 +921,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ slug, event, requiresP
   // Query for five minutes on a key that knows nothing about the session, so
   // opening a gallery as a guest and then from the portal would have reused
   // the guest answer, and vice versa.
-  const showLogoutControl = requiresPassword || isClient;
+  const showLogoutControl = shouldShowGalleryLogoutControl(requiresPassword, isClient, adminPreview);
 
   // Folder navigation (#1160): tiles at root, a breadcrumb + folder download
   // inside one. Defined once and rendered by BOTH layout branches — containment

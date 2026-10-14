@@ -148,8 +148,12 @@ export const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadCompl
   // the dashed-border zone looked draggable but silently fell through to
   // the browser's default "open the file in a new tab" behaviour.
   const addFiles = (incoming: File[]) => {
+    let unsupportedCount = 0;
     const imageFiles = incoming.filter((file) => {
-      if (!allowedMimeTypes.includes(normalizeFileMimeType(file.name, file.type))) return false;
+      if (!allowedMimeTypes.includes(normalizeFileMimeType(file.name, file.type))) {
+        unsupportedCount += 1;
+        return false;
+      }
       // Pre-flight size check, mirroring the guest uploader: without it the
       // admin streams the whole oversized file before the backend 400s it.
       const limitMb = sizeLimitMbFor(file);
@@ -159,6 +163,12 @@ export const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadCompl
       }
       return true;
     });
+    if (unsupportedCount > 0) {
+      toast.error(t('upload.unsupportedFilesSkipped', {
+        count: unsupportedCount,
+        formats: formatsLabel,
+      }));
+    }
     if (imageFiles.length === 0) return;
 
     const totalFiles = selectedFiles.length + imageFiles.length;
@@ -442,9 +452,36 @@ export const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadCompl
             anyQueued = true;
             const newId = response.data.upload_id as string;
             setUploadIds((prev) => (prev.includes(newId) ? prev : [...prev, newId]));
+            // Do not rely on Axios emitting a final 100% progress event. In
+            // browsers/proxies that omit it, the transfer phase otherwise
+            // remains active while the processing tracker is disabled, so
+            // the modal sits at 100% forever.
+            setPhase({
+              kind: 'processing',
+              chunkIndex: unitIndex,
+              totalChunks: totalUnits,
+              filesInChunk: chunk.length,
+            });
           }
         } catch (error: any) {
           console.error(`Error uploading chunk ${chunkIndex + 1}:`, error);
+          const rejectedFiles = error?.response?.data?.errors;
+          if (Array.isArray(rejectedFiles) && rejectedFiles.length > 0) {
+            for (const rejected of rejectedFiles) {
+              const reasonKey = rejected.code === 'IMAGE_TOO_SMALL'
+                ? 'upload.validation.imageTooSmall'
+                : rejected.code === 'EMPTY_FILE'
+                  ? 'upload.validation.emptyFile'
+                  : 'upload.validation.invalidImage';
+              collected.push({
+                filename: rejected.filename || t('upload.failures.unknownFile'),
+                reason: t(reasonKey),
+                kind: 'rejected',
+              });
+            }
+            unitIndex += 1;
+            continue;
+          }
           const reason =
             error?.response?.data?.error ||
             error?.message ||

@@ -152,6 +152,9 @@ export const PhotoColorLabels: React.FC<PhotoColorLabelsProps> = ({
           // color-label number as a visual identifier without treating it as
           // a key binding.
           const displayNumber = color === 'purple' ? '10' : null;
+          const accessibleColorName = displayNumber
+            ? t('feedback.purpleColorNumber', { color: colorName(color), number: displayNumber })
+            : colorName(color);
           return (
             <button
               key={color}
@@ -168,11 +171,11 @@ export const PhotoColorLabels: React.FC<PhotoColorLabelsProps> = ({
               // buttons, so the name has to carry it for anyone who can't
               // distinguish them.
               aria-label={isMine
-                ? t('feedback.removeColorLabel', 'Remove {{color}} label', { color: colorName(color) })
-                : t('feedback.setColorLabel', 'Mark as {{color}}', { color: colorName(color) })}
+                ? t('feedback.removeColorLabel', 'Remove {{color}} label', { color: accessibleColorName })
+                : t('feedback.setColorLabel', 'Mark as {{color}}', { color: accessibleColorName })}
               title={shortcut
-                  ? `${colorName(color)} (${shortcut})`
-                  : colorName(color)}
+                  ? `${accessibleColorName} (${shortcut})`
+                  : accessibleColorName}
             >
               <span
                 className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full border"

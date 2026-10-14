@@ -408,6 +408,9 @@ const AdminPhotoViewerContent: React.FC<ViewerContentProps> = ({
                 const shortcut = colorShortcutHints(keybindMode)[color];
                 const displayNumber = color === 'purple' ? '10' : null;
                 const name = t(`feedback.colorLabels.${color}`, color);
+                const accessibleName = displayNumber
+                  ? t('feedback.purpleColorNumber', { color: name, number: displayNumber })
+                  : name;
                 return (
                   <button
                     key={color}
@@ -416,9 +419,9 @@ const AdminPhotoViewerContent: React.FC<ViewerContentProps> = ({
                     aria-pressed={isMine}
                     // Colour alone can't carry which swatch this is.
                     aria-label={isMine
-                      ? t('feedback.removeColorLabel', 'Remove {{color}} label', { color: name })
-                      : t('feedback.setColorLabel', 'Mark as {{color}}', { color: name })}
-                    title={shortcut ? `${name} (${shortcut})` : name}
+                      ? t('feedback.removeColorLabel', 'Remove {{color}} label', { color: accessibleName })
+                      : t('feedback.setColorLabel', 'Mark as {{color}}', { color: accessibleName })}
+                    title={shortcut ? `${accessibleName} (${shortcut})` : accessibleName}
                     className={`flex shrink-0 items-center gap-1 pl-1.5 pr-2 py-1 rounded-full text-xs transition-all ${
                       isMine ? 'bg-white/15 ring-1 ring-white/60' : 'bg-white/5 hover:bg-white/10'
                     }`}
