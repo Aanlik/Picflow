@@ -16,6 +16,7 @@ export const EventCategoryManager: React.FC<EventCategoryManagerProps> = ({ even
   const { t } = useTranslation();
   const addingModal = useModal();
   const [newCategoryName, setNewCategoryName] = useState('');
+  const [newCategorySlug, setNewCategorySlug] = useState('');
   const [heroPickerCategoryId, setHeroPickerCategoryId] = useState<number | null>(null);
 
   // Fetch this event's categories (globals + event-specific), already resolved
@@ -31,6 +32,7 @@ export const EventCategoryManager: React.FC<EventCategoryManagerProps> = ({ even
     queryFn: () => photosService.getEventPhotos(eventId, {}),
     enabled: heroPickerCategoryId !== null,
   });
+  const heroPickerPhotos = photos.filter((photo) => Number(photo.category_id) === Number(heroPickerCategoryId));
 
   // Combined list (globals + event-specific) in the resolved order, kept in
   // local state so the up/down reorder buttons feel instant; resynced whenever
@@ -45,12 +47,13 @@ export const EventCategoryManager: React.FC<EventCategoryManagerProps> = ({ even
 
   // Create category mutation (always event-specific)
   const createMutation = useMutationWithToast({
-    mutationFn: (name: string) =>
-      categoriesService.createCategory({ name, is_global: false, event_id: eventId }),
+    mutationFn: ({ name, slug }: { name: string; slug: string }) =>
+      categoriesService.createCategory({ name, slug, is_global: false, event_id: eventId }),
     invalidateKeys: [['event-categories', eventId]],
     successMessage: t('categories.categoryCreatedSuccess'),
     onSuccess: () => {
       setNewCategoryName('');
+      setNewCategorySlug('');
       addingModal.close();
     },
     errorMessage: t('categories.failedToCreateCategory'),
@@ -133,8 +136,8 @@ export const EventCategoryManager: React.FC<EventCategoryManagerProps> = ({ even
   };
 
   const handleCreate = () => {
-    if (newCategoryName.trim()) {
-      createMutation.mutate(newCategoryName.trim());
+    if (newCategoryName.trim() && newCategorySlug.trim()) {
+      createMutation.mutate({ name: newCategoryName.trim(), slug: newCategorySlug.trim().toLowerCase() });
     }
   };
 
@@ -200,7 +203,7 @@ export const EventCategoryManager: React.FC<EventCategoryManagerProps> = ({ even
 
       {/* Add new category form */}
       {addingModal.isOpen && (
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <input
             type="text"
             value={newCategoryName}
@@ -211,11 +214,22 @@ export const EventCategoryManager: React.FC<EventCategoryManagerProps> = ({ even
             className="flex-1 px-3 py-1.5 text-sm border border-neutral-300 dark:border-neutral-600 rounded-md bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 focus:ring-2 focus:ring-primary-500"
             autoFocus
           />
+          <input
+            type="text"
+            value={newCategorySlug}
+            onChange={(e) => setNewCategorySlug(e.target.value.replace(/[^a-zA-Z0-9_-]/g, '').toLowerCase())}
+            onKeyPress={(e) => e.key === 'Enter' && handleCreate()}
+            placeholder={t('categories.slug', '分类标识（英文或数字）')}
+            maxLength={100}
+            pattern="[a-z0-9][a-z0-9_-]{0,99}"
+            aria-label={t('categories.slug', '分类标识（英文或数字）')}
+            className="flex-1 min-w-[12rem] px-3 py-1.5 text-sm border border-neutral-300 dark:border-neutral-600 rounded-md bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 focus:ring-2 focus:ring-primary-500"
+          />
           <Button
             variant="primary"
             size="sm"
             onClick={handleCreate}
-            disabled={!newCategoryName.trim() || createMutation.isPending}
+            disabled={!newCategoryName.trim() || !/^[a-z0-9][a-z0-9_-]{0,99}$/.test(newCategorySlug) || createMutation.isPending}
           >
             {createMutation.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : t('common.add')}
           </Button>
@@ -225,6 +239,7 @@ export const EventCategoryManager: React.FC<EventCategoryManagerProps> = ({ even
             onClick={() => {
               addingModal.close();
               setNewCategoryName('');
+              setNewCategorySlug('');
             }}
           >
             {t('common.cancel')}
@@ -388,6 +403,7 @@ export const EventCategoryManager: React.FC<EventCategoryManagerProps> = ({ even
                 <button
                   onClick={() => setHeroPickerCategoryId(null)}
                   className="p-2 hover:bg-neutral-100 dark:hover:bg-neutral-700 rounded-lg transition-colors"
+                  aria-label={t('common.close', '关闭')}
                 >
                   <X className="w-5 h-5" />
                 </button>
@@ -395,13 +411,13 @@ export const EventCategoryManager: React.FC<EventCategoryManagerProps> = ({ even
             </div>
 
             <div className="p-6 overflow-y-auto max-h-[calc(90vh-180px)]">
-              {photos.length === 0 ? (
+              {heroPickerPhotos.length === 0 ? (
                 <p className="text-center text-neutral-500 dark:text-neutral-400 py-8">
                   {t('events.noPhotosAvailable')}
                 </p>
               ) : (
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
-                  {photos.map((photo) => {
+                  {heroPickerPhotos.map((photo) => {
                     const currentCategory = ordered.find(c => c.id === heroPickerCategoryId);
                     const isSelected = photo.id === currentCategory?.hero_photo_id;
                     return (

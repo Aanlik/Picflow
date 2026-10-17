@@ -11,7 +11,11 @@ beforeAll(async () => {
   workflow = require('../../src/services/photographyWorkflowBridge');
 }, 180000);
 afterAll(async () => { global.fetch = originalFetch; await cleanup(); });
-afterEach(async () => { await db('workflow_stage_intents').delete(); await db('workflow_withdrawal_intents').delete(); });
+afterEach(async () => {
+  await db('workflow_stage_intents').delete();
+  await db('workflow_withdrawal_intents').delete();
+  await db('workflow_unbind_intents').delete();
+});
 test('an offline restore is durable and replayed after reconnection', async () => {
   global.fetch = jest.fn(async () => { throw new Error('offline'); });
   expect((await workflow.restoreWorkflowStage(eventId)).status).toBe(503);
@@ -51,4 +55,14 @@ test('calls the private Bridge without a second credential and reports network f
 
   global.fetch = jest.fn(async () => { throw Object.assign(new Error('timed out'), { name: 'TimeoutError' }); });
   expect(await workflow.bridgeRequest('/api/projects')).toMatchObject({ status: 503, errorCode: 'BRIDGE_TIMEOUT' });
+});
+
+test('a normal project deletion overrides any stale intent that would delete NAS delivery files', async () => {
+  await db('workflow_unbind_intents').insert({ event_id: eventId, delete_delivery: true });
+
+  await workflow.persistUnbindIntent(eventId);
+
+  const intent = await db('workflow_unbind_intents').where({ event_id: eventId }).first();
+  expect(Number(intent.delete_delivery)).toBe(0);
+  expect(intent.error).toBeNull();
 });

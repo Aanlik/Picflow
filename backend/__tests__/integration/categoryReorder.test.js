@@ -58,6 +58,39 @@ describe('category ordering (#782)', () => {
 
   const getEvent = (eventId) => auth(request(app).get(`/api/admin/categories/event/${eventId}`)).expect(200);
 
+  it('serializes SQLite category flags as booleans for the admin UI', async () => {
+    const eventId = await insertEvent('category-bools');
+    const categoryId = await insertCat('Restricted', { event_id: eventId });
+    await db('photo_categories').where({ id: categoryId }).update({ allow_downloads: 0, is_folder: 0 });
+
+    const initial = (await getEvent(eventId)).body.find((category) => category.id === categoryId);
+    expect(initial).toMatchObject({ allow_downloads: false, is_folder: false });
+
+    const updated = await auth(request(app).put(`/api/admin/categories/${categoryId}`))
+      .send({ name: 'Restricted', allow_downloads: true }).expect(200);
+    expect(updated.body.allow_downloads).toBe(true);
+    expect((await getEvent(eventId)).body.find((category) => category.id === categoryId).allow_downloads).toBe(true);
+    const disabled = await auth(request(app).put(`/api/admin/categories/${categoryId}`))
+      .send({ name: 'Restricted', allow_downloads: false }).expect(200);
+    expect(disabled.body.allow_downloads).toBe(false);
+    expect((await getEvent(eventId)).body.find((category) => category.id === categoryId).allow_downloads).toBe(false);
+  });
+
+  it('requires a photographer-provided ASCII slug and keeps it when the category name changes', async () => {
+    const missing = await auth(request(app).post('/api/admin/categories'))
+      .send({ name: '验收临时分类', is_global: true }).expect(400);
+    expect(JSON.stringify(missing.body)).toMatch(/identifier/i);
+
+    const created = await auth(request(app).post('/api/admin/categories'))
+      .send({ name: '验收临时分类', slug: 'acceptance-temporary', is_global: true }).expect(200);
+    expect(created.body.slug).toBe('acceptance-temporary');
+
+    const renamed = await auth(request(app).put(`/api/admin/categories/${created.body.id}`))
+      .send({ name: '验收临时分类-改名' }).expect(200);
+    expect(renamed.body.name).toBe('验收临时分类-改名');
+    expect(renamed.body.slug).toBe('acceptance-temporary');
+  });
+
   describe('migration 159 backfill', () => {
     it('seeds display_order from alphabetical order, scoped per event', async () => {
       const eventId = await insertEvent('backfill-ev');
@@ -202,7 +235,7 @@ describe('category ordering (#782)', () => {
       await insertCat('Second', { event_id: eventId, display_order: 2 });
 
       const res = await auth(request(app).post('/api/admin/categories'))
-        .send({ name: 'Third', is_global: false, event_id: eventId })
+        .send({ name: 'Third', slug: 'third', is_global: false, event_id: eventId })
         .expect(200);
 
       expect(res.body.display_order).toBe(3);

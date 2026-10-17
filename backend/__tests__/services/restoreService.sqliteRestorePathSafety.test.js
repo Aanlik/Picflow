@@ -169,5 +169,13 @@ describe('restoreService — sqlite restore path safety (GHSA-xfvx)', () => {
       );
       expect(candidates).toContain(absFile);
     });
+
+    it('accepts a portable database basename directly under the selected backup root', async () => {
+      const candidates = await _internal.resolveContainedDbBackupCandidates(
+        backupPath, '/previous-host/db/picpeak-db-flat.sql.gz', () => {}
+      );
+      expect(candidates).toContain(path.join(backupPath, 'picpeak-db-flat.sql.gz'));
+      expect(candidates.every((candidate) => _internal.isContainedInRoots(candidate, [path.resolve(backupPath)]))).toBe(true);
+    });
   });
 });

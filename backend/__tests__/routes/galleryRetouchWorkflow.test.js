@@ -171,6 +171,10 @@ describe('gallery retouch workflow and client requests', () => {
       .send({ request_type: 'revision', base_version: 2, message: '请把肤色调暖一些', guest_name: '验收客户 A' });
     expect(submitted.status).toBe(201);
     expect(submitted.body.request).toMatchObject({ request_type: 'revision', base_version: 2, status: 'open', guest_name: '验收客户 A' });
+    const duplicate = await post(`/api/gallery/${slug}/photos/${visiblePhoto}/retouch-requests`)
+      .send({ request_type: 'additional', message: '重复提交' });
+    expect(duplicate.status).toBe(409);
+    expect(duplicate.body.code).toBe('RETOUCH_ALREADY_ACTIVE');
     expect(global.fetch.mock.calls.some(([url, options]) => String(url).includes('/photos/1/version-folder') && options.method === 'POST')).toBe(true);
     expect(await db('photo_retouch_requests').where({ id: submitted.body.request.id }).first()).toMatchObject({ target_version: 3, delivery_folder: '/nas/Camera/Project/04_FINAL/V3' });
     const listed = await get(`/api/gallery/${slug}/retouch-workflow`);
@@ -180,12 +184,21 @@ describe('gallery retouch workflow and client requests', () => {
   });
 
   it('accepts workflow requests without enabling general comments or collecting email', async () => {
+    // Keep this test independent from the previous test's still-open request;
+    // only one active request per photo is now permitted.
+    await db('photo_retouch_requests').where({ event_id: eventId, photo_id: visiblePhoto })
+      .whereNotIn('status', ['cancelled', 'completed', 'closed'])
+      .update({ status: 'cancelled' });
     await db('event_feedback_settings').where({ event_id: eventId }).update({ feedback_enabled: false, allow_comments: false });
-    const submitted = await post(`/api/gallery/${slug}/photos/${visiblePhoto}/retouch-requests`)
-      .send({ request_type: 'additional', message: '请再导出一个偏暖色版本' });
-    expect(submitted.status).toBe(201);
-    expect(submitted.body.request).toMatchObject({ request_type: 'additional', status: 'open' });
-    await db('event_feedback_settings').where({ event_id: eventId }).update({ feedback_enabled: true, allow_comments: true });
+    try {
+      const submitted = await post(`/api/gallery/${slug}/photos/${visiblePhoto}/retouch-requests`)
+        .send({ request_type: 'additional', message: '请再导出一个偏暖色版本' });
+      expect(submitted.status).toBe(201);
+      expect(submitted.body.request).toMatchObject({ request_type: 'additional', status: 'open' });
+      await db('photo_retouch_requests').where({ id: submitted.body.request.id }).update({ status: 'cancelled' });
+    } finally {
+      await db('event_feedback_settings').where({ event_id: eventId }).update({ feedback_enabled: true, allow_comments: true });
+    }
   });
 
   it('rejects stale revisions, revisions before delivery, and hidden photos', async () => {

@@ -444,7 +444,8 @@
       "returningHint": "Been here before? Your earlier picks are still saved.",
       "recoverPicks": "Get them back",
       "savedRoles": "Saved pickers",
-      "currentRole": "Current"
+      "currentRole": "Current",
+      "roleSwitchFailed": "Could not switch to this picker. Please enter your name to continue."
     },
     "footer": {
       "forgetMeConfirm": "Your name and selections will be removed from this gallery.",
@@ -504,7 +505,8 @@
       "details": "Details",
       "party": "Party",
       "individualPhotos": "Individual Photos",
-      "collages": "Collages"
+      "collages": "Collages",
+      "uncategorized": "Uncategorized"
     },
     "addCategory": "Add Category",
     "eventSpecificCategories": "Event-Specific Categories",
@@ -516,6 +518,7 @@
     "failedToCreateCategory": "Failed to create category",
     "failedToDeleteCategory": "Failed to delete category",
     "categoryName": "Category name",
+    "slug": "Category ID (English letters or numbers)",
     "noCategoriesYet": "No categories yet. Create your first category to organize photos.",
     "deleteConfirm": "Are you sure you want to delete \"{{name}}\"?",
     "setCoverPhoto": "Set Cover Photo",
@@ -785,6 +788,7 @@
       "successToast": "Gallery duplicated."
     },
     "draftBanner": "This gallery is in draft mode. Upload your photos, then publish when ready.",
+    "draftNotShareable": "This draft is not published and cannot be shared with clients.",
     "subtitle": "Manage your photo galleries and events",
     "failedToLoadEvents": "Failed to load events",
     "tryAgain": "Try Again",
@@ -864,6 +868,11 @@
       "enterNewName": "Enter new event name",
       "newUrl": "New URL:",
       "checkingAvailability": "Checking availability...",
+      "sameUrl": "The new name generates the same URL as the current name.",
+      "duplicateName": "An event with this name already exists for the same date.",
+      "nameTooShort": "The event name must contain at least 3 characters.",
+      "nameTooLong": "The event name must not exceed 100 characters.",
+      "validationFailed": "Could not validate the event name. Try again.",
       "warningTitle": "Please note:",
       "warning1": "The gallery URL will change",
       "warning2": "Old URLs will automatically redirect to the new URL",
@@ -983,6 +992,7 @@
     "title": "System Settings",
     "subtitle": "Configure system-wide settings and preferences",
     "loadingSettings": "Loading settings...",
+    "accessDenied": "This account does not have access to settings. Return to the dashboard or ask a Super Admin to adjust your permissions.",
     "general": {
       "title": "General",
       "siteConfiguration": "Site Configuration",
@@ -1309,6 +1319,7 @@
       "blockAiCrawlersHelp": "Prevent AI training bots from accessing your content.",
       "blockedAgents": "Blocked AI agents",
       "removeAgent": "Remove {{name}}",
+      "addAgent": "Add blocked agent",
       "addAgentPlaceholder": "Enter agent name...",
       "blockSocialBots": "Block social media preview bots",
       "blockSocialBotsHelp": "Prevent link previews on Twitter, Facebook, LinkedIn, etc.",
@@ -1322,6 +1333,8 @@
       "customRules": "Custom robots.txt rules",
       "ruleAgentPlaceholder": "User-agent",
       "rulePathPlaceholder": "Disallow path",
+      "addRule": "Add robots.txt rule",
+      "removeRule": "Remove robots.txt rule {{index}}",
       "showPreview": "Show robots.txt preview",
       "hidePreview": "Hide robots.txt preview",
       "saveSettings": "Save SEO Settings"
@@ -2034,7 +2047,8 @@
       "inviteStatus": {
         "pending": "Pending",
         "redeemed": "Redeemed",
-        "revoked": "Revoked"
+      "revoked": "Revoked",
+      "removed": "Removed"
       },
       "reviewDuplicates": "Review",
       "duplicateBadge": "duplicate?",
@@ -2198,7 +2212,7 @@
     "brandingUpdated": "Branding updated successfully",
     "categoryUpdated": "Category updated successfully",
     "brandingThemeMissing": "No branding theme has been saved yet.",
-    "brandingPaletteSynced": "Palette synced from Branding."
+    "brandingPaletteSynced": "Brand colors synced."
   },
   "cms": {
     "title": "CMS Pages",
@@ -2471,6 +2485,7 @@
         "title": "Backup Coverage",
         "included": "Included",
         "excluded": "Excluded",
+        "activeProjectFiles": "Active project files in this run",
         "notRecorded": "Not recorded for this backup"
       },
       "storageDestination": "Storage Destination",
@@ -2642,7 +2657,9 @@
       },
       "deleteSuccess": "Backup deleted successfully",
       "deleteError": "Failed to delete backup",
-      "deleteConfirm": "Delete the backup from {{date}}?",
+      "deleteConfirm": "Delete the backup from {{dateTime}} ({{size}}, {{fileCount}} files)? The shared backup payload will be retained to protect other restore points.",
+      "refresh": "Refresh backup history",
+      "refreshed": "Backup history refreshed.",
       "status": {
         "completed": "Completed",
         "failed": "Failed",
@@ -2658,6 +2675,9 @@
       }
     },
     "restore": {
+      "errors": {
+        "dbBackupOutsideConfiguredPath": "The database file in this backup is outside the configured backup locations, so restoration was blocked. Check the backup location and try again."
+      },
       "superAdminOnly": "Restoring a backup replaces all data on this instance, user accounts and roles included, so only a Super Admin can do it.",
       "steps": {
         "selectSource": "Select Source",
@@ -2856,6 +2876,8 @@
     "requirements": "Password Requirements:",
     "minLength": "At least 12 characters long",
     "mustDiffer": "Must be different from current password",
+    "showPassword": "Show password",
+    "hidePassword": "Hide password",
     "success": "Password changed successfully",
     "failed": "Failed to change password",
     "currentRequired": "Current password is required",
@@ -3453,7 +3475,7 @@
       "super_admin": "Full system administration, including accounts, roles, projects, photos, and settings.",
       "admin": "Manage photography projects, photos, customer access, and everyday settings.",
       "editor": "Edit project and photo content, but cannot create or delete projects.",
-      "viewer": "Read-only access to the dashboard and photography projects.",
+      "viewer": "Read-only access to the dashboard, projects, photos, archives, branding, and CMS pages.",
       "solo_photographer": "Full operator role for a one-person photography studio.",
       "team_photographer": "Collaborating photographer role for viewing projects, uploading and managing photos, and viewing customer context."
     }
@@ -3498,6 +3520,8 @@
     "collage": "Collage",
     "sampleEvent": "Sample Event",
     "sampleDate": "January 15, 2026",
+    "today": "Today",
+    "yesterday": "Yesterday",
     "galleryPreview": "Gallery preview",
     "guestNameExample": "e.g. Alice",
     "moveUp": "Move up",
@@ -3639,6 +3663,7 @@
     "retryQueued": "Requeued {{count}} task(s)",
     "retryQueued_one": "Requeued {{count}} task",
     "retryQueued_other": "Requeued {{count}} tasks",
+    "retryNone": "There are no failed tasks to retry.",
     "confirmUnknownRetry": "{{count}} task(s) have an unknown upload result. Check in Picflow whether the photo was replaced before retrying to avoid duplicate uploads. Continue?",
     "confirmUnknownRetry_one": "{{count}} task has an unknown upload result. Check in Picflow whether the photo was replaced before retrying to avoid a duplicate upload. Continue?",
     "confirmUnknownRetry_other": "{{count}} tasks have an unknown upload result. Check in Picflow whether the photo was replaced before retrying to avoid duplicate uploads. Continue?",
@@ -3756,6 +3781,7 @@
     "submitting": "Submitting…",
     "submitted": "Request submitted",
     "submitFailed": "Could not submit the request. Try again later.",
+    "alreadyInProgress": "This photo already has a retouch request in progress.",
     "versionChanged": "The delivered version changed. Refresh and submit the revision again.",
     "noVersion": "This photo has no retouched delivery yet, so a revision cannot be requested.",
     "identityRequired": "Complete client verification first.",
@@ -3807,7 +3833,16 @@
     "chooseRole": "Choose a role",
     "createButton": "Create account",
     "creating": "Creating…",
-    "createError": "Could not create the account. Check the details and your permissions."
+    "createError": "Could not create the account. Check the details and your permissions.",
+    "actions": "Actions",
+    "activate": "Enable",
+    "deactivate": "Disable",
+    "delete": "Delete",
+    "deleteConfirm": "Permanently delete administrator account “{{username}}”?",
+    "updateSuccess": "Account settings updated.",
+    "updateError": "Could not update account settings.",
+    "deleteSuccess": "Administrator account deleted.",
+    "deleteError": "Could not delete the account."
   },
   "downloadQueue": {
     "title": "Download selected photos",

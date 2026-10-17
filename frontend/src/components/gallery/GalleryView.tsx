@@ -53,6 +53,7 @@ import { categoryLabel } from '../../utils/categoryLabel';
 import { versionedRetouchUrl } from '../../utils/versionedRetouchUrl';
 import { photoDisplayFilename } from '../../utils/photoFilename';
 import { shouldShowGalleryLogoutControl } from '../../utils/gallerySessionControls';
+import { galleryRefreshInterval } from '../../utils/galleryRefreshInterval';
 
 interface GalleryViewProps {
   slug: string;
@@ -183,7 +184,9 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ slug, event, requiresP
     queryFn: () => galleryService.getRetouchWorkflow(slug),
     enabled: Boolean(data?.event?.id),
     staleTime: 0,
-    refetchInterval: 5000,
+    refetchInterval: (query) => galleryRefreshInterval(query.state.data?.photos?.length || 0),
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
     retry: false,
   });
   const retouchByPhotoId = useMemo(() => new Map((retouchWorkflow?.photos || []).map((photo) => [photo.photo_id, photo])), [retouchWorkflow?.photos]);

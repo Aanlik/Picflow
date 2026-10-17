@@ -107,6 +107,7 @@ export const PasswordChangeModal: React.FC<PasswordChangeModalProps> = ({ isOpen
             <button
               onClick={onClose}
               className="p-1 hover:bg-neutral-100 dark:hover:bg-neutral-700 rounded-lg transition-colors"
+              aria-label={t('common.close', 'Close')}
             >
               <X className="w-5 h-5 text-neutral-500" />
             </button>
@@ -132,6 +133,7 @@ export const PasswordChangeModal: React.FC<PasswordChangeModalProps> = ({ isOpen
                   type="button"
                   onClick={() => setShowPasswords(prev => ({ ...prev, current: !prev.current }))}
                   className="absolute right-3 top-2 p-1 hover:bg-neutral-100 dark:hover:bg-neutral-700 rounded"
+                  aria-label={t(showPasswords.current ? 'passwordChange.hidePassword' : 'passwordChange.showPassword')}
                 >
                   {showPasswords.current ? 
                     <EyeOff className="w-4 h-4 text-neutral-500" /> : 
@@ -160,6 +162,7 @@ export const PasswordChangeModal: React.FC<PasswordChangeModalProps> = ({ isOpen
                   type="button"
                   onClick={() => setShowPasswords(prev => ({ ...prev, new: !prev.new }))}
                   className="absolute right-3 top-2 p-1 hover:bg-neutral-100 dark:hover:bg-neutral-700 rounded"
+                  aria-label={t(showPasswords.new ? 'passwordChange.hidePassword' : 'passwordChange.showPassword')}
                 >
                   {showPasswords.new ? 
                     <EyeOff className="w-4 h-4 text-neutral-500" /> : 
@@ -188,6 +191,7 @@ export const PasswordChangeModal: React.FC<PasswordChangeModalProps> = ({ isOpen
                   type="button"
                   onClick={() => setShowPasswords(prev => ({ ...prev, confirm: !prev.confirm }))}
                   className="absolute right-3 top-2 p-1 hover:bg-neutral-100 dark:hover:bg-neutral-700 rounded"
+                  aria-label={t(showPasswords.confirm ? 'passwordChange.hidePassword' : 'passwordChange.showPassword')}
                 >
                   {showPasswords.confirm ? 
                     <EyeOff className="w-4 h-4 text-neutral-500" /> : 

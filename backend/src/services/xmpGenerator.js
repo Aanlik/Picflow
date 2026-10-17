@@ -24,7 +24,7 @@ class XmpGenerator {
     const rating = include_rating ? this.mapRating(photo.average_rating) : 0;
     const label = include_label ? this.mapLabel(photo) : null;
 
-    const descriptionXml = include_description ? this.generateDescription(photo) : '';
+    const descriptionXml = include_description ? this.generateDescription(photo, options) : '';
     const keywordsXml = include_keywords ? this.generateKeywords(photo) : '';
 
     return `<?xml version="1.0" encoding="UTF-8"?>
@@ -107,12 +107,22 @@ class XmpGenerator {
    * @param {Object} photo - Photo object
    * @returns {string} Description XML
    */
-  generateDescription(photo) {
+  generateDescription(photo, options = {}) {
     const rating = photo.average_rating ? parseFloat(photo.average_rating).toFixed(1) : '0';
+    const photographerMarks = options.mark_source === 'mine';
+    const colorLabel = photo.dominant_color_label || dominantColorLabel(photo.color_labels);
+    if (photographerMarks) {
+      const colorPart = colorLabel ? `, ${colorLabel} label` : '';
+      const desc = `Picflow Photographer Marks: ${rating} stars${colorPart}`;
+      return `<dc:description>
+        <rdf:Alt>
+          <rdf:li xml:lang="x-default">${this.escapeXml(desc)}</rdf:li>
+        </rdf:Alt>
+      </dc:description>`;
+    }
     const likes = photo.like_count || 0;
     const favorites = photo.favorite_count || 0;
 
-    const colorLabel = photo.dominant_color_label || dominantColorLabel(photo.color_labels);
     const colorPart = colorLabel ? `, ${colorLabel} label` : '';
     const desc = `Picflow Guest Feedback: ${rating} stars, ${likes} likes, ${favorites} favorites${colorPart}`;
 

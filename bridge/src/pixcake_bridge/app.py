@@ -219,7 +219,7 @@ def create_app(config=None, client=None, start_workers=True):
                     "已同步": sum(x.id in present_photo_ids and bool(x.delivery_hash) for x in photos),
                     "返修": max(0, sum(x.state == "SUCCESS" for x in active_deliveries) - len({x.photo_pk for x in active_deliveries if x.state == "SUCCESS"})),
                     "取消待确认": sum(x.id in present_photo_ids and x.cancelled and is_file_reference(x.selected_path) for x in photos),
-                    "异常": sum(bool(x.error) for x in photos) + sum(x.state in {"FAILED", "UNKNOWN"} for x in deliveries) + sum(bool(x.error) or x.state in {"UNKNOWN", "UPLOADING"} for x in withdrawals),
+                    "异常": sum(bool(x.error) or not getattr(x, "remote_present", True) for x in photos) + sum(x.state in {"FAILED", "UNKNOWN"} for x in deliveries) + sum(bool(x.error) or x.state in {"UNKNOWN", "UPLOADING"} for x in withdrawals),
                 }
                 connection_state = (
                     "connected" if p.connected else
@@ -355,8 +355,8 @@ def create_app(config=None, client=None, start_workers=True):
                     else project_cfg.final / f"V{version + 1}"
                 ),
                 "delivered": version > 0,
-                "error": bool(photo.error or pending_withdrawals.get(photo.id)),
-                "error_message": photo.error or pending_withdrawals.get(photo.id) or (latest_delivery.error if latest_delivery else None),
+                "error": bool(photo.error or pending_withdrawals.get(photo.id) or not getattr(photo, "remote_present", True)),
+                "error_message": photo.error or pending_withdrawals.get(photo.id) or ("Picflow 中的照片已不存在" if not getattr(photo, "remote_present", True) else None) or (latest_delivery.error if latest_delivery else None),
                 "delivery_state": latest_delivery.state if latest_delivery else None,
             })
         project = entry["project"]

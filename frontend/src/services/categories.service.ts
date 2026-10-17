@@ -57,7 +57,7 @@ export const categoriesService = {
   async updateCategory(
     id: number,
     name: string,
-    patch?: { allow_downloads?: boolean; is_folder?: boolean }
+    patch?: { allow_downloads?: boolean; is_folder?: boolean; slug?: string }
   ): Promise<PhotoCategory> {
     const response = await api.put<PhotoCategory>(`/admin/categories/${id}`, { name, ...patch });
     return response.data;

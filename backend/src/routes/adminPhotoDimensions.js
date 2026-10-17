@@ -5,6 +5,7 @@ const { adminAuth } = require('../middleware/auth');
 const { requirePermission } = require('../middleware/permissions');
 const fs = require('fs').promises;
 const logger = require('../utils/logger');
+const { imageProcessingError } = require('../utils/imageProcessingError');
 
 const { resolvePhotoFilePath } = require('../services/photoResolver');
 const maintenanceJobs = require('../services/maintenanceJobState');
@@ -139,7 +140,7 @@ router.post('/repair-dimensions', adminAuth, requirePermission('system.manage'),
       let errorCount = 0;
       const failures = [];
       const recordFailure = (photo, reason) => {
-        if (failures.length < 20) failures.push({ id: photo.id, filename: photo.filename || `#${photo.id}`, reason: String(reason || '无法读取照片').slice(0, 300) });
+        if (failures.length < 20) failures.push({ id: photo.id, filename: photo.filename || `#${photo.id}`, reason: imageProcessingError(reason) });
       };
       let lostClaim = false;
 

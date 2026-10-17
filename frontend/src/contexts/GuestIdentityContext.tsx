@@ -35,7 +35,7 @@ interface GuestIdentityContextValue {
    * name and selections. This is the non-destructive way out.
    */
   signOut: () => void;
-  switchRole: (guestId: number) => void;
+  switchRole: (guestId: number) => Promise<GuestIdentity>;
   /**
    * Used by feedback components. Returns the current identity, or opens the
    * prompt and waits until the user registers (or cancels, in which case it
@@ -262,15 +262,16 @@ export const GuestIdentityProvider: React.FC<GuestIdentityProviderProps> = ({
     setIdentity(null);
   }, [slug]);
 
-  const switchRole = useCallback((guestId: number): void => {
+  const switchRole = useCallback(async (guestId: number): Promise<GuestIdentity> => {
     const next = activateGuestRole(slug, guestId);
-    if (!next) return;
+    if (!next) throw new Error('GUEST_ROLE_SWITCH_FAILED');
     setIdentity(next);
     setSavedRoles(getGuestRoles(slug));
     setPromptOpen(false);
     pendingResolvers.current.forEach((r) => r(next));
     pendingResolvers.current = [];
     pendingRejecters.current = [];
+    return next;
   }, [slug]);
 
   const ensureIdentity = useCallback(async (force = false): Promise<GuestIdentity> => {

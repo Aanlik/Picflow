@@ -41,7 +41,7 @@ afterAll(async () => { if (cleanup) await cleanup(); });
 async function setBackupSetting(key, value) {
   const existing = await db('app_settings').where({ setting_key: key }).first();
   if (existing) {
-    await db('app_settings').where({ setting_key: key }).update({ setting_value: JSON.stringify(value) });
+    await db('app_settings').where({ setting_key: key }).update({ setting_value: JSON.stringify(value), setting_type: key.startsWith('database_backup_') ? 'database_backup' : 'backup' });
   } else {
     await db('app_settings').insert({
       setting_key: key, setting_value: JSON.stringify(value), setting_type: 'backup',
@@ -162,6 +162,19 @@ describe('restore path allowlist — manifest database.backup_file containment (
     // absolute path in the manifest must not block that portable fallback.
     const err = await checkRestorePathsAllowed({ source: 'local', manifestPath });
     expect(err).toBeNull();
+  });
+
+  it('accepts a portable dump directly under a configured database backup root', async () => {
+    const dbRoot = path.join(tmpRoot, 'database-root');
+    fs.mkdirSync(dbRoot, { recursive: true });
+    await setBackupSetting('database_backup_destination_path', dbRoot);
+    const dbFile = path.join(dbRoot, 'picpeak-db-sqlite-flat.sql.gz');
+    fs.writeFileSync(dbFile, 'portable dump fixture');
+    const manifestPath = writeManifest('portable-flat.json', {
+      backup_file: '/previous-host/database/picpeak-db-sqlite-flat.sql.gz',
+    });
+    expect(await checkRestorePathsAllowed({ source: 'local', manifestPath })).toBeNull();
+    await db('app_settings').where({ setting_key: 'database_backup_destination_path' }).del();
   });
 
   it('does not choke on a manifest whose database.backup_file is a legitimate relative path', async () => {

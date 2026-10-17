@@ -16,17 +16,25 @@ const {
   uniquifyZipNames,
 } = require('../utils/filenameSanitizer');
 
-function filterDeliveredPhotoEntries(event, photos, deliveredPhotoIds, entries) {
-  if (!deliveredPhotoIds) return entries;
+function filterPhotoEntries(event, photos, entries, deliveredPhotoIds = null) {
   const keys = new Set();
   for (const photo of photos) {
-    if (!deliveredPhotoIds.has(Number(photo.id))) continue;
+    if (deliveredPhotoIds && !deliveredPhotoIds.has(Number(photo.id))) continue;
     try {
       const key = resolvePhotoStorageKey(event, photo);
       if (key) keys.add(key);
     } catch { /* external references are not stored in Picflow */ }
   }
   return entries.filter((entry) => keys.has(entry.key));
+}
+
+function filterDeliveredPhotoEntries(event, photos, deliveredPhotoIds, entries) {
+  // A null set means the event is not Bridge-managed: preserve the historical
+  // archive behavior for this helper's direct callers. archiveEvent still
+  // filters all managed photo entries before packaging, so generated download
+  // caches are never nested in a customer archive.
+  if (deliveredPhotoIds === null) return entries;
+  return filterPhotoEntries(event, photos, entries, deliveredPhotoIds);
 }
 
 function getArchivableDeliveredPhotoIds(photos = []) {
@@ -124,11 +132,16 @@ async function archiveEvent(event) {
 
     // Stream every photo (and any other content under events/active/{slug}/) into
     // the zip directly from the storage backend.
-    let photoEntries = await storage.list(eventPrefix);
-    if (deliveredPhotoIds) {
-      const eventPhotos = await db('photos').where('event_id', event.id).select('*');
-      photoEntries = filterDeliveredPhotoEntries(event, eventPhotos, deliveredPhotoIds, photoEntries);
-    }
+    const allPhotos = await db('photos').where('event_id', event.id).select('*');
+    // The event directory also contains generated download bundles, which are
+    // a cache rather than source media. Archive only files represented by this
+    // event's photo rows (and, for Bridge projects, only current deliveries).
+    // This prevents stale `.download-cache/all.zip` files from being nested in
+    // the archive and keeps the archive contents aligned with its manifest.
+    const listedEntries = await storage.list(eventPrefix);
+    const photoEntries = deliveredPhotoIds
+      ? filterDeliveredPhotoEntries(event, allPhotos, deliveredPhotoIds, listedEntries)
+      : filterPhotoEntries(event, allPhotos, listedEntries);
 
     // #493: optionally rename zip entries to use original camera filenames.
     // Build a Map<storage_key, original_filename> from the photos table so we
@@ -165,7 +178,6 @@ async function archiveEvent(event) {
       return `${folder}${sanitizeForZipEntry(originalBase)}`;
     });
     const dedupedNames = uniquifyZipNames(photoNames);
-    const allPhotos = await db('photos').where('event_id', event.id).select('*');
     const namesById = new Map();
     const entryIndexes = new Map(photoEntries.map((entry, index) => [entry.key, index]));
     for (const photo of allPhotos) {
@@ -174,8 +186,17 @@ async function archiveEvent(event) {
       const index = entryIndexes.get(key);
       if (index !== undefined) namesById.set(Number(photo.id), dedupedNames[index]);
     }
-    if (photosManifestEntry) photosManifestEntry.buffer = Buffer.from(JSON.stringify(
-      manifestRows.map(row => ({ ...row, zip_entry: namesById.get(Number(row.id)) || null })), null, 2));
+    if (photosManifestEntry) {
+      manifestRows = manifestRows.filter((row) => namesById.has(Number(row.id)));
+      photosManifestEntry = manifestRows.length
+        ? {
+          name: 'photos_manifest.json',
+          buffer: Buffer.from(JSON.stringify(
+            manifestRows.map(row => ({ ...row, zip_entry: namesById.get(Number(row.id)) })), null, 2,
+          )),
+        }
+        : null;
+    }
 
     let totalBytes = 0;
     await new Promise((resolve, reject) => {
@@ -305,4 +326,10 @@ async function archiveEvent(event) {
   }
 }
 
-module.exports = { archiveEvent, filterDeliveredPhotoEntries, getArchivableDeliveredPhotoIds, archivePhotoDisplayName };
+module.exports = {
+  archiveEvent,
+  filterDeliveredPhotoEntries,
+  filterPhotoEntries,
+  getArchivableDeliveredPhotoIds,
+  archivePhotoDisplayName,
+};

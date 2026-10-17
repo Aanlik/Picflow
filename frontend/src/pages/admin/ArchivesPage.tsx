@@ -83,7 +83,7 @@ export const ArchivesPage: React.FC = () => {
     mutationFn: (id: number) => archiveService.restoreArchive(id),
     successMessage: t('archives.restoreSuccess'),
     errorMessage: () => t('errors.somethingWentWrong'),
-    invalidateKeys: [['admin-archives']],
+    invalidateKeys: [['admin-archives'], ['admin-events'], ['storage-info'], ['admin-storage-info']],
   });
 
   const deleteMutation = useMutationWithToast({
@@ -92,7 +92,7 @@ export const ArchivesPage: React.FC = () => {
       ? t('archives.deleteSuccessCleanupPending')
       : t('archives.deleteSuccess'),
     errorMessage: () => t('errors.somethingWentWrong'),
-    invalidateKeys: [['admin-archives']],
+    invalidateKeys: [['admin-archives'], ['admin-events'], ['storage-info'], ['admin-storage-info']],
   });
 
   const handleDownload = async (archive: typeof archives[0]) => {

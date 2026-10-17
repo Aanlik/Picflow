@@ -36,4 +36,16 @@ describe('XmpGenerator.mapRatingToLabel', () => {
     expect(xmp).not.toContain('xmp:Label');
     expect(xmp).toContain('xmp:Rating="0"');
   });
+
+  it('describes photographer marks as photographer marks, not guest feedback', () => {
+    const xmp = generator.generateXmp({
+      filename: 'a.jpg', average_rating: 4, my_rating: 4,
+      like_count: 9, favorite_count: 3, my_color_label: 'purple',
+      dominant_color_label: 'Purple', color_labels: {},
+    }, { mark_source: 'mine' });
+    expect(xmp).toContain('Picflow Photographer Marks: 4.0 stars, Purple label');
+    expect(xmp).not.toContain('Guest Feedback');
+    expect(xmp).not.toContain('9 likes');
+    expect(xmp).not.toContain('3 favorites');
+  });
 });

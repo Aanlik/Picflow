@@ -56,6 +56,7 @@ module.exports = (router) => {
 
       // Use the archive service to create ZIP archive
       await archiveEvent(event);
+      require('../../services/localStorageUsage').resetLocalStorageUsageCache();
 
       // Archiving is already committed. An audit-log outage must not make the
       // client report that the project failed to archive.
@@ -117,10 +118,12 @@ module.exports = (router) => {
       }
 
       // Process each event
+      let archivedAny = false;
       for (const event of events) {
         try {
         // Use the archive service to create ZIP archive
           await archiveEvent(event);
+          archivedAny = true;
         
           // Log activity
           await logActivity('event_archived',
@@ -142,6 +145,8 @@ module.exports = (router) => {
           });
         }
       }
+
+      if (archivedAny) require('../../services/localStorageUsage').resetLocalStorageUsageCache();
 
       // Log bulk archive activity
       await logActivity('bulk_archive_completed',

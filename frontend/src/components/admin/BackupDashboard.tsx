@@ -45,6 +45,13 @@ interface BackupRecord {
   started_at?: string;
   error_message?: string;
   statistics?: BackupStatistics;
+  contentSummary?: {
+    databaseIncluded: boolean;
+    activeProjectFiles: number;
+    archivedProjectFiles: number;
+    filesInThisRun: number;
+    totalBytesInThisRun: number;
+  };
 }
 
 interface BackupStatus {
@@ -277,7 +284,7 @@ export const BackupDashboard: React.FC<BackupDashboardProps> = ({ status, config
 
             <Button
               onClick={onRunBackup}
-              disabled={!isConfigured || !isEnabled || isBackupRunning}
+              disabled={!isConfigured || isBackupRunning}
               className="mt-3"
               size="sm"
             >
@@ -387,11 +394,11 @@ export const BackupDashboard: React.FC<BackupDashboardProps> = ({ status, config
                 <Database className="h-5 w-5 text-neutral-400" />
                 <span className="text-neutral-700 dark:text-neutral-300">{tAudit("ui.database")}</span>
               </div>
-              {typeof statistics.database_backed_up === 'boolean' ? (
+              {typeof lastSuccessfulBackup?.contentSummary?.databaseIncluded === 'boolean' ? (
                 <span className={`px-2 py-1 rounded text-xs font-medium ${
-                  statistics.database_backed_up ? 'bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300' : 'bg-neutral-100 dark:bg-neutral-700 text-neutral-700 dark:text-neutral-300'
+                  lastSuccessfulBackup.contentSummary.databaseIncluded ? 'bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300' : 'bg-neutral-100 dark:bg-neutral-700 text-neutral-700 dark:text-neutral-300'
                 }`}>
-                  {statistics.database_backed_up ? t('backup.dashboard.coverage.included') : t('backup.dashboard.coverage.excluded')}
+                  {lastSuccessfulBackup.contentSummary.databaseIncluded ? t('backup.dashboard.coverage.included') : t('backup.dashboard.coverage.excluded')}
                 </span>
               ) : (
                 <span className="text-sm text-neutral-500 dark:text-neutral-400">{t('backup.dashboard.coverage.notRecorded')}</span>
@@ -401,11 +408,11 @@ export const BackupDashboard: React.FC<BackupDashboardProps> = ({ status, config
             <div className="flex items-center justify-between">
               <div className="flex items-center space-x-2">
                 <Image className="h-5 w-5 text-neutral-400" />
-                <span className="text-neutral-700 dark:text-neutral-300">{t('backup.configuration.whatToBackup.photos')}</span>
+                <span className="text-neutral-700 dark:text-neutral-300">{t('backup.dashboard.coverage.activeProjectFiles')}</span>
               </div>
               <span className="text-sm text-neutral-500 dark:text-neutral-400">
-                {typeof statistics.photos_backed_up === 'number' && typeof statistics.total_photos === 'number'
-                  ? `${statistics.photos_backed_up} ${t('common.of')} ${statistics.total_photos}`
+                {typeof lastSuccessfulBackup?.contentSummary?.activeProjectFiles === 'number'
+                  ? `${lastSuccessfulBackup.contentSummary.activeProjectFiles} ${t('backup.dashboard.stats.files')}`
                   : t('backup.dashboard.coverage.notRecorded')}
               </span>
             </div>
@@ -416,8 +423,8 @@ export const BackupDashboard: React.FC<BackupDashboardProps> = ({ status, config
                 <span className="text-neutral-700 dark:text-neutral-300">{t('backup.configuration.whatToBackup.archives')}</span>
               </div>
               <span className="text-sm text-neutral-500 dark:text-neutral-400">
-                {typeof statistics.archives_backed_up === 'number'
-                  ? `${statistics.archives_backed_up} ${t('backup.dashboard.stats.files')}`
+                {typeof lastSuccessfulBackup?.contentSummary?.archivedProjectFiles === 'number'
+                  ? `${lastSuccessfulBackup.contentSummary.archivedProjectFiles} ${t('backup.dashboard.stats.files')}`
                   : t('backup.dashboard.coverage.notRecorded')}
               </span>
             </div>

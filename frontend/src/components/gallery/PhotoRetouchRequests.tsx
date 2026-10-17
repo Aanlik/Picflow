@@ -46,9 +46,12 @@ export function PhotoRetouchRequests({ slug, photo }: {
       const key = code === 'VERSION_CHANGED' ? 'retouchRequest.versionChanged'
         : code === 'NO_DELIVERED_VERSION' ? 'retouchRequest.noVersion'
           : code === 'GUEST_IDENTITY_REQUIRED' ? 'retouchRequest.identityRequired'
+            : code === 'RETOUCH_ALREADY_ACTIVE' ? 'retouchRequest.alreadyInProgress'
             : 'retouchRequest.submitFailed';
       toast.error(t(key));
-      if (code === 'VERSION_CHANGED') void queryClient.invalidateQueries({ queryKey: ['gallery-retouch-workflow', slug] });
+      if (['VERSION_CHANGED', 'RETOUCH_ALREADY_ACTIVE'].includes(code)) {
+        void queryClient.invalidateQueries({ queryKey: ['gallery-retouch-workflow', slug] });
+      }
     },
   });
   const cancelRequest = useMutation({

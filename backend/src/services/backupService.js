@@ -1581,14 +1581,29 @@ async function getBackupStatus(limit = 10, history = {}) {
       const historyQuery = db('backup_runs');
       if (history.status) historyQuery.where('status', history.status);
       if (history.search) {
-        const pattern = `%${String(history.search).toLowerCase()}%`;
+        const searchText = String(history.search).trim().toLowerCase();
+        const pattern = `%${searchText}%`;
+        const dateParts = searchText.match(/(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
+        const compactDate = dateParts
+          ? `${dateParts[1]}${dateParts[2].padStart(2, '0')}${dateParts[3].padStart(2, '0')}`
+          : null;
         historyQuery.where(function () {
           this.whereRaw('LOWER(CAST(id AS TEXT)) LIKE ?', [pattern])
             .orWhereRaw('LOWER(CAST(started_at AS TEXT)) LIKE ?', [pattern])
+            .orWhereRaw('LOWER(CAST(completed_at AS TEXT)) LIKE ?', [pattern])
             .orWhereRaw('LOWER(COALESCE(status, \'\')) LIKE ?', [pattern])
             .orWhereRaw('LOWER(COALESCE(backup_type, \'\')) LIKE ?', [pattern])
-            .orWhereRaw('LOWER(COALESCE(destination_type, \'\')) LIKE ?', [pattern])
-            .orWhereRaw('LOWER(COALESCE(manifest_path, \'\')) LIKE ?', [pattern]);
+            .orWhereRaw('LOWER(COALESCE(manifest_path, \'\')) LIKE ?', [pattern])
+            .orWhereRaw('LOWER(COALESCE(error_message, \'\')) LIKE ?', [pattern]);
+          // The list formats timestamps according to the operator's locale
+          // (e.g. 2026/10/14), while stored timestamps may use ISO format.
+          // Match a normalized calendar date independently of display style.
+          if (compactDate) {
+            const normalizedStarted = 'REPLACE(REPLACE(SUBSTR(CAST(started_at AS TEXT), 1, 10), \'-\', \'\'), \'/\', \'\')';
+            const normalizedCompleted = 'REPLACE(REPLACE(SUBSTR(CAST(completed_at AS TEXT), 1, 10), \'-\', \'\'), \'/\', \'\')';
+            this.orWhereRaw(`${normalizedStarted} = ?`, [compactDate])
+              .orWhereRaw(`${normalizedCompleted} = ?`, [compactDate]);
+          }
         });
       }
       const countRow = await historyQuery.clone().count({ count: '*' }).first();
@@ -1644,6 +1659,25 @@ async function getBackupStatus(limit = 10, history = {}) {
     // ago looked identical to a successful one. Same "silent failure
     // not surfaced" class Stage A was designed to fight.
     const lastSuccessful = runs.find(r => r.status === 'completed') || null;
+    let lastSuccessfulWithContent = lastSuccessful;
+    if (lastSuccessful?.manifest_path) {
+      try {
+        const { manifest } = await getBackupManifest(lastSuccessful.id);
+        const manifestFiles = Array.isArray(manifest?.files?.manifest) ? manifest.files.manifest : [];
+        lastSuccessfulWithContent = {
+          ...lastSuccessful,
+          contentSummary: {
+            databaseIncluded: Boolean(manifest?.database?.backup_file),
+            activeProjectFiles: manifestFiles.filter((file) => String(file.path || '').replace(/\\/g, '/').startsWith('events/active/')).length,
+            archivedProjectFiles: manifestFiles.filter((file) => String(file.path || '').replace(/\\/g, '/').startsWith('events/archived/')).length,
+            filesInThisRun: manifestFiles.length,
+            totalBytesInThisRun: Number(manifest?.files?.total_size) || 0,
+          },
+        };
+      } catch (error) {
+        logger.warn('Could not derive backup content summary from the latest manifest', { backupId: lastSuccessful.id, error: error.message });
+      }
+    }
     const config = await getBackupConfigInternal();
     const nextRun = getNextScheduledRun(config);
     // Detect zombie running rows (started >30min ago, never updated)
@@ -1661,7 +1695,7 @@ async function getBackupStatus(limit = 10, history = {}) {
       isHealthy: Boolean(lastRun && lastRun.status === 'completed'),
       lastRun: lastRunWithManifest,
       lastBackup: lastRunWithManifest, // Alias for frontend compatibility
-      lastSuccessfulBackup: lastSuccessful, // NEW — see comment above
+      lastSuccessfulBackup: lastSuccessfulWithContent, // NEW — see comment above
       zombieRuns,                           // NEW — running >30min, likely crashed
       recentRuns: runs,
       recentBackups,

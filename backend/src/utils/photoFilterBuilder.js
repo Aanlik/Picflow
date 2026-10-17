@@ -62,6 +62,9 @@ class PhotoFilterBuilder {
       mark_source = 'either',
       admin_id,
       category_id,
+      type,
+      media_type,
+      search,
       logic = 'AND'
     } = filters;
 
@@ -96,7 +99,15 @@ class PhotoFilterBuilder {
     }
 
     if (has_comments === true || has_comments === 'true') {
-      conditions.push(builder => builder.where('photos.comment_count', '>', 0));
+      const eventId = this.eventId;
+      conditions.push(builder => builder.whereExists(function () {
+        this.select('*')
+          .from('photo_feedback')
+          .whereRaw('photo_feedback.photo_id = photos.id')
+          .where('photo_feedback.event_id', eventId)
+          .where('photo_feedback.feedback_type', 'comment')
+          .where('photo_feedback.is_hidden', false);
+      }));
     }
 
     // Colour labels (#1044): "only the greens". Can't read a denormalized
@@ -183,8 +194,27 @@ class PhotoFilterBuilder {
       }));
     }
 
-    if (category_id) {
+    if (category_id === 'uncategorized') {
+      conditions.push(builder => builder.whereNull('photos.category_id'));
+    } else if (category_id !== undefined && category_id !== null && category_id !== '' && category_id !== '0') {
       conditions.push(builder => builder.where('photos.category_id', category_id));
+    }
+    if (type) {
+      conditions.push(builder => builder.where('photos.type', type));
+    }
+    if (media_type === 'video') {
+      conditions.push(builder => builder.where('photos.media_type', 'video'));
+    } else if (media_type === 'photo') {
+      conditions.push(builder => builder.where(function () {
+        this.whereIn('photos.media_type', ['photo', 'image']).orWhereNull('photos.media_type');
+      }));
+    }
+    if (typeof search === 'string' && search.trim()) {
+      const pattern = `%${search.trim().replace(/[!%_]/g, '!$&')}%`;
+      conditions.push(builder => builder.where(function () {
+        this.whereRaw('photos.filename LIKE ? ESCAPE \'!\'', [pattern])
+          .orWhereRaw('photos.original_filename LIKE ? ESCAPE \'!\'', [pattern]);
+      }));
     }
 
     // Apply conditions with AND/OR logic
@@ -223,6 +253,11 @@ class PhotoFilterBuilder {
     };
 
     const sortColumn = sortMap[sort] || sortMap.date;
+    if (sort === 'rating') {
+      // NULL ordering differs by database (PostgreSQL DESC puts NULL first,
+      // SQLite does not). Keep unrated photos at the end for both directions.
+      this.query.orderByRaw('CASE WHEN photos.average_rating IS NULL THEN 1 ELSE 0 END ASC');
+    }
     this.query.orderBy(sortColumn, order === 'asc' ? 'asc' : 'desc');
 
     return this;
@@ -268,9 +303,15 @@ class PhotoFilterBuilder {
         db.raw('COUNT(CASE WHEN average_rating > 0 THEN 1 END) as with_ratings'),
         db.raw('COUNT(CASE WHEN like_count > 0 THEN 1 END) as with_likes'),
         db.raw('COUNT(CASE WHEN favorite_count > 0 THEN 1 END) as with_favorites'),
-        db.raw('COUNT(CASE WHEN comment_count > 0 THEN 1 END) as with_comments'),
         db.raw('COUNT(CASE WHEN color_label_count > 0 THEN 1 END) as with_color_labels')
       )
+      .first();
+    // The denormalized comment_count column predates imported and migrated
+    // feedback and is not consistently backfilled. Derive this chip from the
+    // same visible feedback rows used by the filter itself.
+    const comments = await db('photo_feedback')
+      .where({ event_id: eventId, feedback_type: 'comment', is_hidden: false })
+      .countDistinct('photo_id as count')
       .first();
 
     // Per-colour totals for the filter chips (#1044) — the swatch row shows
@@ -296,7 +337,7 @@ class PhotoFilterBuilder {
       withRatings: parseInt(result.with_ratings) || 0,
       withLikes: parseInt(result.with_likes) || 0,
       withFavorites: parseInt(result.with_favorites) || 0,
-      withComments: parseInt(result.with_comments) || 0,
+      withComments: parseInt(comments?.count) || 0,
       withColorLabels: parseInt(result.with_color_labels) || 0,
       colorLabelCounts
     };

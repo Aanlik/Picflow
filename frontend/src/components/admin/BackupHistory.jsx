@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { toast } from 'react-toastify';
 import {
   Download,
   Eye,
@@ -66,7 +67,7 @@ export const BackupHistory = () => {
   }, [searchTerm, filterStatus]);
 
   // Fetch backup history
-  const { data, isLoading, refetch } = useQuery({
+  const { data, isLoading, isFetching, refetch } = useQuery({
     queryKey: ['backup-history', currentPage, searchTerm, filterStatus],
     queryFn: async () => {
       const params = new URLSearchParams({
@@ -102,7 +103,11 @@ export const BackupHistory = () => {
   };
 
   const handleDelete = (backup) => {
-    if (window.confirm(t('backup.history.deleteConfirm', { date: format(new Date(backup.created_at)) }))) {
+    if (window.confirm(t('backup.history.deleteConfirm', {
+      dateTime: `${format(new Date(backup.created_at))} ${formatTime(backup.created_at)}`,
+      size: formatBytes(backup.total_size || 0),
+      fileCount: backup.files_backed_up || 0,
+    }))) {
       deleteMutation.mutate(backup.id);
     }
   };
@@ -146,11 +151,13 @@ export const BackupHistory = () => {
             </select>
             
             <Button
-              onClick={() => refetch()}
+              onClick={() => { void refetch().then((result) => { if (!result.isError) toast.success(t('backup.history.refreshed')); }); }}
               variant="secondary"
               size="sm"
+              aria-label={t('backup.history.refresh')}
+              disabled={isFetching}
             >
-              <RefreshCw className="h-4 w-4" />
+              <RefreshCw className={`h-4 w-4 ${isFetching ? 'animate-spin' : ''}`} />
             </Button>
           </div>
         </div>

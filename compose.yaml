@@ -1,7 +1,7 @@
 name: picflow
 services:
   picflow:
-    image: picflow:1.0.5
+    image: picflow:1.0.6
     build:
       context: .
       dockerfile: Dockerfile
@@ -15,6 +15,11 @@ services:
     environment:
       PORT: '3000'
       PICFLOW_GITHUB_REPOSITORY: ${PICFLOW_GITHUB_REPOSITORY:-${PHOFLOW_GITHUB_REPOSITORY:-Aanlik/Picflow}}
+      # Axios uses these standard variables for installations where the NAS
+      # needs an outbound proxy to reach GitHub's releases API.
+      HTTP_PROXY: ${HTTP_PROXY:-}
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      NO_PROXY: ${NO_PROXY:-}
       PIXCAKE_BRIDGE_URL: http://127.0.0.1:8080
       DATABASE_CLIENT: sqlite3
       EXTERNAL_MEDIA_ROOT: /external-media

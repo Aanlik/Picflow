@@ -30,6 +30,7 @@ interface AdminPhotoGridProps {
   onPhotosDeleted: () => void;
   onSelectionChange?: (selectedIds: number[]) => void;
   categories?: CategoryOption[];
+  hasActiveFilters?: boolean;
 }
 
 export const AdminPhotoGrid: React.FC<AdminPhotoGridProps> = ({
@@ -38,7 +39,8 @@ export const AdminPhotoGrid: React.FC<AdminPhotoGridProps> = ({
   onPhotoClick,
   onPhotosDeleted,
   onSelectionChange,
-  categories = []
+  categories = [],
+  hasActiveFilters = false,
 }) => {
   const { t: tAudit } = useTranslation();
   const { t } = useTranslation();
@@ -209,7 +211,10 @@ export const AdminPhotoGrid: React.FC<AdminPhotoGridProps> = ({
     try {
       await photosService.updatePhotosCategory(eventId, selectedIds, categoryId);
       const categoryName = categoryId
-        ? categories.find(c => Number(c.id) === categoryId)?.name || t('photos.selectedCategory', 'selected category')
+        ? (() => {
+          const category = categories.find(c => Number(c.id) === categoryId);
+          return category ? categoryLabel(category, t) : t('photos.selectedCategory', 'selected category');
+        })()
         : t('photos.uncategorized', 'Uncategorized');
       toast.success(
         t('photos.movedToCategory', '{{count}} photos moved to {{category}}', {
@@ -795,7 +800,7 @@ export const AdminPhotoGrid: React.FC<AdminPhotoGridProps> = ({
 
       {photos.length === 0 && (
         <div className="text-center py-12">
-          <p className="text-neutral-500 dark:text-neutral-400">{t('gallery.noMedia', 'No media uploaded yet')}</p>
+          <p className="text-neutral-500 dark:text-neutral-400">{t(hasActiveFilters ? 'gallery.noPhotosFound' : 'gallery.noMedia', hasActiveFilters ? 'No photos match the current filters.' : 'No media uploaded yet')}</p>
         </div>
       )}
 

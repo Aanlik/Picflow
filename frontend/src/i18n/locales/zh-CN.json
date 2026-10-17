@@ -444,7 +444,8 @@
       "returningHint": "您之前的选片记录仍然保留",
       "recoverPicks": "恢复之前的选片",
       "savedRoles": "已有选片人",
-      "currentRole": "当前"
+      "currentRole": "当前",
+      "roleSwitchFailed": "无法切换到这位选片人，请重新输入姓名继续。"
     },
     "footer": {
       "forgetMeConfirm": "这将移除您在该相册中的姓名和选片记录",
@@ -504,7 +505,8 @@
       "details": "细节",
       "party": "派对",
       "individualPhotos": "单张照片",
-      "collages": "拼图"
+      "collages": "拼图",
+      "uncategorized": "未分类"
     },
     "addCategory": "添加分类",
     "eventSpecificCategories": "本项目分类",
@@ -516,6 +518,7 @@
     "failedToCreateCategory": "创建分类失败",
     "failedToDeleteCategory": "删除分类失败",
     "categoryName": "分类名称",
+    "slug": "分类标识（英文或数字）",
     "noCategoriesYet": "尚未设置分类，可添加分类整理照片。",
     "deleteConfirm": "确定删除“{{name}}”吗？",
     "setCoverPhoto": "设置封面照片",
@@ -785,6 +788,7 @@
       "successToast": "项目副本已创建"
     },
     "draftBanner": "此项目尚未发布。添加照片并确认设置后，即可发布给客户。",
+    "draftNotShareable": "草稿尚未发布，不能分享给客户。",
     "subtitle": "管理项目、客户选片和照片交付",
     "failedToLoadEvents": "项目加载失败",
     "tryAgain": "重试",
@@ -864,6 +868,11 @@
       "enterNewName": "输入新项目名称",
       "newUrl": "新建网址：",
       "checkingAvailability": "正在检查可用性...",
+      "sameUrl": "新名称生成的网址与当前网址相同。",
+      "duplicateName": "同一拍摄日期下已存在相同项目名称。",
+      "nameTooShort": "项目名称至少需要 3 个字符。",
+      "nameTooLong": "项目名称不能超过 100 个字符。",
+      "validationFailed": "无法验证项目名称，请稍后重试。",
       "warningTitle": "请注意:",
       "warning1": "相册链接将更改",
       "warning2": "旧链接会自动跳转至新链接",
@@ -983,6 +992,7 @@
     "title": "系统设置",
     "subtitle": "配置站点功能、显示效果及系统参数",
     "loadingSettings": "设置加载中…",
+    "accessDenied": "当前账号没有可访问的设置权限。请返回工作台，或联系超级管理员调整权限。",
     "general": {
       "title": "常规",
       "siteConfiguration": "站点配置",
@@ -1309,6 +1319,7 @@
       "blockAiCrawlersHelp": "阻止 AI 爬虫抓取页面，降低内容被用于模型训练的可能性。",
       "blockedAgents": "已屏蔽的爬虫",
       "removeAgent": "移除 {{name}}",
+      "addAgent": "添加屏蔽的爬虫",
       "addAgentPlaceholder": "输入爬虫标识…",
       "blockSocialBots": "禁止社交平台生成链接预览",
       "blockSocialBotsHelp": "阻止 Twitter、Facebook、LinkedIn 等平台抓取页面内容并生成链接预览。",
@@ -1322,6 +1333,8 @@
       "customRules": "自定义 robots.txt 规则",
       "ruleAgentPlaceholder": "爬虫名称",
       "rulePathPlaceholder": "禁止访问的路径",
+      "addRule": "添加 robots.txt 规则",
+      "removeRule": "移除第 {{index}} 条 robots.txt 规则",
       "showPreview": "显示 robots.txt 预览",
       "hidePreview": "隐藏 robots.txt 预览",
       "saveSettings": "保存搜索引擎设置"
@@ -2034,7 +2047,8 @@
       "inviteStatus": {
         "pending": "待处理",
         "redeemed": "已使用",
-        "revoked": "已撤销"
+      "revoked": "已撤销",
+      "removed": "已移除"
       },
       "reviewDuplicates": "检查重复记录",
       "duplicateBadge": "重复吗?",
@@ -2198,7 +2212,7 @@
     "brandingUpdated": "成功更新品牌",
     "categoryUpdated": "成功更新分类",
     "brandingThemeMissing": "目前尚未保存品牌主题.",
-    "brandingPaletteSynced": "调色板同步从Branding。"
+    "brandingPaletteSynced": "已同步品牌配色。"
   },
   "cms": {
     "title": "内容页面",
@@ -2471,6 +2485,7 @@
         "title": "备份覆盖",
         "included": "包含",
         "excluded": "不包括",
+        "activeProjectFiles": "本次备份中的活动项目文件",
         "notRecorded": "此备份未记录"
       },
       "storageDestination": "存储目标",
@@ -2642,7 +2657,9 @@
       },
       "deleteSuccess": "备份已删除",
       "deleteError": "删除备份失败",
-      "deleteConfirm": "确认删除 {{date}} 的备份吗？",
+      "deleteConfirm": "确定删除 {{dateTime}} 的备份恢复点吗？（{{size}}，{{fileCount}} 个文件）为保护其他恢复点，共用的备份文件不会删除。",
+      "refresh": "刷新备份记录",
+      "refreshed": "备份记录已刷新。",
       "status": {
         "completed": "已完成",
         "failed": "失败",
@@ -2658,6 +2675,9 @@
       }
     },
     "restore": {
+      "errors": {
+        "dbBackupOutsideConfiguredPath": "备份中的数据库文件不在已配置的备份目录内，系统已阻止恢复。请核对备份目录后重试。"
+      },
       "superAdminOnly": "恢复备份会替换此实例中的数据，包括用户账号和角色，因此仅超级管理员可以执行。",
       "steps": {
         "selectSource": "选择源",
@@ -2856,6 +2876,8 @@
     "requirements": "密码要求：",
     "minLength": "至少12个字符长",
     "mustDiffer": "必须与当前密码不同",
+    "showPassword": "显示密码",
+    "hidePassword": "隐藏密码",
     "success": "密码已成功更改",
     "failed": "更改密码失败",
     "currentRequired": "需要当前密码",
@@ -2873,7 +2895,7 @@
     "minLength": "至少12个字符长",
     "mustContainUpperLower": "必须包含大写和小写字母",
     "mustContainNumbers": "必须包含数字",
-    "mustContainSpecial": "必须包含特殊字符( $ $ $ )",
+    "mustContainSpecial": "必须包含至少一个特殊字符，例如 !@#$%^&*",
     "minLengthError": "密码必须至少为 12 个字符",
     "mustContainLowercase": "密码必须包含小写字母",
     "mustContainUppercase": "密码必须包含大写字母",
@@ -3453,7 +3475,7 @@
       "super_admin": "拥有系统全部管理权限，可管理账号、角色、项目、照片和系统设置。",
       "admin": "管理项目、照片、客户访问和日常工作设置。",
       "editor": "编辑项目和照片内容，但不能创建或删除项目。",
-      "viewer": "只读查看概览和项目。",
+      "viewer": "只读查看概览、项目、照片、归档项目、品牌设置和内容页面。",
       "solo_photographer": "适用于单人摄影工作室的完整管理角色，可管理项目、照片、客户、设置和团队。",
       "team_photographer": "协作摄影师角色，可查看项目、上传和管理照片并查看客户信息；不能管理系统设置或用户账号。"
     }
@@ -3498,6 +3520,8 @@
     "collage": "拼图",
     "sampleEvent": "示例项目",
     "sampleDate": "2026 年 1 月 15 日",
+    "today": "今天",
+    "yesterday": "昨天",
     "galleryPreview": "相册预览",
     "guestNameExample": "例如：小林",
     "moveUp": "上移",
@@ -3639,6 +3663,7 @@
     "retryQueued": "已重新排入 {{count}} 个任务",
     "retryQueued_one": "已重新排入 {{count}} 个任务",
     "retryQueued_other": "已重新排入 {{count}} 个任务",
+    "retryNone": "没有可重试的失败任务。",
     "confirmUnknownRetry": "有 {{count}} 个任务的上传结果未知。请先在 Picflow 核对是否已替换成片，再确认重试，避免重复上传。继续重试吗？",
     "confirmUnknownRetry_one": "有 {{count}} 个任务的上传结果未知。请先在 Picflow 核对是否已替换成片，再确认重试，避免重复上传。继续重试吗？",
     "confirmUnknownRetry_other": "有 {{count}} 个任务的上传结果未知。请先在 Picflow 核对是否已替换成片，再确认重试，避免重复上传。继续重试吗？",
@@ -3756,6 +3781,7 @@
     "submitting": "正在提交…",
     "submitted": "需求已提交",
     "submitFailed": "提交失败，请稍后重试。",
+    "alreadyInProgress": "这张照片已经有一项正在处理的精修需求。",
     "versionChanged": "成片版本已更新，请刷新后重新提交返修。",
     "noVersion": "这张照片还没有精修成片，暂时不能申请返修。",
     "identityRequired": "请先完成客户身份验证。",
@@ -3807,7 +3833,16 @@
     "chooseRole": "请选择角色",
     "createButton": "创建账号",
     "creating": "正在创建…",
-    "createError": "创建账号失败，请检查填写内容和账号权限。"
+    "createError": "创建账号失败，请检查填写内容和账号权限。",
+    "actions": "操作",
+    "activate": "启用",
+    "deactivate": "停用",
+    "delete": "删除",
+    "deleteConfirm": "确定永久删除管理员账号“{{username}}”吗？",
+    "updateSuccess": "账号设置已更新。",
+    "updateError": "更新账号设置失败。",
+    "deleteSuccess": "管理员账号已删除。",
+    "deleteError": "删除账号失败。"
   },
   "downloadQueue": {
     "title": "下载所选照片",

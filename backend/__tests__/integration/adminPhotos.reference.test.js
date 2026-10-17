@@ -216,6 +216,24 @@ describe('Admin photos in reference mode', () => {
     expect(filtered.body.photos.every((p) => p.category_id === categoryId)).toBe(true);
   });
 
+  it('sorts by rating and keeps unrated photos last in either direction', async () => {
+    await db('photos').insert([
+      { event_id: 1, filename: 'rating-low.jpg', path: 'low.jpg', type: 'individual', average_rating: 2.5 },
+      { event_id: 1, filename: 'rating-high.jpg', path: 'high.jpg', type: 'individual', average_rating: 4.5 },
+      { event_id: 1, filename: 'rating-none.jpg', path: 'none.jpg', type: 'individual', average_rating: null },
+    ]);
+
+    const ascending = await request(app).get('/api/admin/events/1/photos').query({ sort: 'rating', order: 'asc' }).expect(200);
+    const ascendingNames = ascending.body.photos.map((photo) => photo.filename);
+    expect(ascendingNames.indexOf('rating-low.jpg')).toBeLessThan(ascendingNames.indexOf('rating-high.jpg'));
+    expect(ascendingNames.at(-1)).toBe('rating-none.jpg');
+
+    const descending = await request(app).get('/api/admin/events/1/photos').query({ sort: 'rating', order: 'desc' }).expect(200);
+    const descendingNames = descending.body.photos.map((photo) => photo.filename);
+    expect(descendingNames.indexOf('rating-high.jpg')).toBeLessThan(descendingNames.indexOf('rating-low.jpg'));
+    expect(descendingNames.at(-1)).toBe('rating-none.jpg');
+  });
+
   it('normalizes category updates', async () => {
     const photo = await db('photos').first();
 

@@ -191,7 +191,7 @@ export function PhotographyWorkflowCard({ eventId }: { eventId: number }) {
               : t('photographyWorkflow.disconnected')}</p>}
       </div>
       {isBound && <div className="flex flex-wrap items-center gap-2">
-        <select aria-label={t('photographyWorkflow.projectStage')} value={workflow?.stage || 'SELECTING'} disabled={busy || workflow?.stage === 'ARCHIVED'} onChange={(event) => void perform(() => api.post(`/admin/photography-workflow/${eventId}/stage`, { stage: event.target.value }))} className="h-9 min-w-[132px] shrink-0 rounded-md border border-neutral-300 bg-white px-3 text-sm leading-none dark:border-neutral-700 dark:bg-neutral-900">
+        <select aria-label={t('photographyWorkflow.projectStage')} value={workflow?.stage || 'SELECTING'} disabled={busy} onChange={(event) => void perform(() => api.post(`/admin/photography-workflow/${eventId}/stage`, { stage: event.target.value }))} className="h-9 min-w-[132px] shrink-0 rounded-md border border-neutral-300 bg-white px-3 text-sm leading-none dark:border-neutral-700 dark:bg-neutral-900">
           {stageValues.map((stage) => <option key={stage} value={stage}>{t(`photographyWorkflow.stage.${stage}`)}</option>)}
         </select>
         <Button variant="outline" size="sm" disabled={busy} onClick={() => void perform(() => api.post(`/admin/photography-workflow/${eventId}/sync`, {}), 'photographyWorkflow.syncComplete')}>
@@ -204,12 +204,16 @@ export function PhotographyWorkflowCard({ eventId }: { eventId: number }) {
           void perform(async () => {
             try {
               const result = await api.post(`/admin/photography-workflow/${eventId}/retry`, { confirm_unknown: false });
-              toast.success(t('photographyWorkflow.retryQueued', { count: result.data?.total_requeued ?? 0 }));
+              const count = Number(result.data?.total_requeued) || 0;
+              if (count === 0) toast.info(t('photographyWorkflow.retryNone'));
+              else toast.success(t('photographyWorkflow.retryQueued', { count }));
             } catch (cause: any) {
               if (cause?.response?.status !== 409 || cause?.response?.data?.code !== 'UNKNOWN_CONFIRMATION_REQUIRED') throw cause;
               if (!window.confirm(t('photographyWorkflow.confirmUnknownRetry', { count: cause.response.data.count || 1 }))) return;
               const result = await api.post(`/admin/photography-workflow/${eventId}/retry`, { confirm_unknown: true });
-              toast.success(t('photographyWorkflow.retryQueued', { count: result.data?.total_requeued ?? 0 }));
+              const count = Number(result.data?.total_requeued) || 0;
+              if (count === 0) toast.info(t('photographyWorkflow.retryNone'));
+              else toast.success(t('photographyWorkflow.retryQueued', { count }));
             }
           });
         }}>{t('photographyWorkflow.retryFailed')}</Button>}

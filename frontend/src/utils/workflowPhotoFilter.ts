@@ -17,6 +17,7 @@ export interface WorkflowPhotoLike {
   cancelled: boolean;
   added_during_editing: boolean;
   error: boolean;
+  remote_present?: boolean;
 }
 
 export function matchesWorkflowPhotoFilter(
@@ -25,6 +26,8 @@ export function matchesWorkflowPhotoFilter(
   stage: string,
   hasActiveRequest = false,
 ): boolean {
+  const remoteMissing = photo.remote_present === false;
+  const hasError = photo.error || remoteMissing;
   const isCancelled = photo.cancelled;
   const isDelivered = photo.delivered && !isCancelled;
   const isEditing = photo.selected
@@ -32,23 +35,23 @@ export function matchesWorkflowPhotoFilter(
     && ['EDITING', 'DELIVERED'].includes(stage)
     && !isDelivered
     && !isCancelled
-    && !photo.error;
+    && !hasError;
   const isSelected = photo.selected
     && !isEditing
     && !isDelivered
     && !isCancelled
-    && !photo.error;
+    && !hasError;
 
   switch (filter) {
-    case 'all': return true;
-    case 'proof': return !photo.selected && !isCancelled && !photo.delivered && !photo.error;
+    case 'all': return !remoteMissing;
+    case 'proof': return !remoteMissing && !photo.selected && !isCancelled && !photo.delivered && !hasError;
     case 'selected': return isSelected;
     case 'editing': return isEditing;
-    case 'delivered': return isDelivered;
-    case 'additional': return photo.selected && photo.added_during_editing && !isCancelled && !photo.error;
-    case 'requests': return hasActiveRequest;
-    case 'cancelled': return isCancelled;
-    case 'errors': return photo.error;
+    case 'delivered': return !remoteMissing && isDelivered;
+    case 'additional': return !remoteMissing && photo.selected && photo.added_during_editing && !isCancelled && !hasError;
+    case 'requests': return !remoteMissing && hasActiveRequest;
+    case 'cancelled': return !remoteMissing && isCancelled;
+    case 'errors': return hasError;
     default: return false;
   }
 }

@@ -391,7 +391,11 @@ export interface FeedbackFilters {
   colorLabels?: string[];
   /** Same, against the caller's own marks. */
   myColorLabels?: string[];
-  categoryId?: number;
+  categoryId?: number | string;
+  /** The filename search currently applied to the photo list. */
+  search?: string;
+  type?: string;
+  mediaType?: 'photo' | 'video';
   logic?: 'AND' | 'OR';
   sort?: 'rating' | 'likes' | 'favorites' | 'date' | 'filename';
   order?: 'asc' | 'desc';
@@ -440,7 +444,10 @@ export interface ExportFilter {
   has_comments?: boolean;
   color_labels?: string[];
   my_color_labels?: string[];
-  category_id?: number;
+  category_id?: number | string | null;
+  type?: string;
+  media_type?: 'photo' | 'video';
+  search?: string;
   logic?: 'AND' | 'OR';
   sort?: 'rating' | 'likes' | 'favorites' | 'date' | 'filename';
   order?: 'asc' | 'desc';

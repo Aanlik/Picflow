@@ -2,6 +2,7 @@ import { useQuery, useMutation } from '@tanstack/react-query';
 import { galleryService } from '../services';
 import { toast } from 'react-toastify';
 import { useTranslation } from 'react-i18next';
+import { galleryRefreshInterval } from '../utils/galleryRefreshInterval';
 
 export const useGalleryInfo = (slug?: string, token?: string, enabled: boolean = true) => {
   return useQuery({
@@ -33,7 +34,7 @@ export const useGalleryPhotos = (
     staleTime: 5 * 60 * 1000, // 5 minutes
     // Keep shared proofing state (labels, likes, ratings and comment counts)
     // fresh for guests who leave the gallery open on another device.
-    refetchInterval: 5_000,
+    refetchInterval: (query) => galleryRefreshInterval(query.state.data?.photos?.length || 0),
     refetchIntervalInBackground: false,
     refetchOnWindowFocus: true,
     // Add a small delay to ensure auth token is properly set

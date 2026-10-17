@@ -80,8 +80,6 @@ class Engine:
             p = s.scalar(select(Project).where(Project.event_id == event_id))
             if p is None:
                 raise ValueError("项目不存在")
-            if p.stage == "ARCHIVED" and stage != "ARCHIVED":
-                raise ValueError("已归档项目不能直接更改阶段，请先恢复项目")
             if stage == "ARCHIVED" and p.stage != "ARCHIVED":
                 p.previous_stage = p.stage if p.stage in {"SELECTING", "EDITING", "DELIVERED"} else "SELECTING"
             elif stage != "ARCHIVED":
@@ -729,6 +727,7 @@ class Engine:
             "deliveries_requeued": deliveries_requeued,
             "withdrawals_requeued": withdrawals_requeued,
             "total_requeued": deliveries_requeued + withdrawals_requeued,
+            "message": "没有可重试的失败任务" if deliveries_requeued + withdrawals_requeued == 0 else None,
         }
 
     async def loop(self):

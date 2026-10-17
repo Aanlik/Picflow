@@ -692,7 +692,7 @@ router.get(
 // up again. Used by the admin grid's "Retry" button when a previous run
 // hit a transient sharp/ffmpeg error.
 router.post(
-  '/photos/:photoId/retry',
+  '/:photoId/retry',
   adminAuth,
   requirePermission('photos.edit'),
   async (req, res) => {
@@ -1301,8 +1301,17 @@ router.get('/:eventId/photos', adminAuth, requirePermission('photos.view'), requ
     } else if (sort === 'size') {
       orderByColumn = 'photos.size_bytes';
     }
+    if (sort === 'rating') {
+      // Keep unrated photos at the end in either direction; SQLite and
+      // PostgreSQL otherwise place NULLs differently for ASC/DESC.
+      query = query.orderByRaw('CASE WHEN photos.average_rating IS NULL THEN 1 ELSE 0 END ASC')
+        .orderBy('photos.average_rating', order)
+        .orderBy('photos.uploaded_at', 'desc');
+    } else {
+      query = query.orderBy(orderByColumn, order);
+    }
 
-    const photos = await query.orderBy(orderByColumn, order);
+    const photos = await query;
 
     // Get comment counts separately
     const commentCounts = await db('photo_feedback')
@@ -1351,8 +1360,8 @@ router.get('/:eventId/photos', adminAuth, requirePermission('photos.view'), requ
         // placeholders read this, so neither could ever render either.
         processing_status: photo.processing_status || 'complete',
         category_id: photo.category_id || photo.type,
-        category_name: photo.pc_name || (photo.type === 'individual' ? 'Individual Photos' : 'Collages'),
-        category_slug: photo.pc_slug || photo.type,
+        category_name: photo.pc_name || 'Uncategorized',
+        category_slug: photo.pc_slug || 'uncategorized',
         media_type: photo.media_type || 'image',
         mime_type: photo.mime_type || null,
         width: photo.width || null,

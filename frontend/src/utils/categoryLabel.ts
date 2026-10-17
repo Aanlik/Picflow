@@ -1,6 +1,7 @@
 type Translate = (key: string) => string;
 
 const BUILT_IN_CATEGORY_KEYS: Record<string, string> = {
+  uncategorized: 'categories.defaults.uncategorized',
   ceremony: 'categories.defaults.ceremony',
   reception: 'categories.defaults.reception',
   portraits: 'categories.defaults.portraits',
@@ -12,6 +13,7 @@ const BUILT_IN_CATEGORY_KEYS: Record<string, string> = {
 };
 
 const BUILT_IN_CATEGORY_NAMES: Record<string, string> = {
+  uncategorized: 'categories.defaults.uncategorized',
   ceremony: 'categories.defaults.ceremony',
   reception: 'categories.defaults.reception',
   portraits: 'categories.defaults.portraits',

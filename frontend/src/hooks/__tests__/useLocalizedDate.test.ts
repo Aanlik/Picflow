@@ -14,7 +14,7 @@ vi.mock('../usePublicSettings', () => ({
   usePublicSettings: () => ({ data: undefined }),
 }));
 
-import { useLocalizedDate } from '../useLocalizedDate';
+import { parseLocalizedDate, useLocalizedDate } from '../useLocalizedDate';
 
 // 2026-03-04 is a Wednesday.
 const date = new Date(2026, 2, 4, 12, 0, 0);
@@ -43,6 +43,12 @@ describe('useLocalizedDate locale resolution', () => {
     const { result } = renderHook(() => useLocalizedDate());
     expect(result.current.dateFormat).toBe('yyyy-MM-dd');
     expect(result.current.format(date)).toBe('2026-03-04');
+  });
+
+  it('interprets timezone-less database timestamps as UTC but keeps date-only values as calendar dates', () => {
+    expect(parseLocalizedDate('2026-10-15 19:31:00').toISOString()).toBe('2026-10-15T19:31:00.000Z');
+    expect(parseLocalizedDate('2026-10-15').getHours()).toBe(0);
+    expect(parseLocalizedDate('2026-10-15T19:31:00+08:00').toISOString()).toBe('2026-10-15T11:31:00.000Z');
   });
 
   it('localises Chinese relative times too', () => {

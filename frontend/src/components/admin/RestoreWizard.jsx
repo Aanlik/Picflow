@@ -117,7 +117,10 @@ export const RestoreWizard = () => {
       setCurrentStep(3);
     },
     onError: (error) => {
-      toast.error(error.response?.data?.error || t('backup.restore.validationFailed'));
+      const message = error.response?.data?.error;
+      toast.error(message === 'Manifest database.backup_file must be inside a configured backup location'
+        ? t('backup.restore.errors.dbBackupOutsideConfiguredPath')
+        : message || t('backup.restore.validationFailed'));
     }
   });
 
@@ -140,7 +143,10 @@ export const RestoreWizard = () => {
       toast.success(t('backup.restore.started'));
     },
     onError: (error) => {
-      toast.error(error.response?.data?.error || t('backup.restore.startFailed'));
+      const message = error.response?.data?.error;
+      toast.error(message === 'Manifest database.backup_file must be inside a configured backup location'
+        ? t('backup.restore.errors.dbBackupOutsideConfiguredPath')
+        : message || t('backup.restore.startFailed'));
     }
   });
 
@@ -328,7 +334,7 @@ export const RestoreWizard = () => {
                       {fmtDate(backup.created_at)} {t('backup.restore.backup.at')} {fmtTime(backup.created_at)}
                     </p>
                     <p className="text-sm text-neutral-500 dark:text-neutral-400">
-                      {t('backup.dashboard.backupType', { type: t(`backup.dashboard.backupTypeNames.${String(backup.backup_type).toLowerCase()}`, { defaultValue: backup.backup_type }) })} • {formatBytes(backup.total_size || 0)}
+                      {t('backup.dashboard.backupType', { type: t(`backup.history.types.${String(backup.backup_type).toLowerCase()}`, { defaultValue: backup.backup_type }) })} • {formatBytes(backup.total_size || 0)}
                     </p>
                   </div>
                 </div>

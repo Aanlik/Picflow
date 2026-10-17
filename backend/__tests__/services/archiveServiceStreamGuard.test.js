@@ -114,11 +114,15 @@ describe('archiveService storage reads', () => {
 
   it('keeps at most two storage reads open while building the archive', async () => {
     const event = await makeEvent(SLUG, 6);
+    // Stale generated download bundle inside the event tree is not a photo
+    // source and must never be nested into the project archive.
+    bodies.set(`events/active/${SLUG}/.download-cache/all.zip`, crypto.randomBytes(4096));
 
     await archiveEvent(event);
 
     expect(maxOpen).toBeLessThanOrEqual(2);
     expect(mockStorage.get).toHaveBeenCalledTimes(6);
+    expect(mockStorage.get).not.toHaveBeenCalledWith(`events/active/${SLUG}/.download-cache/all.zip`);
     expect(open.size).toBe(0);
     const row = await db('events').where({ id: event.id }).first();
     expect(Boolean(row.is_archived)).toBe(true);

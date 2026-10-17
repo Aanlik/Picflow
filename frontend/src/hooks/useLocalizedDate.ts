@@ -13,6 +13,19 @@ const DATE_LOCALES: Record<string, Locale> = {
 export const resolveDateLocale = (language: string | undefined): Locale =>
   DATE_LOCALES[(language || '').toLowerCase().split('-')[0]] || enUS;
 
+/** Database timestamps without an explicit zone are UTC; date-only project
+ * values are calendar dates and must stay local rather than shift a day. */
+export function parseLocalizedDate(value: Date | string): Date {
+  if (value instanceof Date) return value;
+  const text = String(value);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return new Date(`${text}T00:00:00`);
+  if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/.test(text)
+    && !/(?:Z|[+-]\d{2}:?\d{2})$/i.test(text)) {
+    return new Date(`${text.replace(' ', 'T')}Z`);
+  }
+  return new Date(text);
+}
+
 // Convert old date format strings to new date-fns format
 const convertDateFormat = (format: string): string => {
   return format
@@ -29,7 +42,7 @@ export const useLocalizedDate = () => {
   const getLocale = () => resolveDateLocale(i18n.language);
   
   const format = (date: Date | string, formatStr?: string) => {
-    const dateObj = typeof date === 'string' ? new Date(date) : date;
+    const dateObj = parseLocalizedDate(date);
     // date-fns `format` throws RangeError on an Invalid Date, which crashes the
     // whole page when a call site renders a transient/partial date (e.g. the
     // event-date field mid-edit). Return '' instead so a bad value degrades to
@@ -52,7 +65,7 @@ export const useLocalizedDate = () => {
   };
   
   const formatDistanceToNow = (date: Date | string, options?: { addSuffix?: boolean }) => {
-    const dateObj = typeof date === 'string' ? new Date(date) : date;
+    const dateObj = parseLocalizedDate(date);
     if (!isValid(dateObj)) return '';
     return dateFnsFormatDistanceToNow(dateObj, { ...options, locale: getLocale() });
   };
@@ -78,7 +91,7 @@ export const useLocalizedDate = () => {
       const d = new Date(2000, 0, 1, parseInt(h, 10), parseInt(m, 10));
       return dateFnsFormat(d, timeFormatToken, { locale: getLocale() });
     }
-    const dateObj = typeof date === 'string' ? new Date(date) : date;
+    const dateObj = parseLocalizedDate(date);
     return dateFnsFormat(dateObj, timeFormatToken, { locale: getLocale() });
   };
 
@@ -94,7 +107,7 @@ export const useLocalizedDate = () => {
    * Pass `formatStr` to override the date half (same shape as `format()`).
    */
   const formatDateTime = (date: Date | string, formatStr?: string) => {
-    const dateObj = typeof date === 'string' ? new Date(date) : date;
+    const dateObj = parseLocalizedDate(date);
     let dateFormat = formatStr;
     if (!dateFormat && settings?.general_date_format) {
       dateFormat = typeof settings.general_date_format === 'string'

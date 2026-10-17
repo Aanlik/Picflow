@@ -71,13 +71,13 @@ export const CustomCssCard: React.FC<CustomCssCardProps> = ({
                 {t('branding.cssInstructions.layoutsDesc', 'Target gallery elements with these selectors:')}
               </p>
               <code className="block bg-neutral-800 text-green-400 p-3 rounded text-xs overflow-x-auto">
-{`.gallery-container { /* Main gallery wrapper */ }
-.gallery-grid { /* Photo grid container */ }
-.gallery-item { /* Individual photo card */ }
-.gallery-header { /* Header section */ }
-.gallery-hero { /* Hero image area */ }
-.photo-overlay { /* Photo hover overlay */ }
-.photo-actions { /* Like/favorite buttons */ }`}
+{`.gallery-container { }
+.gallery-grid { }
+.gallery-item { }
+.gallery-header { }
+.gallery-hero { }
+.photo-overlay { }
+.photo-actions { }`}
               </code>
             </div>
 

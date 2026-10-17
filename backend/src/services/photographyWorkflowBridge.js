@@ -125,8 +125,13 @@ async function restoreWorkflowStage(eventId) {
 
 async function persistUnbindIntent(eventId, executor = db) {
   if (!bridgeConfig()) return;
-  await executor('workflow_unbind_intents').insert({ event_id: Number(eventId), delete_delivery: false })
-    .onConflict('event_id').ignore();
+  // A normal project deletion unbinds the Bridge record but preserves the
+  // photographer-owned NAS delivery directory. If an older intent exists,
+  // make the current deletion policy authoritative instead of retaining a
+  // stale delete_delivery=true flag.
+  await executor('workflow_unbind_intents')
+    .insert({ event_id: Number(eventId), delete_delivery: false, error: null })
+    .onConflict('event_id').merge({ delete_delivery: false, error: null });
 }
 
 async function persistDeleteDeliveryIntent(eventId, executor = db) {

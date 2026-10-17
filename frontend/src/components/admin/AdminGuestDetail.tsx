@@ -85,6 +85,7 @@ export const AdminGuestDetail: React.FC<AdminGuestDetailProps> = ({ eventId, gue
             type="button"
             onClick={onClose}
             className="p-1 text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100"
+            aria-label={t('common.close')}
           >
             <X className="w-5 h-5" />
           </button>

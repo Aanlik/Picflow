@@ -32,4 +32,12 @@ describe('workflow photo filters', () => {
     expect(countWorkflowPhotos(photos, 'SELECTING', new Set())[ 'delivered' ]).toBe(1);
     expect(countWorkflowPhotos(photos, 'SELECTING', new Set())[ 'cancelled' ]).toBe(1);
   });
+
+  it('excludes remotely deleted photos from normal counts and keeps them visible as errors', () => {
+    const photos = [photo({ photo_id: 1 }), photo({ photo_id: 2, remote_present: false, delivered: true })];
+    const counts = countWorkflowPhotos(photos, 'DELIVERED', new Set());
+    expect(counts.all).toBe(1);
+    expect(counts.delivered).toBe(0);
+    expect(counts.errors).toBe(1);
+  });
 });

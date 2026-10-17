@@ -3,6 +3,13 @@ const { db } = require('../database/db');
 const logger = require('../utils/logger');
 const router = express.Router();
 
+const DEFAULT_PAGE_TITLES = {
+  'gallery-not-found': { 'zh-CN': '相册未找到', en: 'Gallery Not Found' },
+  'not-found': { 'zh-CN': '页面未找到', en: 'Page Not Found' },
+  impressum: { 'zh-CN': '法律声明', en: 'Legal Notice' },
+  datenschutz: { 'zh-CN': '隐私政策', en: 'Privacy Policy' },
+};
+
 // Get public CMS page
 router.get('/pages/:slug', async (req, res) => {
   try {
@@ -16,7 +23,9 @@ router.get('/pages/:slug', async (req, res) => {
     }
     
     // Return the appropriate language version
-    const title = lang === 'zh-CN' ? (page.title_zh || page.title_en) : page.title_en;
+    const title = (lang === 'zh-CN' ? (page.title_zh || page.title_en) : page.title_en)
+      || DEFAULT_PAGE_TITLES[slug]?.[lang]
+      || (lang === 'zh-CN' ? '信息页面' : 'Information page');
     const content = lang === 'zh-CN' ? (page.content_zh || page.content_en) : page.content_en;
     
     res.json({

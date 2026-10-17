@@ -12,6 +12,7 @@ export const CategoryManager: React.FC = () => {
   const addingModal = useModal();
   const [editingId, setEditingId] = useState<number | null>(null);
   const [newCategoryName, setNewCategoryName] = useState('');
+  const [newCategorySlug, setNewCategorySlug] = useState('');
   const [editingName, setEditingName] = useState('');
 
   // Fetch global categories (ordered by the global default display_order)
@@ -46,12 +47,13 @@ export const CategoryManager: React.FC = () => {
 
   // Create category mutation
   const createMutation = useMutationWithToast({
-    mutationFn: (name: string) =>
-      categoriesService.createCategory({ name, is_global: true }),
+    mutationFn: ({ name, slug }: { name: string; slug: string }) =>
+      categoriesService.createCategory({ name, slug, is_global: true }),
     invalidateKeys: [['global-categories']],
     successMessage: t('categories.categoryCreatedSuccess'),
     onSuccess: () => {
       setNewCategoryName('');
+      setNewCategorySlug('');
       addingModal.close();
     },
     errorMessage: t('categories.failedToCreateCategory'),
@@ -79,8 +81,8 @@ export const CategoryManager: React.FC = () => {
   });
 
   const handleCreate = () => {
-    if (newCategoryName.trim()) {
-      createMutation.mutate(newCategoryName.trim());
+    if (newCategoryName.trim() && newCategorySlug.trim()) {
+      createMutation.mutate({ name: newCategoryName.trim(), slug: newCategorySlug.trim().toLowerCase() });
     }
   };
 
@@ -132,7 +134,7 @@ export const CategoryManager: React.FC = () => {
 
       {/* Add new category form */}
       {addingModal.isOpen && (
-        <div className="flex gap-2 p-3 bg-neutral-50 dark:bg-neutral-800 rounded-lg">
+        <div className="flex flex-wrap gap-2 p-3 bg-neutral-50 dark:bg-neutral-800 rounded-lg">
           <input
             type="text"
             value={newCategoryName}
@@ -143,11 +145,22 @@ export const CategoryManager: React.FC = () => {
             className="flex-1 px-3 py-2 border border-neutral-300 dark:border-neutral-600 rounded-md bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 focus:ring-2 focus:ring-primary-500"
             autoFocus
           />
+          <input
+            type="text"
+            value={newCategorySlug}
+            onChange={(e) => setNewCategorySlug(e.target.value.replace(/[^a-zA-Z0-9_-]/g, '').toLowerCase())}
+            onKeyPress={(e) => e.key === 'Enter' && handleCreate()}
+            placeholder={t('categories.slug', '分类标识（英文或数字）')}
+            aria-label={t('categories.slug', '分类标识（英文或数字）')}
+            maxLength={100}
+            pattern="[a-z0-9][a-z0-9_-]{0,99}"
+            className="flex-1 min-w-[12rem] px-3 py-2 border border-neutral-300 dark:border-neutral-600 rounded-md bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 focus:ring-2 focus:ring-primary-500"
+          />
           <Button
             variant="primary"
             size="sm"
             onClick={handleCreate}
-            disabled={!newCategoryName.trim() || createMutation.isPending}
+            disabled={!newCategoryName.trim() || !/^[a-z0-9][a-z0-9_-]{0,99}$/.test(newCategorySlug) || createMutation.isPending}
           >
             {createMutation.isPending ? (
               <Loader2 className="w-4 h-4 animate-spin" />
@@ -161,6 +174,7 @@ export const CategoryManager: React.FC = () => {
             onClick={() => {
               addingModal.close();
               setNewCategoryName('');
+              setNewCategorySlug('');
             }}
           >
             {t('common.cancel')}

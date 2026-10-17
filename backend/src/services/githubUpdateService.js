@@ -1,3 +1,4 @@
+const axios = require('axios');
 const DEFAULT_REPOSITORY = 'Aanlik/Picflow';
 const CACHE_TTL_MS = 10 * 60 * 1000;
 let cached = null;
@@ -10,13 +11,12 @@ function updateError(code, message, status = null) {
 }
 
 function classifyNetworkError(error) {
-  // Node's fetch wraps DNS/TLS/socket errors in a TypeError and keeps the
-  // actionable OS error on `cause`; inspect both levels without returning the
-  // raw message (which may contain internal proxy or host details).
+  // Inspect the actionable OS error without returning the raw message (which
+  // may contain internal proxy or host details).
   const cause = error?.cause || error;
   const code = String(cause?.code || error?.code || '');
   const name = String(error?.name || cause?.name || '');
-  if (['TimeoutError', 'AbortError'].includes(name) || ['ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT'].includes(code)) {
+  if (['TimeoutError', 'AbortError'].includes(name) || ['ETIMEDOUT', 'ECONNABORTED', 'UND_ERR_CONNECT_TIMEOUT'].includes(code)) {
     return updateError('GITHUB_TIMEOUT_ERROR', 'GitHub request timed out');
   }
   if (['ENOTFOUND', 'EAI_AGAIN', 'EAI_FAIL', 'ENODATA'].includes(code)) {
@@ -63,13 +63,17 @@ async function checkLatestRelease(currentVersion) {
   const releasesUrl = `${repositoryUrl}/releases`;
   let response;
   try {
-    response = await fetch(`https://api.github.com/repos/${repo}/releases/latest`, {
+    // Axios honors HTTP_PROXY / HTTPS_PROXY / NO_PROXY in Node. The previous
+    // built-in fetch path ignored those variables, so a NAS that requires an
+    // outbound proxy always timed out even though the host had working egress.
+    response = await axios.get(`https://api.github.com/repos/${repo}/releases/latest`, {
       headers: {
         Accept: 'application/vnd.github+json',
         'X-GitHub-Api-Version': '2022-11-28',
         'User-Agent': 'Picflow-update-check',
       },
-      signal: AbortSignal.timeout(8000),
+      timeout: 8000,
+      validateStatus: () => true,
     });
   } catch (error) {
     throw classifyNetworkError(error);
@@ -83,11 +87,11 @@ async function checkLatestRelease(currentVersion) {
     };
   } else if (response.status === 403) {
     let errorBody = null;
-    try { errorBody = await response.json(); } catch { errorBody = null; }
-    const remaining = response.headers?.get?.('x-ratelimit-remaining');
+    errorBody = response.data;
+    const remaining = response.headers?.['x-ratelimit-remaining'];
     const message = String(errorBody?.message || '').toLowerCase();
     if (remaining === '0' || message.includes('rate limit exceeded')) {
-      const resetSeconds = Number(response.headers?.get?.('x-ratelimit-reset'));
+      const resetSeconds = Number(response.headers?.['x-ratelimit-reset']);
       value = {
         status: 'rate_limited', currentVersion, latestVersion: null,
         repositoryUrl, releaseUrl: releasesUrl,
@@ -99,10 +103,10 @@ async function checkLatestRelease(currentVersion) {
     } else {
       throw updateError('GITHUB_HTTP_ERROR', `GitHub API returned ${response.status}`, response.status);
     }
-  } else if (!response.ok) {
+  } else if (response.status < 200 || response.status >= 300) {
     throw updateError('GITHUB_HTTP_ERROR', `GitHub API returned ${response.status}`, response.status);
   } else {
-    const release = await response.json();
+    const release = response.data;
     const latestVersion = typeof release.tag_name === 'string' ? release.tag_name.trim() : '';
     const comparison = compareVersions(latestVersion, currentVersion);
     value = {

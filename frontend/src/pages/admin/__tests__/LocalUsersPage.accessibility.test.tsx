@@ -26,4 +26,14 @@ describe('local user page accessibility names', () => {
     expect(screen.getByRole('combobox', { name: 'localUsers.role' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'localUsers.createButton' })).toBeInTheDocument();
   });
+
+  it('does not expose account forms when the accounts route is forbidden', async () => {
+    get.mockRejectedValueOnce({ response: { status: 403 } });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<QueryClientProvider client={client}><LocalUsersPage /></QueryClientProvider>);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('localUsers.loadError');
+    expect(screen.queryByRole('textbox', { name: 'localUsers.username' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'localUsers.createButton' })).not.toBeInTheDocument();
+  });
 });

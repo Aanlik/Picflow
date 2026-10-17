@@ -109,7 +109,17 @@ export const GuestNamePromptModal: React.FC<GuestNamePromptModalProps> = ({
                     variant={identity?.id === guest.id ? 'primary' : 'outline'}
                     size="sm"
                     disabled={submitting || identity?.id === guest.id}
-                    onClick={() => switchRole(guest.id)}
+                    onClick={async () => {
+                      setSubmitting(true);
+                      setSubmitError(null);
+                      try {
+                        await switchRole(guest.id);
+                      } catch {
+                        setSubmitError(t('gallery.guestPrompt.roleSwitchFailed', '无法切换到这位选片人，请重新输入姓名继续。'));
+                      } finally {
+                        setSubmitting(false);
+                      }
+                    }}
                   >{guest.name}{identity?.id === guest.id ? ` · ${t('gallery.guestPrompt.currentRole', '当前')}` : ''}</Button>
                 ))}
               </div>

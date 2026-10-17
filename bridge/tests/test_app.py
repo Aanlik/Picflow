@@ -166,25 +166,24 @@ def test_first_sync_status_is_not_reported_as_a_connection_failure(tmp_path):
     db.dispose()
 
 
-def test_archived_stage_requires_explicit_restore_in_api_and_dashboard(tmp_path):
+def test_archived_stage_can_be_rolled_back_in_api_and_dashboard(tmp_path):
     engine, remote, cfg, db = setup(tmp_path)
     with TestClient(create_app(cfg, remote, start_workers=False)) as client:
         assert client.post('/api/projects/7/stage', json={'stage': 'EDITING'}).status_code == 200
         assert client.post('/api/projects/7/stage', json={'stage': 'ARCHIVED'}).status_code == 200
 
         dashboard = client.get('/').text
-        assert '恢复项目同步' in dashboard
-        assert '<select name="stage">' not in dashboard
-        assert client.post('/api/projects/7/stage', json={'stage': 'SELECTING'}).status_code == 400
+        assert '<select name="stage">' in dashboard
+        assert client.post('/api/projects/7/stage', json={'stage': 'SELECTING'}).status_code == 200
         with engine.sessions() as session:
             archived = session.scalar(select(Project).where(Project.event_id == 7))
-            assert archived.stage == 'ARCHIVED'
-            assert archived.previous_stage == 'EDITING'
+            assert archived.stage == 'SELECTING'
+            assert archived.previous_stage is None
 
         assert client.post('/projects/7/restore', follow_redirects=False).status_code == 303
         with engine.sessions() as session:
             restored = session.scalar(select(Project).where(Project.event_id == 7))
-            assert restored.stage == 'EDITING'
+            assert restored.stage == 'SELECTING'
             assert restored.previous_stage is None
     db.dispose()
 

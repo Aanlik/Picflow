@@ -250,8 +250,11 @@ export const EventDetailsPage: React.FC = () => {
     },
     onError: (error: any) => {
       if (error.response?.data?.errors) {
-        const errorMessage = error.response.data.errors[0].msg + ' (field: ' + error.response.data.errors[0].path + ')';
-        toast.error(errorMessage);
+        const first = error.response.data.errors[0];
+        const message = first.path === 'customer_name' && first.msg === 'Customer name is required'
+          ? t('validation.hostNameRequired')
+          : first.msg;
+        toast.error(message || t('toast.saveError'));
       } else {
         toast.error(error.response?.data?.error || t('toast.saveError'));
       }
@@ -278,7 +281,8 @@ export const EventDetailsPage: React.FC = () => {
         queryClient.invalidateQueries({ queryKey: ['admin-event', id] }),
         queryClient.invalidateQueries({ queryKey: ['admin-events'] }),
         queryClient.invalidateQueries({ queryKey: ['admin-archives'] }),
-        queryClient.invalidateQueries({ queryKey: ['admin-storage'] }),
+        queryClient.invalidateQueries({ queryKey: ['storage-info'] }),
+        queryClient.invalidateQueries({ queryKey: ['admin-storage-info'] }),
       ]);
       toast.success(t('toast.eventArchived'));
       navigate('/admin/archives', { replace: true });

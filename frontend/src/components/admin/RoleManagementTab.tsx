@@ -151,14 +151,14 @@ export const RoleManagementTab: React.FC = () => {
                 >
                   {isSuperAdmin ? t('roleEditor.view', 'View') : t('common.edit', 'Edit')}
                 </Button>
-                <Button
+                {!isSuperAdmin && <Button
                   variant="outline"
                   size="sm"
                   leftIcon={<Copy className="w-3.5 h-3.5" />}
                   onClick={() => setEditor({ mode: 'create', role: { ...role, description: '', displayName: `${roleDisplayName(role)} ${t('roleEditor.cloneSuffix', 'copy')}` } })}
                 >
                   {t('roleEditor.clone', 'Clone')}
-                </Button>
+                </Button>}
                 {!role.isSystem && (
                   <Button
                     variant="outline"

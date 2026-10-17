@@ -177,8 +177,12 @@ export const CMSEditor: React.FC<CMSEditorProps> = ({ content, onChange, onSave,
   React.useEffect(() => {
     if (editor && content !== editor.getHTML()) {
       editor.commands.setContent(content, { emitUpdate: false });
+      // The editor is mounted before CMS data finishes loading. setContent
+      // deliberately suppresses onUpdate, so refresh the status bar here or
+      // its word/character counts stay at the empty-document values.
+      updateCounts(editor);
     }
-  }, [content, editor]);
+  }, [content, editor, updateCounts]);
 
   if (!editor) {
     return null;

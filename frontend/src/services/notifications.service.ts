@@ -157,7 +157,9 @@ export const notificationsService = {
         });
       case 'cms_page_updated':
         return t('admin.notificationMessages.cmsPageUpdated', {
-          slug: notification.metadata.slug
+          slug: i18n.language.toLowerCase().startsWith('zh')
+            ? notification.metadata.pageNameZh || notification.metadata.slug
+            : notification.metadata.pageNameEn || notification.metadata.slug,
         });
       case 'favicon_uploaded':
         return t('admin.notificationMessages.faviconUploaded');

@@ -343,4 +343,35 @@ describe('admin thumbnail regeneration (#1129)', () => {
     expect(res.body.count).toBe(1);
     expect(imageProcessor.ensureThumbnail).toHaveBeenCalledTimes(1);
   });
+
+  it('uses qualified photo columns and excludes archived rows from batch and status counts', async () => {
+    const activeId = await seedEvent();
+    await seedPhoto(activeId, { source_origin: 'managed', filename: 'active.jpg' });
+    const [archivedRow] = await db('events').insert({
+      slug: 'archived', event_type: 'project', event_name: 'archived', event_date: '2026-01-01',
+      password_hash: 'x', share_link: 'archived-share', expires_at: new Date().toISOString(),
+      is_archived: true,
+    }).returning('id');
+    const archivedId = typeof archivedRow === 'object' ? archivedRow.id : archivedRow;
+    await seedPhoto(archivedId, { source_origin: 'managed', filename: 'archived.jpg' });
+
+    const status = await request(app).get('/admin/thumbnails/regenerate/status');
+    expect(status.status).toBe(200);
+    expect(Number(status.body.total)).toBe(1);
+
+    const thumbnails = await request(app).post('/admin/thumbnails/regenerate').send({});
+    expect(thumbnails.status).toBe(200);
+    expect(thumbnails.body.count).toBe(1);
+    await drain();
+    expect(imageProcessor.ensureThumbnail).toHaveBeenCalledTimes(1);
+    expect(imageProcessor.ensureThumbnail.mock.calls[0][0].filename).toBe('active.jpg');
+
+    jest.clearAllMocks();
+    const previews = await request(app).post('/admin/thumbnails/regenerate-previews').send({});
+    expect(previews.status).toBe(200);
+    expect(previews.body.count).toBe(1);
+    await drain();
+    expect(imageProcessor.ensurePreviewImage).toHaveBeenCalledTimes(1);
+    expect(imageProcessor.ensurePreviewImage.mock.calls[0][0].filename).toBe('active.jpg');
+  });
 });

@@ -80,11 +80,25 @@ class PhotoExportService {
       )
       .orderBy('photos.filename', 'asc');
 
-    if (photoIds && photoIds.length > 0) {
+    if (Array.isArray(photoIds)) {
       query = query.whereIn('photos.id', photoIds);
     }
 
     const photos = await query;
+
+    // Keep exports consistent with the visible comment rows. Legacy/imported
+    // comments can exist while the photo denormalized counter is still zero.
+    const commentCounts = photos.length
+      ? await db('photo_feedback')
+        .where('event_id', eventId)
+        .whereIn('photo_id', photos.map((photo) => photo.id))
+        .where({ feedback_type: 'comment', is_hidden: false })
+        .groupBy('photo_id')
+        .select('photo_id')
+        .count('id as count')
+      : [];
+    const commentsByPhoto = new Map(commentCounts.map((row) => [Number(row.photo_id), Number(row.count) || 0]));
+    for (const photo of photos) photo.comment_count = commentsByPhoto.get(Number(photo.id)) || 0;
 
     // Colour labels (#1044). One grouped query for the whole export, then
     // each row carries both the per-colour tallies and the single colour the

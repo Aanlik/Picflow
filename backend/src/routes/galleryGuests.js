@@ -152,15 +152,43 @@ router.delete('/:slug/guest/me', verifyGalleryAccess, resolveGuest, requireGuest
       return res.status(403).json({ error: 'Guest token does not match gallery' });
     }
 
-    await feedbackService.anonymizeGuestFeedback(req.guest.id);
+    const forgotten = await db.transaction(async (trx) => {
+      const selectionRows = await trx('photo_retouch_selections')
+        .where({ guest_id: req.guest.id, event_id: req.event.id })
+        .select('photo_id');
+      const feedbackRows = await trx('photo_feedback')
+        .where({ guest_id: req.guest.id, event_id: req.event.id })
+        .select('photo_id');
+      const affectedPhotoIds = [...new Set(feedbackRows.map((row) => Number(row.photo_id)))];
 
-    await db('gallery_guests')
-      .where({ id: req.guest.id })
-      .update({
-        is_deleted: true,
-        name: 'Removed',
-        last_seen_at: db.fn.now(),
-      });
+      await trx('photo_feedback')
+        .where({ guest_id: req.guest.id, event_id: req.event.id })
+        .update({ guest_id: null, guest_name: null, updated_at: new Date() });
+      await trx('photo_retouch_selections')
+        .where({ guest_id: req.guest.id, event_id: req.event.id })
+        .delete();
+      // Keep the request history, but do not leave a forgotten identity's
+      // open request blocking a later customer request on the same photo.
+      await trx('photo_retouch_requests')
+        .where({ guest_id: req.guest.id, event_id: req.event.id })
+        .whereNotIn('status', ['cancelled', 'completed', 'closed'])
+        .update({ status: 'cancelled', updated_at: new Date().toISOString() });
+      await trx('gallery_guests')
+        .where({ id: req.guest.id })
+        .update({ is_deleted: true, name: 'Removed', last_seen_at: trx.fn.now() });
+
+      for (const photoId of affectedPhotoIds) {
+        await feedbackService.updatePhotoFeedbackStats(photoId, trx);
+      }
+      return { removedSelections: selectionRows.length };
+    });
+
+    if (forgotten.removedSelections > 0) {
+      // Bridge reads the guest-selection table as its source of truth. Reconcile
+      // immediately; if Bridge is offline the periodic workflow sync will pick
+      // up the removal when connectivity returns.
+      await require('../services/photographyWorkflowBridge').triggerWorkflowSync(req.event.id).catch(() => {});
+    }
 
     logger.info('Guest self-forgot', {
       eventId: req.event.id,

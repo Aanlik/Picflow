@@ -50,4 +50,12 @@ describe('public CMS language selection', () => {
     expect(response.status).toBe(200);
     expect(response.body).toMatchObject({ title: 'Gallery Not Found', content: '<p>Contact the photographer.</p>' });
   });
+
+  it('keeps blank CMS titles valid but supplies a localized public fallback', async () => {
+    page.title_en = '';
+    page.title_zh = '';
+    const response = await request(app).get('/api/public/pages/gallery-not-found?lang=zh-CN');
+    expect(response.status).toBe(200);
+    expect(response.body.title).toBe('相册未找到');
+  });
 });

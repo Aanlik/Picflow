@@ -663,6 +663,8 @@ router.post('/:id/restore', adminAuth, requirePermission('archives.restore'), re
       logger.warn(`Archive ${archive.id} restored, but its audit event could not be saved: ${auditError.message}`);
     }
 
+    require('../services/localStorageUsage').resetLocalStorageUsageCache();
+
     res.json({ message: 'Archive restored successfully' });
   } catch (error) {
     logger.error('Archive restore error:', error);
@@ -791,6 +793,8 @@ router.delete('/:id', adminAuth, requirePermission('archives.delete'), requireEv
     }
     const pendingCleanup = await db('workflow_unbind_intents')
       .where({ event_id: archive.id }).first();
+
+    require('../services/localStorageUsage').resetLocalStorageUsageCache();
 
     // Log activity
     await db('activity_logs').insert({

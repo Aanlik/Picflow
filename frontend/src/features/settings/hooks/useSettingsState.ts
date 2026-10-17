@@ -111,7 +111,7 @@ export interface SeoSettings {
   sitemap_url: string;
 }
 
-export function useSettingsState() {
+export function useSettingsState(enabled = true) {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
   const { updateUserProfile } = useAdminAuth();
@@ -120,11 +120,13 @@ export function useSettingsState() {
   const { data: settings, isLoading } = useQuery({
     queryKey: ['admin-settings'],
     queryFn: () => settingsService.getAllSettings(),
+    enabled,
   });
 
   const { data: adminProfile, isLoading: adminProfileLoading } = useQuery({
     queryKey: ['admin-profile'],
     queryFn: () => adminService.getAdminProfile(),
+    enabled,
   });
 
   // General settings state

@@ -7,6 +7,7 @@ const { canAccessEvent } = require('../middleware/ownership');
 const { ensureThumbnail, ensurePreviewImage } = require('../services/imageProcessor');
 const { getStorage } = require('../services/storage');
 const logger = require('../utils/logger');
+const { imageProcessingError } = require('../utils/imageProcessingError');
 
 /**
  * Do these two stored paths address the same object?
@@ -41,7 +42,7 @@ function recordRegenerationFailure(kind, photo, reason) {
   const job = regenerationJobs[kind];
   job.failed += 1;
   if (job.failures.length < 20) {
-    job.failures.push({ id: photo.id, filename: photo.filename || `#${photo.id}`, reason: String(reason || '无法生成').slice(0, 300) });
+    job.failures.push({ id: photo.id, filename: photo.filename || `#${photo.id}`, reason: imageProcessingError(reason) });
   }
 }
 
@@ -200,13 +201,16 @@ router.post('/regenerate', adminAuth, requirePermission('photos.edit'), async (r
     // wrote them with) and ensureThumbnail, which branches on them to resolve
     // an external source off its mount instead of under events/active.
     // thumbnail_path is selected so it can be nulled — see below.
-    let query = db('photos')
+    let query = db('photos').join('events', 'events.id', 'photos.event_id')
+      .where('events.is_archived', false)
       .select(
-        'id', 'event_id', 'path', 'media_type', 'mime_type', 'thumbnail_path',
-        'source_origin', 'external_relpath', 'filename'
+        'photos.id as id', 'photos.event_id as event_id', 'photos.path as path',
+        'photos.media_type as media_type', 'photos.mime_type as mime_type',
+        'photos.thumbnail_path as thumbnail_path', 'photos.source_origin as source_origin',
+        'photos.external_relpath as external_relpath', 'photos.filename as filename'
       );
     if (eventId) {
-      query = query.where('event_id', eventId);
+      query = query.where('photos.event_id', eventId);
     }
     // Videos are included since ensureThumbnail learned to rebuild a poster
     // frame (issue 1414) — they used to be filtered out here because Sharp
@@ -353,14 +357,17 @@ router.post('/regenerate-previews', adminAuth, requirePermission('photos.edit'),
     // source_origin/external_relpath/filename are what ensurePreviewImage
     // branches on for external/reference rows (#1078) — without them every
     // external photo looks managed here and generation is skipped.
-    let query = db('photos').select(
-      'id', 'event_id', 'path', 'media_type', 'mime_type', 'preview_path',
-      'source_origin', 'external_relpath', 'filename'
-    );
-    if (eventId) query = query.where('event_id', eventId);
+    let query = db('photos').join('events', 'events.id', 'photos.event_id')
+      .where('events.is_archived', false).select(
+        'photos.id as id', 'photos.event_id as event_id', 'photos.path as path',
+        'photos.media_type as media_type', 'photos.mime_type as mime_type',
+        'photos.preview_path as preview_path', 'photos.source_origin as source_origin',
+        'photos.external_relpath as external_relpath', 'photos.filename as filename'
+      );
+    if (eventId) query = query.where('photos.event_id', eventId);
     // Skip videos — preview tier is image-only.
     query = query.where(function() {
-      this.whereNull('media_type').orWhere('media_type', '!=', 'video');
+      this.whereNull('photos.media_type').orWhere('photos.media_type', '!=', 'video');
     });
 
     const photos = await query;
@@ -423,10 +430,16 @@ router.post('/regenerate-previews', adminAuth, requirePermission('photos.edit'),
 router.get('/regenerate/status', adminAuth, requirePermission('photos.view'), async (req, res) => {
   try {
     // Count photos with and without thumbnails
-    const totalPhotos = await db('photos').count('id as count').first();
-    const photosWithThumbnails = await db('photos')
-      .whereNotNull('thumbnail_path')
-      .count('id as count')
+    // These totals describe the same active-project population accepted by
+    // the regeneration endpoints. Counting archived rows here made the UI
+    // claim a batch had skipped or failed photos that it intentionally never
+    // processed.
+    const activePhotos = db('photos').join('events', 'events.id', 'photos.event_id')
+      .where('events.is_archived', false);
+    const totalPhotos = await activePhotos.clone().count('photos.id as count').first();
+    const photosWithThumbnails = await activePhotos.clone()
+      .whereNotNull('photos.thumbnail_path')
+      .count('photos.id as count')
       .first();
     
     res.json({

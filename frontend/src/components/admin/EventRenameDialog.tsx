@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { X, AlertCircle, CheckCircle, Loader2, Type } from 'lucide-react';
 import { Button, Input, Card } from '../common';
@@ -41,6 +41,8 @@ export const EventRenameDialog: React.FC<EventRenameDialogProps> = ({
     newSlug?: string;
     error?: string;
   } | null>(null);
+  const [validatedName, setValidatedName] = useState('');
+  const validationRequest = useRef(0);
   const [renameStatus, setRenameStatus] = useState<string | null>(null);
   const [renameResult, setRenameResult] = useState<{
     success: boolean;
@@ -62,8 +64,11 @@ export const EventRenameDialog: React.FC<EventRenameDialogProps> = ({
 
   // Debounced validation
   useEffect(() => {
+    const requestId = ++validationRequest.current;
+    setValidationResult(null);
+    setValidatedName('');
     if (!isOpen || newName.trim() === eventName.trim() || newName.trim().length < 3) {
-      setValidationResult(null);
+      setIsValidating(false);
       return;
     }
 
@@ -71,19 +76,33 @@ export const EventRenameDialog: React.FC<EventRenameDialogProps> = ({
       setIsValidating(true);
       try {
         const result = await onValidate(newName.trim());
-        setValidationResult(result);
+        if (validationRequest.current === requestId) {
+          setValidationResult(result);
+          setValidatedName(newName.trim());
+        }
       } catch {
-        setValidationResult({ valid: false, error: 'Validation failed' });
+        if (validationRequest.current === requestId) {
+          setValidationResult({ valid: false, error: t('events.rename.validationFailed') });
+          setValidatedName(newName.trim());
+        }
       } finally {
-        setIsValidating(false);
+        if (validationRequest.current === requestId) setIsValidating(false);
       }
     }, 500);
 
     return () => clearTimeout(timeoutId);
-  }, [newName, eventName, isOpen, onValidate]);
+  }, [newName, eventName, isOpen, onValidate, t]);
+
+  const renameValidationMessage = (error?: string) => {
+    if (error?.includes('same URL')) return t('events.rename.sameUrl');
+    if (error?.includes('same date')) return t('events.rename.duplicateName');
+    if (error?.includes('at least 3')) return t('events.rename.nameTooShort');
+    if (error?.includes('less than 100')) return t('events.rename.nameTooLong');
+    return error || t('events.rename.validationFailed');
+  };
 
   const handleRename = async () => {
-    if (!validationResult?.valid) return;
+    if (!validationResult?.valid || validatedName !== newName.trim()) return;
 
     setIsRenaming(true);
     setRenameStatus(t('events.rename.validating', 'Validating new name...'));
@@ -214,7 +233,7 @@ export const EventRenameDialog: React.FC<EventRenameDialogProps> = ({
               <Input
                 type="text"
                 value={newName}
-                onChange={(e) => setNewName(e.target.value)}
+                onChange={(e) => { setNewName(e.target.value); setValidationResult(null); setValidatedName(''); }}
                 placeholder={t('events.rename.enterNewName', 'Enter new event name')}
                 leftIcon={<Type className="w-5 h-5 text-neutral-400" />}
                 autoFocus
@@ -242,7 +261,7 @@ export const EventRenameDialog: React.FC<EventRenameDialogProps> = ({
             {validationResult && !validationResult.valid && (
               <div className="flex items-center gap-2 p-3 bg-red-50 rounded-lg">
                 <AlertCircle className="w-4 h-4 text-red-600 flex-shrink-0" />
-                <p className="text-sm text-red-700">{validationResult.error}</p>
+                <p className="text-sm text-red-700">{renameValidationMessage(validationResult.error)}</p>
               </div>
             )}
 
@@ -270,6 +289,7 @@ export const EventRenameDialog: React.FC<EventRenameDialogProps> = ({
                 onClick={handleRename}
                 disabled={
                   !validationResult?.valid ||
+                  validatedName !== newName.trim() ||
                   isValidating ||
                   newName.trim() === eventName.trim() ||
                   newName.trim().length < 3

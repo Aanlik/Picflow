@@ -34,8 +34,8 @@ const generateMockPhotos = (count: number) => {
     category_id: (i % 4) + 1,
     category_key: ['sampleCeremony', 'sampleReception', 'samplePortraits', 'sampleParty'][i % 4],
     category_slug: ['ceremony', 'reception', 'portraits', 'party'][i % 4],
-    size: Math.floor(Math.random() * 5000000) + 1000000,
-    uploaded_at: new Date().toISOString(),
+    size: 1800000 + (i * 175000),
+    uploaded_at: `2026-01-${String(i < 6 ? 15 : 14).padStart(2, '0')}T12:00:00.000Z`,
   }));
 };
 
@@ -183,7 +183,7 @@ export const GalleryPreview: React.FC<GalleryPreviewProps> = ({
       case 'timeline':
         return (
           <div className="space-y-6">
-            {['Today', 'Yesterday'].map((date, dateIdx) => (
+            {[tAudit('ui.today'), tAudit('ui.yesterday')].map((date, dateIdx) => (
               <div key={date}>
                 <h4 className="text-sm font-medium text-neutral-700 mb-2">{date}</h4>
                 <div className={`grid grid-cols-3 ${gapClass}`}>
@@ -205,6 +205,28 @@ export const GalleryPreview: React.FC<GalleryPreviewProps> = ({
             <PreviewPhoto photo={mockPhotos[3]} className="col-span-1 row-span-1" aspectRatio="aspect-auto h-full" />
             <PreviewPhoto photo={mockPhotos[4]} className="col-span-1 row-span-1" aspectRatio="aspect-auto h-full" />
             <PreviewPhoto photo={mockPhotos[5]} className="col-span-2 row-span-1" aspectRatio="aspect-auto h-full" />
+          </div>
+        );
+
+      case 'gallery-premium':
+        return (
+          <div className={`grid grid-cols-2 ${gapClass}`}>
+            <PreviewPhoto photo={mockPhotos[0]} className="col-span-2" aspectRatio="aspect-[16/9]" />
+            {mockPhotos.slice(1, 5).map((photo) => <PreviewPhoto key={photo.id} photo={photo} aspectRatio="aspect-[4/5]" />)}
+          </div>
+        );
+
+      case 'gallery-story':
+        return (
+          <div className="space-y-4">
+            <PreviewPhoto photo={mockPhotos[0]} className="w-full" aspectRatio="aspect-[16/8]" />
+            <div className="text-center">
+              <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">{tAudit('ui.sampleCeremony')}</p>
+              <p className="mt-1 text-sm font-medium">{tAudit('ui.sampleEvent')}</p>
+            </div>
+            <div className={`grid grid-cols-3 ${gapClass}`}>
+              {mockPhotos.slice(1, 7).map((photo) => <PreviewPhoto key={photo.id} photo={photo} />)}
+            </div>
           </div>
         );
       

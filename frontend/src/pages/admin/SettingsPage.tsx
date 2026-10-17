@@ -119,6 +119,7 @@ export const SettingsPage: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const { flags, isLoading: flagsLoading } = useFeatureFlags();
   const { hasAnyPermission, isLoading: permissionsLoading } = usePermissions();
+  const canViewSettings = hasAnyPermission(SETTINGS_TAB_PERMISSIONS);
 
   // Read ?tab=… on mount; default to Features per the redesign.
   const initialTab: TabType = isValidTab(searchParams.get('tab'))
@@ -183,7 +184,7 @@ export const SettingsPage: React.FC = () => {
     seoSettings,
     setSeoSettings,
     saveSeoMutation,
-  } = useSettingsState();
+  } = useSettingsState(canViewSettings && !permissionsLoading);
 
   // If the active tab refers to an item that's now hidden (e.g. admin
   // landed on a removed settings tab),
@@ -229,11 +230,20 @@ export const SettingsPage: React.FC = () => {
   // empty, which filters every nav group down to nothing and left `activeItem`
   // undefined below (QA J.08 crash). `activeTab` is held in state, so a
   // deep-linked ?tab= still lands on the right tab once permissions arrive.
-  if (isLoading || permissionsLoading) {
+  if (permissionsLoading || (canViewSettings && isLoading)) {
     return (
       <div className="flex items-center justify-center min-h-[400px]">
         <Loading size="lg" text={t('settings.loadingSettings')} />
       </div>
+    );
+  }
+
+  if (!canViewSettings) {
+    return (
+      <main className="mx-auto max-w-2xl rounded-lg border border-neutral-200 bg-white p-6 dark:border-neutral-700 dark:bg-neutral-800">
+        <h1 className="text-xl font-semibold text-neutral-900 dark:text-neutral-100">{t('settings.title')}</h1>
+        <p role="alert" className="mt-2 text-neutral-600 dark:text-neutral-300">{t('settings.accessDenied')}</p>
+      </main>
     );
   }
 

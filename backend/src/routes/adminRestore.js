@@ -757,7 +757,7 @@ async function getRestoreSettings() {
  */
 async function getBackupConfig() {
   const settings = await db('app_settings')
-    .where('setting_type', 'backup')
+    .whereIn('setting_type', ['backup', 'database_backup'])
     .select('setting_key', 'setting_value');
 
   const config = {};
@@ -807,6 +807,7 @@ async function checkRestorePathsAllowed({ source, manifestPath }) {
   const roots = [];
   if (config.backup_destination_path) roots.push(config.backup_destination_path);
   if (config.backup_manifest_path) roots.push(config.backup_manifest_path);
+  if (config.database_backup_destination_path) roots.push(config.database_backup_destination_path);
   for (const extra of (process.env.RESTORE_ALLOWED_ROOTS || '').split(':')) {
     if (extra.trim()) roots.push(extra.trim());
   }
@@ -873,9 +874,10 @@ async function checkRestorePathsAllowed({ source, manifestPath }) {
         // Permit that portable fallback only when a regular file actually
         // exists inside an allowed root; arbitrary manifest paths still fail
         // closed and the restore service remains the final containment gate.
-        const portableCandidates = resolvedRoots.map((root) =>
-          path.join(root, 'database', path.basename(dbBackupFile))
-        );
+        const portableCandidates = resolvedRoots.flatMap((root) => [
+          path.join(root, 'database', path.basename(dbBackupFile)),
+          path.join(root, path.basename(dbBackupFile)),
+        ]);
         let portableCandidateExists = false;
         for (const candidate of portableCandidates) {
           try {

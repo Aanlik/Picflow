@@ -134,4 +134,20 @@ describe('secure-image view route token binding (GHSA-g94x)', () => {
     // it must NOT be rejected as a token mismatch.
     expect(res.status).not.toBe(403);
   });
+
+  it('blocks secure downloads for a photo in a category with SQLite allow_downloads=0', async () => {
+    const categoryResult = await db('photo_categories').insert({
+      name: 'No downloads', slug: 'no-downloads', event_id: galleryA, is_global: 0, allow_downloads: 0,
+    }).returning('id');
+    const categoryId = categoryResult[0]?.id ?? categoryResult[0];
+    await db('photos').where({ id: photoA }).update({ category_id: categoryId });
+    await db('events').where({ id: galleryA }).update({ allow_downloads: 1 });
+
+    const token = mint(photoA, galleryA);
+    const response = await request(app)
+      .get(`/api/secure-images/secimg-public-a/secure-download/${photoA}/${token}`);
+
+    expect(response.status).toBe(403);
+    expect(response.body.error).toMatch(/disabled for this category/i);
+  });
 });

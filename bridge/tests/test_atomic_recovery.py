@@ -199,6 +199,7 @@ async def test_unknown_withdrawal_requires_confirmation_before_manual_retry(tmp_
             'deliveries_requeued': 0,
             'withdrawals_requeued': 1,
             'total_requeued': 1,
+            'message': None,
         }
     with engine.sessions() as s:
         assert s.scalar(select(Withdrawal)).state == 'PENDING'

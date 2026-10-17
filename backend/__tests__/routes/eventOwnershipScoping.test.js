@@ -214,7 +214,7 @@ describe('event visibility and gallery links by role', () => {
 
     it('refuses to create, rename, re-hero or delete a category on another owner\'s event', async () => {
       const created = await as(request(app).post('/api/admin/categories'), 'solo')
-        .send({ name: 'Party', is_global: false, event_id: id.editorEvent });
+        .send({ name: 'Party', slug: 'party', is_global: false, event_id: id.editorEvent });
       expect(created.status).toBe(403);
       expect(await db('photo_categories').where({ event_id: id.editorEvent, slug: 'party' })).toHaveLength(0);
 
@@ -235,11 +235,11 @@ describe('event visibility and gallery links by role', () => {
 
     it('still allows categories on an ownerless event and global categories', async () => {
       const perEvent = await as(request(app).post('/api/admin/categories'), 'solo')
-        .send({ name: 'Shared Party', is_global: false, event_id: id.ownerlessEvent });
+        .send({ name: 'Shared Party', slug: 'shared-party', is_global: false, event_id: id.ownerlessEvent });
       expect(perEvent.status).toBe(200);
 
       const global = await as(request(app).post('/api/admin/categories'), 'solo')
-        .send({ name: 'Evscope Global', is_global: true });
+        .send({ name: 'Evscope Global', slug: 'evscope-global', is_global: true });
       expect(global.status).toBe(200);
     });
   });

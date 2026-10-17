@@ -1,4 +1,3 @@
-import { PHOTO_WORKFLOW_MODE } from '../../config/photography';
 import React, { useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
@@ -131,20 +130,6 @@ export const CMSContentBlock: React.FC<CMSContentBlockProps> = ({ slug, fallback
         </div>
       </main>
 
-      <footer
-        className="py-8 text-center text-xs"
-        style={{ color: 'var(--color-muted-text)' }}
-      >
-        {!PHOTO_WORKFLOW_MODE && <div className="flex justify-center gap-4">
-          <Link to="/impressum" className="hover:underline">
-            {lang.startsWith('zh') ? '法律声明' : 'Legal Notice'}
-          </Link>
-          <span style={{ color: 'var(--color-surface-border)' }}>•</span>
-          <Link to="/datenschutz" className="hover:underline">
-            {lang.startsWith('zh') ? '隐私政策' : 'Privacy Policy'}
-          </Link>
-        </div>}
-      </footer>
     </div>
   );
 };

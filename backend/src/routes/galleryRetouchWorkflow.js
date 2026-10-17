@@ -276,6 +276,15 @@ router.post('/:slug/photos/:photoId/retouch-requests',
       if (settings.identity_mode === 'guest' && (!req.guest || req.guest.eventId !== event.id)) {
         return res.status(401).json({ error: 'Guest identity required', code: 'GUEST_IDENTITY_REQUIRED' });
       }
+      const activeRequest = () => db('photo_retouch_requests')
+        .where({ event_id: event.id, photo_id: photoId })
+        .whereNotIn('status', ['cancelled', 'completed', 'closed']);
+      if (await activeRequest().first('id')) {
+        return res.status(409).json({
+          error: 'This photo already has an active retouch request',
+          code: 'RETOUCH_ALREADY_ACTIVE',
+        });
+      }
       const workflow = await getPublicPhotoStates(event.id);
       if (workflow.status !== 200) return res.status(503).json({ error: 'Retouch workflow is not connected' });
 
@@ -309,24 +318,52 @@ router.post('/:slug/photos/:photoId/retouch-requests',
       // A request means the client wants this photo processed. Selection is
       // recorded independently from any Lightroom-style colour label.
       const identity = selectionIdentity(settings, req, guestIdentifier);
-      await retouchSelectionService.setRetouchSelection(event.id, photoId, identity, true);
-      const [request] = await db('photo_retouch_requests').insert({
-        event_id: event.id,
-        photo_id: photoId,
-        guest_id: req.guest?.id || null,
-        guest_identifier: guestIdentifier,
-        guest_name: req.guest?.name || (typeof req.body?.guest_name === 'string' ? req.body.guest_name.trim().slice(0, 100) : null),
-        request_type: requestType,
-        base_version: baseVersion,
-        customer_message: message,
-        status,
-        target_version: targetVersion,
-        delivery_folder: deliveryFolder,
-      }).returning(['id', 'photo_id', 'request_type', 'base_version', 'customer_message', 'guest_name', 'status', 'photographer_reply', 'created_at', 'updated_at']);
+      const created = await db.transaction(async (trx) => {
+        // Serialize requests for one photo across guests. SQLite ignores
+        // FOR UPDATE, but the transaction's write below still serializes the
+        // final insert; the second active-request check closes the race window
+        // created while version-folder preparation contacted Bridge.
+        const currentPhoto = await trx('photos').where({ id: photoId, event_id: event.id }).forUpdate().first('id');
+        if (!currentPhoto) return { missing: true };
+        const duplicate = await trx('photo_retouch_requests')
+          .where({ event_id: event.id, photo_id: photoId })
+          .whereNotIn('status', ['cancelled', 'completed', 'closed'])
+          .first('id');
+        if (duplicate) return { conflict: true };
+        await retouchSelectionService.setRetouchSelection(event.id, photoId, identity, true, trx);
+        const [request] = await trx('photo_retouch_requests').insert({
+          event_id: event.id,
+          photo_id: photoId,
+          guest_id: req.guest?.id || null,
+          guest_identifier: guestIdentifier,
+          guest_name: req.guest?.name || (typeof req.body?.guest_name === 'string' ? req.body.guest_name.trim().slice(0, 100) : null),
+          request_type: requestType,
+          base_version: baseVersion,
+          customer_message: message,
+          status,
+          target_version: targetVersion,
+          delivery_folder: deliveryFolder,
+        }).returning(['id', 'photo_id', 'request_type', 'base_version', 'customer_message', 'guest_name', 'status', 'photographer_reply', 'created_at', 'updated_at']);
+        return { request };
+      });
+      if (created.missing) return res.sendStatus(404);
+      if (created.conflict) {
+        return res.status(409).json({
+          error: 'This photo already has an active retouch request',
+          code: 'RETOUCH_ALREADY_ACTIVE',
+        });
+      }
       await triggerWorkflowSync(event.id);
-      res.status(201).json({ request });
+      res.status(201).json({ request: created.request });
     } catch (error) {
       require('../utils/logger').error('Gallery retouch request failed', { error: error.message });
+      if (error?.code === '23505' || error?.code === 'SQLITE_CONSTRAINT_UNIQUE'
+        || String(error?.message || '').includes('photo_retouch_one_active_per_photo_idx')) {
+        return res.status(409).json({
+          error: 'This photo already has an active retouch request',
+          code: 'RETOUCH_ALREADY_ACTIVE',
+        });
+      }
       res.status(500).json({ error: 'Unable to submit retouch request' });
     }
   }

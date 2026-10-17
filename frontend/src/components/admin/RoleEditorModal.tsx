@@ -147,6 +147,7 @@ export const RoleEditorModal: React.FC<RoleEditorModalProps> = ({
               onClick={onClose}
               className="p-1 hover:bg-neutral-100 dark:hover:bg-neutral-700 rounded-lg transition-colors"
               disabled={isLoading}
+              aria-label={t('common.close', 'Close')}
             >
               <X className="w-5 h-5 text-neutral-500 dark:text-neutral-400" />
             </button>

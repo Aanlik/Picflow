@@ -124,6 +124,9 @@ export const PhotoExportMenu: React.FC<PhotoExportMenuProps> = ({
         color_labels: filters.colorLabels?.length ? filters.colorLabels : undefined,
         my_color_labels: filters.myColorLabels?.length ? filters.myColorLabels : undefined,
         category_id: filters.categoryId,
+        search: filters.search,
+        type: filters.type,
+        media_type: filters.mediaType,
         logic: filters.logic,
         sort: filters.sort,
         order: filters.order,
@@ -139,10 +142,13 @@ export const PhotoExportMenu: React.FC<PhotoExportMenuProps> = ({
 
   const hasSelection = selectedPhotoIds.length > 0;
   const hasFilters = filters && (
-    filters.minRating !== null ||
+    filters.minRating != null || filters.maxRating != null ||
     filters.hasLikes ||
     filters.hasFavorites ||
     filters.hasComments ||
+    filters.minLikes != null || filters.minFavorites != null ||
+    Boolean(filters.categoryId && filters.categoryId !== '0') ||
+    Boolean(filters.search?.trim()) || Boolean(filters.type) || Boolean(filters.mediaType) ||
     (filters.colorLabels?.length || 0) > 0 ||
     (filters.myColorLabels?.length || 0) > 0
   );

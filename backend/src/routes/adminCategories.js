@@ -11,6 +11,16 @@ const { getEventCategoriesOrdered } = require('../utils/categoryOrder');
 const logger = require('../utils/logger');
 const router = express.Router();
 
+function serializeCategory(category) {
+  if (!category) return category;
+  return {
+    ...category,
+    allow_downloads: parseBooleanInput(category.allow_downloads, true),
+    is_folder: parseBooleanInput(category.is_folder, false),
+    is_global: parseBooleanInput(category.is_global, false),
+  };
+}
+
 /**
  * A per-event category belongs to its event, so creating, editing or deleting
  * one needs access to that event: the rule requireEventOwnership applies.
@@ -39,7 +49,7 @@ router.get('/global', adminAuth, requirePermission('settings.view'), async (req,
       .orderBy('display_order', 'asc')
       .orderBy('name', 'asc');
 
-    res.json(categories);
+    res.json(categories.map(serializeCategory));
   } catch (error) {
     logger.error('Error fetching categories:', error);
     res.status(500).json({ error: 'Failed to fetch categories' });
@@ -52,7 +62,7 @@ router.get('/global', adminAuth, requirePermission('settings.view'), async (req,
 router.get('/event/:eventId', adminAuth, requirePermission('settings.view'), requireEventOwnership, async (req, res) => {
   try {
     const categories = await getEventCategoriesOrdered(req.params.eventId);
-    res.json(categories);
+    res.json(categories.map(serializeCategory));
   } catch (error) {
     logger.error('Error fetching event categories:', error);
     res.status(500).json({ error: 'Failed to fetch categories' });
@@ -66,7 +76,9 @@ router.post('/', adminAuth, requirePermission('settings.edit'), [
   // no usable message for the form.
   body('name').notEmpty().withMessage('Category name is required')
     .isLength({ max: 100 }).withMessage('Category name must be at most 100 characters'),
-  body('slug').optional(),
+  body('slug').notEmpty().withMessage('Category identifier is required')
+    .isLength({ max: 100 }).withMessage('Category identifier must be at most 100 characters')
+    .matches(/^[a-z0-9][a-z0-9_-]*$/i).withMessage('Category identifier may contain only letters, numbers, underscores and hyphens'),
   body('is_global').optional().isBoolean(),
   body('event_id').optional().isInt(),
   body('is_folder').optional().isBoolean()
@@ -77,17 +89,14 @@ router.post('/', adminAuth, requirePermission('settings.edit'), [
       return res.status(400).json({ errors: safeValidationErrors(errors) });
     }
 
-    const { name, slug, is_global = true, event_id = null, is_folder = false } = req.body;
+    const { name, slug, event_id = null, is_folder = false } = req.body;
+    const is_global = parseBooleanInput(req.body.is_global, true);
     if (!is_global && await refuseForeignCategoryEvent(req, res, event_id)) return;
 
-    // Generate slug if not provided
-    const categorySlug = slug || name
-      .normalize('NFD').replace(/[̀-ͯ]/g, '')
-      .toLowerCase()
-      .replace(/[^\w\s-]/g, '')
-      .replace(/\s+/g, '-')
-      .replace(/-+/g, '-')
-      .trim();
+    // Slugs are entered by the photographer. Chinese names do not have a
+    // dependable implicit ASCII transliteration; silently stripping them
+    // created empty or colliding paths.
+    const categorySlug = String(slug).trim().toLowerCase();
 
     // Check if slug already exists for this scope
     const existing = await db('photo_categories')
@@ -139,12 +148,12 @@ router.post('/', adminAuth, requirePermission('settings.edit'), [
 
     // Log activity
     await logActivity('category_created',
-      { categoryName: name, isGlobal: is_global },
+      { name, isGlobal: is_global },
       event_id,
       { type: 'admin', id: req.admin.id, name: req.admin.username }
     );
 
-    res.json(category);
+    res.json(serializeCategory(category));
   } catch (error) {
     logger.error('Error creating category:', error);
     res.status(500).json({ error: 'Failed to create category' });
@@ -177,16 +186,19 @@ router.put('/:id', adminAuth, requirePermission('settings.edit'), [
     }
     if (await refuseForeignCategoryEvent(req, res, category.event_id)) return;
 
-    const updateData = {
-      name,
-      slug: name
-        .normalize('NFD').replace(/[̀-ͯ]/g, '')
-        .toLowerCase()
-        .replace(/[^\w\s-]/g, '')
-        .replace(/\s+/g, '-')
-        .replace(/-+/g, '-')
-        .trim()
-    };
+    const updateData = { name };
+    if (Object.prototype.hasOwnProperty.call(req.body, 'slug')) {
+      const slug = String(req.body.slug || '').trim().toLowerCase();
+      if (!/^[a-z0-9][a-z0-9_-]{0,99}$/.test(slug)) {
+        return res.status(400).json({ error: 'Category identifier may contain only letters, numbers, underscores and hyphens' });
+      }
+      const duplicate = await db('photo_categories').where({ slug }).whereNot({ id }).where(function () {
+        if (category.is_global) this.where('is_global', formatBoolean(true));
+        else this.where('event_id', category.event_id);
+      }).first();
+      if (duplicate) return res.status(400).json({ error: 'Category with this slug already exists' });
+      updateData.slug = slug;
+    }
 
     // Update hero_photo_id if provided (including null to clear it). A
     // non-null hero must belong to this category (GHSA-j2f4) — the general
@@ -223,12 +235,12 @@ router.put('/:id', adminAuth, requirePermission('settings.edit'), [
 
     // Log activity
     await logActivity('category_updated',
-      { categoryName: name, heroPhotoId: hero_photo_id },
+      { name, heroPhotoId: hero_photo_id },
       category.event_id,
       { type: 'admin', id: req.admin.id, name: req.admin.username }
     );
 
-    res.json(updated);
+    res.json(serializeCategory(updated));
   } catch (error) {
     logger.error('Error updating category:', error);
     res.status(500).json({ error: 'Failed to update category' });
@@ -283,7 +295,7 @@ router.put('/:id/hero', adminAuth, requirePermission('settings.edit'), [
       { type: 'admin', id: req.admin.id, name: req.admin.username }
     );
 
-    res.json(updated);
+    res.json(serializeCategory(updated));
   } catch (error) {
     logger.error('Error updating category hero:', error);
     res.status(500).json({ error: 'Failed to update category hero' });
@@ -313,7 +325,7 @@ router.delete('/:id', adminAuth, requirePermission('settings.edit'), async (req,
 
     // Log activity
     await logActivity('category_deleted',
-      { categoryName: category.name },
+      { name: category.name },
       category.event_id,
       { type: 'admin', id: req.admin.id, name: req.admin.username }
     );

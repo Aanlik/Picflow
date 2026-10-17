@@ -332,7 +332,7 @@ router.get('/:slug/secure-download/:photoId/:token',
         const cat = await db('photo_categories')
           .where('id', photo.category_id)
           .first('allow_downloads');
-        if (cat && (cat.allow_downloads === false || cat.allow_downloads === 0)) {
+        if (cat && !parseBooleanInput(cat.allow_downloads, true)) {
           return res.status(403).json({ error: 'Downloads are disabled for this category' });
         }
       }

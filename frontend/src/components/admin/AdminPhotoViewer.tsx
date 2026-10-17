@@ -227,6 +227,7 @@ const AdminPhotoViewerContent: React.FC<ViewerContentProps> = ({
       <button
         onClick={onClose}
         className="absolute top-4 right-4 text-white/80 hover:text-white p-2 rounded-lg hover:bg-white/10 transition-colors"
+        aria-label={tAudit('ui.close')}
       >
         <X className="w-6 h-6" />
       </button>
@@ -235,6 +236,7 @@ const AdminPhotoViewerContent: React.FC<ViewerContentProps> = ({
       <button
         onClick={goToPrevious}
         className="absolute left-4 top-1/2 -translate-y-1/2 text-white/80 hover:text-white p-2 rounded-lg hover:bg-white/10 transition-colors"
+        aria-label={tAudit('ui.previousPhoto')}
       >
         <ChevronLeft className="w-8 h-8" />
       </button>
@@ -242,6 +244,7 @@ const AdminPhotoViewerContent: React.FC<ViewerContentProps> = ({
       <button
         onClick={goToNext}
         className="absolute right-4 top-1/2 -translate-y-1/2 text-white/80 hover:text-white p-2 rounded-lg hover:bg-white/10 transition-colors"
+        aria-label={tAudit('ui.nextPhoto')}
       >
         <ChevronRight className="w-8 h-8" />
       </button>

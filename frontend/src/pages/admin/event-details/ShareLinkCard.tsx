@@ -167,7 +167,9 @@ export const ShareLinkCard: React.FC<ShareLinkCardProps> = ({ event, setShowPass
     <Card padding="md">
       <h2 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100 mb-4">{t('events.shareLink')}</h2>
 
-      {event.share_secrets_hidden ? (
+      {event.is_draft ? (
+        <p className="text-sm text-amber-700 dark:text-amber-300">{t('events.draftNotShareable', '草稿尚未发布，不能分享给客户。')}</p>
+      ) : event.share_secrets_hidden ? (
         <p className="text-sm text-neutral-600 dark:text-neutral-400">
           {t('events.shareLinkOwnerOnly', 'Only the gallery owner can see and share this link.')}
         </p>
@@ -198,7 +200,7 @@ export const ShareLinkCard: React.FC<ShareLinkCardProps> = ({ event, setShowPass
       </>
       )}
 
-      {event.share_link && (
+      {event.share_link && !event.is_draft && (
         <div className="mt-4 pt-4 border-t border-neutral-200 dark:border-neutral-700">
           <h3 className="text-sm font-medium text-neutral-900 dark:text-neutral-100 mb-3 flex items-center gap-2">
             <QrCode className="w-4 h-4" />

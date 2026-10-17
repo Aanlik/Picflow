@@ -140,7 +140,7 @@ router.put('/pages/:slug', adminAuth, requirePermission('cms.edit'), [
     const updated = await db('cms_pages').select(CMS_PAGE_COLUMNS).where('slug', slug).first();
 
     await logActivity('cms_page_updated',
-      { page: slug },
+      { slug, pageNameEn: updated.title_en || slug, pageNameZh: updated.title_zh || updated.title_en || slug },
       null,
       { type: 'admin', id: req.admin.id, name: req.admin.username }
     );

@@ -129,7 +129,7 @@ export const PhotosTab: React.FC<PhotosTabProps> = ({
           <PhotoExportMenu
             eventId={parseInt(id!)}
             selectedPhotoIds={selectedPhotoIds}
-            filters={feedbackFilters}
+            filters={{ ...feedbackFilters, search: photoFilters.search, type: photoFilters.type, mediaType: photoFilters.media_type, categoryId: photoFilters.category_id as number | string | undefined }}
           />
         </PermissionGate>
       </div>
@@ -165,6 +165,7 @@ export const PhotosTab: React.FC<PhotosTabProps> = ({
           }}
           onSelectionChange={setSelectedPhotoIds}
           categories={categories}
+          hasActiveFilters={Boolean(photoFilters.search?.trim() || (photoFilters.category_id && photoFilters.category_id !== '0') || photoFilters.media_type || feedbackFilters.minRating != null || feedbackFilters.hasLikes || feedbackFilters.hasFavorites || feedbackFilters.hasComments || feedbackFilters.colorLabels?.length || feedbackFilters.myColorLabels?.length)}
         />
       )}
 

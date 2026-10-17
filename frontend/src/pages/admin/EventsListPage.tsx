@@ -49,6 +49,10 @@ export const EventsListPage: React.FC = () => {
   const [copiedEventId, setCopiedEventId] = useState<number | null>(null);
 
   const copyShareLink = async (event: Event) => {
+    if (event.is_draft) {
+      toast.info(t('events.draftNotShareable', '草稿尚未发布，不能分享给客户。'));
+      return;
+    }
     const url = buildShareLinkUrl(event.share_link);
     if (!url || url === '#') {
       toast.error(t('errors.noShareLink', 'No share link available'));
@@ -161,7 +165,7 @@ export const EventsListPage: React.FC = () => {
   // Archive mutation
   const archiveMutation = useMutationWithToast({
     mutationFn: eventsService.archiveEvent,
-    invalidateKeys: [['admin-events']],
+    invalidateKeys: [['admin-events'], ['storage-info'], ['admin-storage-info']],
     successMessage: t('toast.eventArchived'),
   });
 
@@ -178,6 +182,8 @@ export const EventsListPage: React.FC = () => {
     mutationFn: eventsService.bulkArchiveEvents,
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['admin-events'] });
+      queryClient.invalidateQueries({ queryKey: ['storage-info'] });
+      queryClient.invalidateQueries({ queryKey: ['admin-storage-info'] });
       setSelectedEvents([]);
       bulkArchiveModal.close();
 
@@ -199,6 +205,7 @@ export const EventsListPage: React.FC = () => {
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['admin-events'] });
       queryClient.invalidateQueries({ queryKey: ['storage-info'] });
+      queryClient.invalidateQueries({ queryKey: ['admin-storage-info'] });
       setSelectedEvents([]);
       bulkDeleteModal.close();
 
@@ -500,13 +507,16 @@ export const EventsListPage: React.FC = () => {
                               <Button
                                 variant="ghost"
                                 size="sm"
-                                onClick={() => window.open(buildShareLinkUrl(event.share_link), '_blank')}
+                                onClick={() => {
+                                  const url = buildShareLinkUrl(event.share_link);
+                                  window.open(`${url}${event.is_draft ? `${url.includes('?') ? '&' : '?'}admin_preview=1` : ''}`, '_blank', 'noopener,noreferrer');
+                                }}
                                 title={t('events.viewGallery')}
                               >
                                 <ExternalLink className="w-4 h-4" />
                               </Button>
                             )}
-                            {event.share_link && (
+                            {event.share_link && !event.is_draft && (
                               <Button
                                 variant="ghost"
                                 size="sm"
@@ -565,7 +575,7 @@ export const EventsListPage: React.FC = () => {
                                   </button>
                                   {event.share_link ? (
                                     <a
-                                      href={buildShareLinkUrl(event.share_link)}
+                                      href={`${buildShareLinkUrl(event.share_link)}${event.is_draft ? `${buildShareLinkUrl(event.share_link).includes('?') ? '&' : '?'}admin_preview=1` : ''}`}
                                       target="_blank"
                                       rel="noopener noreferrer"
                                       className="md:hidden w-full text-left px-4 py-2 text-sm text-neutral-700 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-700 flex items-center gap-2"
@@ -580,12 +590,14 @@ export const EventsListPage: React.FC = () => {
                                   ) : null}
                                   {event.share_link ? (
                                     <button
+                                      disabled={Boolean(event.is_draft)}
+                                      title={event.is_draft ? t('events.draftNotShareable', '草稿尚未发布，不能分享给客户。') : undefined}
                                       onClick={() => {
                                         copyShareLink(event);
                                         setActiveDropdown(null);
                                         setDropdownPosition(null);
                                       }}
-                                      className="md:hidden w-full text-left px-4 py-2 text-sm text-neutral-700 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-700 flex items-center gap-2"
+                                      className="md:hidden w-full text-left px-4 py-2 text-sm text-neutral-700 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-700 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                                     >
                                       <Copy className="w-4 h-4" />
                                       {t('events.copyLink', 'Copy Link')}
@@ -594,9 +606,11 @@ export const EventsListPage: React.FC = () => {
                                   <PermissionGate permission="events.archive">
                                     <button
                                       onClick={() => {
-                                        archiveMutation.mutate(event.id);
-                                        setActiveDropdown(null);
-                                        setDropdownPosition(null);
+                                        if (window.confirm(t('events.archiveConfirm'))) {
+                                          archiveMutation.mutate(event.id);
+                                          setActiveDropdown(null);
+                                          setDropdownPosition(null);
+                                        }
                                       }}
                                       className="w-full text-left px-4 py-2 text-sm text-neutral-700 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-700 flex items-center gap-2"
                                     >

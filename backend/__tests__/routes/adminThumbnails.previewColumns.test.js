@@ -30,13 +30,13 @@ describe('regenerate-previews selects the columns ensurePreviewImage branches on
   it.each(['source_origin', 'external_relpath', 'filename'])(
     'selects %s',
     (column) => {
-      expect(selectStatement).toContain(`'${column}'`);
+      expect(selectStatement).toMatch(new RegExp(`(?:photos\\.)?${column}\\s+as\\s+${column}`));
     }
   );
 
   it('still selects the columns the managed path needs', () => {
     for (const column of ['id', 'event_id', 'path', 'media_type', 'mime_type', 'preview_path']) {
-      expect(selectStatement).toContain(`'${column}'`);
+      expect(selectStatement).toMatch(new RegExp(`(?:photos\\.)?${column}(?:\\s+as\\s+${column})?`));
     }
   });
 });

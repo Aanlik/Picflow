@@ -152,10 +152,11 @@ async function deleteEventCascade(eventId, adminContext) {
   }
 
   await db.transaction(async (trx) => {
-    // Deleting a Picflow project also removes its Bridge-generated delivery
-    // folders (selected RAW copies and retouched exports). Camera source files
-    // live in a separate read-only mount and are never touched by this API.
-    await require('../../services/photographyWorkflowBridge').persistDeleteDeliveryIntent(eventId, trx);
+    // Project deletion removes the Bridge database binding, not the operator's
+    // NAS delivery directory. Delivery files are photographer-owned work and
+    // must remain available for recovery/reuse; Camera source files are never
+    // touched by this API either.
+    await require('../../services/photographyWorkflowBridge').persistUnbindIntent(eventId, trx);
     // 1. Delete activity logs (audit trail) — and the per-admin bell
     // dismissals that point at them (migration 239). On PostgreSQL the FK
     // cascade removes them with the activity rows, so nothing is deleted
@@ -233,7 +234,7 @@ async function deleteEventCascade(eventId, adminContext) {
   try {
     await require('../../services/photographyWorkflowBridge').flushUnbindIntent(eventId);
   } catch (bridgeError) {
-    logger.warn('Bridge delivery cleanup deferred after project delete', {
+    logger.warn('Bridge project unbind deferred after project delete', {
       eventId, error: bridgeError.message,
     });
   }
@@ -309,6 +310,12 @@ async function deleteEventCascade(eventId, adminContext) {
     null,
     { type: 'admin', id: adminContext.id, name: adminContext.username }
   );
+
+  // The sidebar and status tab consume a five-minute server cache. Deleting
+  // an event can remove its thumbnails, archive and derived assets, so expire
+  // that cache as part of the completed mutation rather than waiting for TTL.
+  try { require('../../services/localStorageUsage').resetLocalStorageUsageCache(); }
+  catch (error) { logger.warn('Could not invalidate local storage usage after project deletion', { error: error.message }); }
 
   return { id: event.id, name: event.event_name };
 }

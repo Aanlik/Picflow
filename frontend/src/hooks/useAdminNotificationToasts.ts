@@ -11,6 +11,10 @@ const CUSTOMER_ACTIVITY_TYPES = new Set([
   'photo_reaction',
   'gallery_downloaded',
   'gallery_opened',
+  // The CMS editor already reports a successful save inline. Showing the same
+  // event as a second toast stacked a duplicate confirmation over the form;
+  // the durable item remains in the notification feed.
+  'cms_page_updated',
 ]);
 
 function isCustomerActivity(notification: Notification) {

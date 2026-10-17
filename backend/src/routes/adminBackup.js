@@ -144,7 +144,7 @@ async function checkS3EndpointUpdate(updates) {
 router.get('/config', adminAuth, requirePermission('backup.view'), async (req, res) => {
   try {
     const settings = await db('app_settings')
-      .where('setting_type', 'backup')
+      .whereIn('setting_type', ['backup', 'database_backup'])
       .select('setting_key', 'setting_value');
 
     const config = {};
@@ -439,6 +439,75 @@ router.post('/picpeak/import', adminAuth, requireSuperAdmin(), picpeakUpload.sin
     res.status(status).json({ error: error.message || 'Restore failed', validation: error.validation });
   } finally {
     fsSync.unlink(picpeakPath, () => {});
+  }
+});
+
+// Remove a restore point without deleting the shared file payload. Local
+// backups are stored as a rolling tree at one destination, not as isolated
+// per-run directories; deleting its files would corrupt other restore points.
+router.delete('/runs/:id', adminAuth, requirePermission('backup.delete'), async (req, res) => {
+  try {
+    const id = String(req.params.id);
+    if (!/^\d+$/.test(id)) return res.status(400).json({ error: 'Invalid backup run id' });
+    const run = await db('backup_runs').where({ id: Number(id) }).first();
+    if (!run) return res.status(404).json({ error: 'Backup run not found' });
+    if (run.status === 'running') return res.status(409).json({ error: 'A running backup cannot be deleted' });
+
+    // An incremental restore point can depend on this run. Check both the
+    // relational link (newer schema) and the manifest link (older installs).
+    const directChild = await db('backup_runs').where({ parent_backup_id: run.id }).first();
+    if (directChild) {
+      return res.status(409).json({ error: 'This restore point is required by a later incremental backup. Delete dependent backups first.' });
+    }
+    let targetManifestId = null;
+    if (run.manifest_path && !String(run.manifest_path).startsWith('s3://')) {
+      try {
+        const loaded = await getBackupManifest(run.id);
+        targetManifestId = loaded?.manifest?.backup?.id || null;
+      } catch (_) { /* missing/corrupt manifests do not make a failed run undeletable */ }
+    }
+    if (targetManifestId) {
+      const otherRuns = await db('backup_runs').whereNot({ id: run.id }).whereNotNull('manifest_path').select('id');
+      for (const other of otherRuns) {
+        try {
+          const { manifest } = await getBackupManifest(other.id);
+          const parentId = manifest?.incremental?.parent_backup_id || manifest?.backup?.parent_backup_id;
+          if (parentId === targetManifestId) {
+            return res.status(409).json({ error: 'This restore point is required by a later incremental backup. Delete dependent backups first.' });
+          }
+        } catch (_) { /* ignore unrelated unreadable manifests */ }
+      }
+    }
+
+    const config = await getBackupConfig();
+    const destinationType = String(config.backup_destination_type || 'local').toLowerCase();
+    if (destinationType !== 'local') {
+      return res.status(409).json({ error: 'Individual restore-point cleanup is currently supported for local backups only.' });
+    }
+    let manifestRemoved = false;
+    if (run.manifest_path && !String(run.manifest_path).startsWith('s3://')) {
+      const roots = [config.backup_manifest_path, config.backup_destination_path]
+        .filter((value) => typeof value === 'string' && value.trim())
+        .map((value) => path.resolve(value));
+      const manifestPath = path.resolve(run.manifest_path);
+      const contained = roots.some((root) => manifestPath === root || manifestPath.startsWith(`${root}${path.sep}`));
+      if (!contained) return res.status(400).json({ error: 'Backup manifest is outside configured backup locations' });
+    }
+
+    await db.transaction(async (trx) => {
+      await trx('backup_runs').where({ id: run.id }).delete();
+    });
+    if (run.manifest_path && !String(run.manifest_path).startsWith('s3://')) {
+      try {
+        await fs.unlink(run.manifest_path);
+        manifestRemoved = true;
+      } catch (error) {
+        if (error.code !== 'ENOENT') logger.warn('Deleted backup record but could not remove its manifest', { backupId: id, error: error.message });
+      }
+    }
+    return res.json({ success: true, id: run.id, manifestRemoved, payloadRetained: true });
+  } catch (error) {
+    errorResponse(res, error, 500, 'Failed to delete backup restore point');
   }
 });
 
@@ -1114,21 +1183,142 @@ router.get('/download/:backupId', adminAuth, requirePermission('backup.view'), a
     // Handle different backup types
     switch (config.backup_destination_type) {
     case 'local': {
-      // Stream local backup as zip
-      const backupPath = path.join(config.backup_destination_path, `backup-${backupRun.id}`);
-      const archive = archiver('zip', { zlib: { level: 9 } });
-
-      res.attachment(`picpeak-backup-${backupRun.id}.zip`);
-      archive.pipe(res);
-
-      // Add backup directory contents
-      archive.directory(backupPath, false);
-
-      // Add manifest if exists
-      if (backupRun.manifest_path && await fs.access(backupRun.manifest_path).then(() => true).catch(() => false)) {
-        archive.file(backupRun.manifest_path, { name: 'manifest.json' });
+      if (!backupRun.manifest_path) {
+        return res.status(409).json({ error: 'This backup has no manifest; a complete download cannot be assembled.' });
+      }
+      const { manifest: sourceManifest } = await getBackupManifest(backupRun.id);
+      const backupRoot = await fs.realpath(path.resolve(config.backup_destination_path || path.join(require('../config/storage').getStoragePath(), 'backups')));
+      let databaseRoot = config.database_backup_destination_path
+        ? path.resolve(config.database_backup_destination_path)
+        : null;
+      if (databaseRoot) {
+        try { databaseRoot = await fs.realpath(databaseRoot); } catch (_) { databaseRoot = path.resolve(databaseRoot); }
+      }
+      const isWithin = (candidate, root) => candidate === root || candidate.startsWith(`${root}${path.sep}`);
+      // Incremental manifests only list files changed in that run. Materialize
+      // the parent chain into a standalone full manifest for this download.
+      const runRows = await db('backup_runs').where('status', 'completed').whereNotNull('manifest_path').select('id');
+      const manifestsById = new Map([[sourceManifest?.backup?.id, sourceManifest]]);
+      for (const row of runRows) {
+        if (Number(row.id) === Number(backupRun.id)) continue;
+        try {
+          const loaded = await getBackupManifest(row.id);
+          if (loaded?.manifest?.backup?.id) manifestsById.set(loaded.manifest.backup.id, loaded.manifest);
+        } catch (_) { /* unrelated unreadable manifests do not block this download */ }
+      }
+      const chainNewestFirst = [sourceManifest];
+      const visitedManifestIds = new Set([sourceManifest?.backup?.id]);
+      let parentManifestId = sourceManifest?.incremental?.parent_backup_id || sourceManifest?.backup?.parent_backup_id || null;
+      while (parentManifestId) {
+        if (visitedManifestIds.has(parentManifestId)) return res.status(409).json({ error: 'The incremental backup chain contains a cycle.' });
+        const parent = manifestsById.get(parentManifestId);
+        if (!parent) return res.status(409).json({ error: 'A parent backup required to assemble this restore point is missing.' });
+        visitedManifestIds.add(parentManifestId);
+        chainNewestFirst.push(parent);
+        parentManifestId = parent.incremental?.parent_backup_id || parent.backup?.parent_backup_id || null;
+      }
+      const effectiveFiles = new Map();
+      for (const chainManifest of chainNewestFirst.reverse()) {
+        if (!chainManifest.incremental) effectiveFiles.clear();
+        const changedFiles = Array.isArray(chainManifest.files?.manifest) ? chainManifest.files.manifest : [];
+        for (const entry of changedFiles) effectiveFiles.set(String(entry.path || ''), entry);
+        for (const deletedPath of chainManifest.incremental?.deleted_files || []) effectiveFiles.delete(String(deletedPath));
+      }
+      const files = Array.from(effectiveFiles.values());
+      const backupManifest = require('../services/backupManifest');
+      const downloadManifest = JSON.parse(JSON.stringify(sourceManifest));
+      const selectedDatabaseManifest = [...chainNewestFirst].reverse().find((item) => item?.database?.backup_file);
+      if (selectedDatabaseManifest) downloadManifest.database = { ...selectedDatabaseManifest.database };
+      downloadManifest.backup = { ...downloadManifest.backup, type: 'full', parent_backup_id: null, path: '.' };
+      downloadManifest.files = {
+        ...(downloadManifest.files || {}),
+        count: files.length,
+        total_size: files.reduce((sum, entry) => sum + (Number(entry.size) || 0), 0),
+        manifest: files,
+        checksums: Object.fromEntries(files.filter((entry) => entry.checksum).map((entry) => [entry.path, entry.checksum])),
+      };
+      downloadManifest.metadata = { ...(downloadManifest.metadata || {}), materialized_download_bundle: true };
+      const archiveEntries = [];
+      for (const entry of files) {
+        const relative = String(entry?.path || '').replace(/\\/g, '/');
+        if (!relative || path.isAbsolute(relative) || relative.split('/').some((part) => part === '..')) {
+          return res.status(409).json({ error: 'The backup manifest contains an unsafe file path.' });
+        }
+        const filePath = path.resolve(backupRoot, relative);
+        if (!isWithin(filePath, backupRoot)) return res.status(409).json({ error: 'The backup manifest contains an unsafe file path.' });
+        let realPath; let stat;
+        try { realPath = await fs.realpath(filePath); stat = await fs.stat(realPath); } catch (_) {
+          return res.status(409).json({ error: `A required backup file is missing: ${relative}` });
+        }
+        if (!isWithin(realPath, backupRoot) || !stat.isFile()) {
+          return res.status(409).json({ error: `A required backup file is not a regular file inside the backup location: ${relative}` });
+        }
+        if (entry.checksum) {
+          const hash = crypto.createHash('sha256');
+          await new Promise((resolve, reject) => {
+            const stream = require('fs').createReadStream(realPath);
+            stream.on('data', (chunk) => hash.update(chunk));
+            stream.on('error', reject);
+            stream.on('end', resolve);
+          });
+          if (hash.digest('hex').toLowerCase() !== String(entry.checksum).toLowerCase()) {
+            return res.status(409).json({ error: `A required backup file no longer matches its recorded checksum: ${relative}` });
+          }
+        }
+        archiveEntries.push({ path: realPath, name: relative });
       }
 
+      const databaseFile = downloadManifest?.database?.backup_file;
+      let packagedDatabaseName = null;
+      if (typeof databaseFile === 'string' && databaseFile.trim()) {
+        const candidates = [
+          path.isAbsolute(databaseFile) ? path.resolve(databaseFile) : path.resolve(backupRoot, databaseFile),
+          ...(databaseRoot ? [path.join(databaseRoot, path.basename(databaseFile)), path.join(databaseRoot, 'database', path.basename(databaseFile))] : []),
+          path.join(backupRoot, 'database', path.basename(databaseFile)),
+          path.join(backupRoot, path.basename(databaseFile)),
+        ];
+        let resolvedDatabase = null;
+        for (const candidate of [...new Set(candidates)]) {
+          try {
+            const real = await fs.realpath(candidate);
+            const stat = await fs.stat(real);
+            if (stat.isFile() && [backupRoot, databaseRoot].filter(Boolean).some((root) => isWithin(real, root))) {
+              resolvedDatabase = real;
+              break;
+            }
+          } catch (_) { /* try the next configured backup-root candidate */ }
+        }
+        if (!resolvedDatabase) return res.status(409).json({ error: 'The database dump required by this backup is missing from configured backup locations.' });
+        packagedDatabaseName = `database/${path.basename(resolvedDatabase)}`;
+        archiveEntries.push({ path: resolvedDatabase, name: packagedDatabaseName });
+        downloadManifest.database.backup_file = packagedDatabaseName;
+      }
+
+      downloadManifest.verification = {
+        ...(downloadManifest.verification || {}),
+        file_count_check: files.length,
+        size_check: files.reduce((sum, entry) => sum + (Number(entry.size) || 0), 0),
+        integrity_timestamp: new Date().toISOString(),
+      };
+      downloadManifest.verification.checksum_algorithm = backupManifest.getManifestKey() ? 'hmac-sha256' : 'sha256';
+      downloadManifest.verification.total_checksum = backupManifest.calculateManifestChecksum(downloadManifest);
+
+      const archive = archiver('zip', { zlib: { level: 1 } });
+      archive.on('error', (error) => {
+        logger.error('Failed to stream backup archive', { backupId: backupRun.id, error: error.message });
+        if (!res.headersSent) res.status(500).json({ error: 'Failed to package backup files' });
+        else res.destroy(error);
+      });
+      res.attachment(`picflow-backup-${backupRun.id}.zip`);
+      archive.pipe(res);
+      for (const entry of archiveEntries) archive.file(entry.path, { name: entry.name });
+      archive.append(JSON.stringify(downloadManifest, null, 2), { name: 'manifest.json' });
+      archive.append(JSON.stringify({
+        backupRunId: backupRun.id,
+        createdAt: backupRun.started_at,
+        note: 'This download materializes the selected restore point and its incremental parents into a standalone full manifest.',
+        databaseFile: packagedDatabaseName,
+      }, null, 2), { name: 'download-info.json' });
       await archive.finalize();
       break;
     }

@@ -23,6 +23,7 @@ process.env.STORAGE_PATH = path.join(os.tmpdir(), 'picpeak-cascade-storage-test'
 
 const mockStorage = { delete: jest.fn().mockResolvedValue(undefined) };
 const mockWorkflowBridge = {
+  persistUnbindIntent: jest.fn().mockResolvedValue(undefined),
   persistDeleteDeliveryIntent: jest.fn().mockResolvedValue(undefined),
   flushUnbindIntent: jest.fn().mockResolvedValue(undefined),
 };
@@ -149,13 +150,14 @@ describe('deleteEventCascade — storage cleanup', () => {
     mockPhotoRowsDeleted = false;
     mockJobRowsDeleted = false;
     mockSharedDerivatives = [];
-    mockWorkflowBridge.persistDeleteDeliveryIntent.mockClear();
+    mockWorkflowBridge.persistUnbindIntent.mockClear();
     mockWorkflowBridge.flushUnbindIntent.mockClear();
   });
 
-  it('queues removal of Bridge delivery folders after deleting a project', async () => {
+  it('queues a Bridge unbind without requesting removal of its delivery folders', async () => {
     await deleteEventCascade(42, { id: 1, username: 'admin' });
-    expect(mockWorkflowBridge.persistDeleteDeliveryIntent).toHaveBeenCalledWith(42, expect.any(Function));
+    expect(mockWorkflowBridge.persistUnbindIntent).toHaveBeenCalledWith(42, expect.any(Function));
+    expect(mockWorkflowBridge.persistDeleteDeliveryIntent).not.toHaveBeenCalled();
     expect(mockWorkflowBridge.flushUnbindIntent).toHaveBeenCalledWith(42);
   });
 

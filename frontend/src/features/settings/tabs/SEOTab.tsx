@@ -200,7 +200,7 @@ export const SEOTab: React.FC<SEOTabProps> = ({
                   placeholder={t('settings.seo.addAgentPlaceholder', 'Enter agent name...')}
                   onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), handleAddAgent())}
                 />
-                <Button variant="outline" size="sm" onClick={handleAddAgent}>
+                <Button variant="outline" size="sm" onClick={handleAddAgent} aria-label={t('settings.seo.addAgent')}>
                   <Plus className="w-4 h-4" />
                 </Button>
               </div>
@@ -285,6 +285,7 @@ export const SEOTab: React.FC<SEOTabProps> = ({
                     <button
                       onClick={() => handleRemoveCustomRule(index)}
                       className="text-neutral-400 hover:text-red-500 transition-colors"
+                      aria-label={t('settings.seo.removeRule', { index: index + 1 })}
                     >
                       <X className="w-4 h-4" />
                     </button>
@@ -306,7 +307,7 @@ export const SEOTab: React.FC<SEOTabProps> = ({
                 onChange={(e) => setNewRulePath(e.target.value)}
                 placeholder={t('settings.seo.rulePathPlaceholder', 'Disallow path')}
               />
-              <Button variant="outline" size="sm" onClick={handleAddCustomRule}>
+              <Button variant="outline" size="sm" onClick={handleAddCustomRule} aria-label={t('settings.seo.addRule')}>
                 <Plus className="w-4 h-4" />
               </Button>
             </div>

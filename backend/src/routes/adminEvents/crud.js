@@ -213,7 +213,9 @@ module.exports = (router) => {
 
       // Apply status filter
       if (status === 'active') {
-        query = query.where('is_active', formatBoolean(true)).where('is_archived', formatBoolean(false));
+        query = query.where('is_active', formatBoolean(true))
+          .where('is_archived', formatBoolean(false))
+          .where('is_draft', formatBoolean(false));
       } else if (status === 'archived') {
         query = query.where('is_archived', formatBoolean(true));
       } else if (status === 'inactive') {

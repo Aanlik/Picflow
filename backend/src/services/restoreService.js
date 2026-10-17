@@ -39,7 +39,7 @@ async function getConfiguredBackupRoots(trustedRoot) {
   if (trustedRoot) roots.push(trustedRoot);
   try {
     const rows = await db('app_settings')
-      .whereIn('setting_key', ['backup_destination_path', 'backup_manifest_path'])
+      .whereIn('setting_key', ['backup_destination_path', 'backup_manifest_path', 'database_backup_destination_path'])
       .select('setting_value');
     for (const row of rows) {
       let value;
@@ -231,6 +231,9 @@ async function resolveContainedDbBackupCandidates(backupPath, dbBackupFile, warn
     // (3) Legacy reconstruct. Inherently safe: path.basename() strips any
     // directory component, so this candidate can never escape backupPath.
     path.join(backupPath, 'database', path.basename(dbBackupFile)),
+    // Some installs keep database snapshots directly in a dedicated database
+    // backup root instead of a `database/` subdirectory.
+    path.join(backupPath, path.basename(dbBackupFile)),
   ].filter(Boolean);
 
   return rawCandidates.filter((candidate) => {

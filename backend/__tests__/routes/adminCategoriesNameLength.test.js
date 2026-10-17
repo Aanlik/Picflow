@@ -53,7 +53,7 @@ describe('category name length validation', () => {
 
   it('rejects a >100-char name on update with a 400, not a 500', async () => {
     const created = await auth(request(app).post('/api/admin/categories'))
-      .send({ name: 'zzcatlen-ok', is_global: true });
+      .send({ name: 'zzcatlen-ok', slug: 'zzcatlen-ok', is_global: true });
     expect(created.status).toBe(200);
 
     const res = await auth(request(app).put(`/api/admin/categories/${created.body.id}`))
@@ -68,7 +68,7 @@ describe('category name length validation', () => {
   it('still accepts a name at exactly the 100-char limit', async () => {
     const name = 'y'.repeat(100);
     const res = await auth(request(app).post('/api/admin/categories'))
-      .send({ name, is_global: true });
+      .send({ name, slug: 'exact-100-char-name', is_global: true });
 
     expect(res.status).toBe(200);
     expect(res.body.name).toBe(name);
