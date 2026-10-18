@@ -10,6 +10,7 @@ import { DownloadResolutionModal } from './DownloadResolutionModal';
 import { Button } from '../common';
 import { galleryService } from '../../services/gallery.service';
 import { useTheme } from '../../contexts/ThemeContext';
+import { getPhotoDownloadFilenames } from './downloadSelection';
 
 // Import all layouts
 import {
@@ -215,7 +216,7 @@ export const PhotoGridWithLayouts: React.FC<PhotoGridWithLayoutsProps> = ({
     toastify.info(t('gallery.downloadStarted', { photoCount: ids.length }));
 
     try {
-      await galleryService.downloadSelectedPhotos(slug, ids);
+      await galleryService.downloadSelectedPhotos(slug, ids, undefined, getPhotoDownloadFilenames(photos, ids));
     } catch {
       toastify.error(t('gallery.downloadError'));
     } finally {

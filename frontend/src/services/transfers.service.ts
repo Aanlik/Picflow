@@ -123,11 +123,24 @@ export const transfersService = {
   // --- Admin ---
   async list(search = ''): Promise<Transfer[]> {
     const res = await api.get('/admin/transfers', { params: search ? { q: search } : {} });
-    return res.data.transfers;
+    const transfers = res.data?.transfers;
+    if (!Array.isArray(transfers)) {
+      throw new Error('Invalid transfer list response');
+    }
+    return transfers;
   },
   async get(id: number): Promise<Transfer> {
     const res = await api.get(`/admin/transfers/${id}`);
-    return res.data.transfer;
+    const transfer = res.data?.transfer;
+    if (!transfer || typeof transfer !== 'object' || Array.isArray(transfer)) {
+      throw new Error('Invalid transfer detail response');
+    }
+    return {
+      ...transfer,
+      files: Array.isArray(transfer.files) ? transfer.files : [],
+      extra_files: Array.isArray(transfer.extra_files) ? transfer.extra_files : [],
+      uploads: Array.isArray(transfer.uploads) ? transfer.uploads : [],
+    } as Transfer;
   },
   async create(input: CreateTransferInput, onProgress?: (pct: number) => void): Promise<Transfer> {
     // multipart: the operator's own files ride along with the form fields.

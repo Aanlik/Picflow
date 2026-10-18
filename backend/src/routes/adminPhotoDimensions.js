@@ -650,6 +650,7 @@ router.post('/repair-orientation', adminAuth, requirePermission('system.manage')
       let corrected = 0;
       let staleTiers = 0;
       let errorCount = 0;
+      const failures = [];
       let lostClaim = false;
 
       try {
@@ -831,6 +832,13 @@ router.post('/repair-orientation', adminAuth, requirePermission('system.manage')
           } catch (error) {
             logger.error(`Error backfilling orientation for photo ${photo.id}:`, error);
             errorCount++;
+            if (failures.length < 100) {
+              failures.push({
+                photo_id: photo.id,
+                filename: photo.filename,
+                reason: imageProcessingError(error),
+              });
+            }
           }
         }
 
@@ -839,7 +847,7 @@ router.post('/repair-orientation', adminAuth, requirePermission('system.manage')
           return;
         }
         await maintenanceJobs.release(JOB_ORIENTATION_BACKFILL, token, {
-          checked, corrected, staleTiers, failed: errorCount,
+          checked, corrected, staleTiers, failed: errorCount, failures,
         });
         logger.info(
           `Orientation backfill complete: ${checked} checked, ${corrected} corrected, ${errorCount} errors`
@@ -848,7 +856,7 @@ router.post('/repair-orientation', adminAuth, requirePermission('system.manage')
         logger.error('Orientation backfill aborted:', err);
         await maintenanceJobs
           .release(JOB_ORIENTATION_BACKFILL, token, {
-            checked, corrected, staleTiers, failed: errorCount, error: err.message,
+            checked, corrected, staleTiers, failed: errorCount, failures, error: err.message,
           })
           .catch(() => {});
       } finally {

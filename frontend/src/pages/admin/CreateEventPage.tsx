@@ -270,15 +270,18 @@ export const CreateEventPage: React.FC = () => {
     },
     onError: (error: any) => {
       const errorMessage = t('errors.eventCreationFailed');
+      const requestId = error?.response?.data?.requestId || error?.response?.headers?.['x-request-id'];
 
       // If validation errors exist, show them
       if (error.response?.data?.errors) {
         const validationErrors = error.response.data.errors;
         validationErrors.forEach((err: any) => {
-          toast.error(`${err.param}: ${err.msg}`);
+          toast.error(`${err.path || err.param || '字段'}: ${err.msg || err.message || errorMessage}`);
         });
       } else {
-        toast.error(errorMessage);
+        toast.error(requestId
+          ? t('errors.eventCreationFailedWithRequestId', { requestId, defaultValue: `${errorMessage}（请求编号：${requestId}）` })
+          : errorMessage);
       }
     },
     onSettled: () => {

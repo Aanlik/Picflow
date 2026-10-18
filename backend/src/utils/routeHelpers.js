@@ -96,10 +96,14 @@ const errorResponse = (res, error, statusCode = 500, publicMessage) => {
   const message = publicMessage || (error instanceof Error ? error.message : String(error));
   const route = res.req ? `${res.req.method} ${requestLogPath(res.req.originalUrl)}` : null;
   logger.error(route ? `${route} - ${message}` : message, {
+    ...(res.req?.id && { requestId: res.req.id }),
     error: error instanceof Error ? error.message : error,
     stack: error instanceof Error ? error.stack : undefined
   });
-  res.status(statusCode).json({ error: message });
+  res.status(statusCode).json({
+    error: message,
+    ...(res.req?.id && { requestId: res.req.id }),
+  });
 };
 
 /**

@@ -26,7 +26,7 @@ function isCustomerActivity(notification: Notification) {
 }
 
 /** Show new internal activity as a popup; customer actions stay in the notification feed. */
-export function useAdminNotificationToasts(notifications?: Notification[]) {
+export function useAdminNotificationToasts(notifications?: Notification[], currentAdminId?: number | string) {
   const seenNotificationIdsRef = useRef<Set<number> | null>(null);
 
   useEffect(() => {
@@ -38,7 +38,10 @@ export function useAdminNotificationToasts(notifications?: Notification[]) {
         .filter((notification) =>
           !notification.isRead
           && !previousIds.has(notification.id)
-          && !isCustomerActivity(notification),
+          && !isCustomerActivity(notification)
+          && !(currentAdminId != null
+            && Number.isFinite(Number(currentAdminId))
+            && Number(notification.actorId) === Number(currentAdminId)),
         )
         .slice()
         .reverse()

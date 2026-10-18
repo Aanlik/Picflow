@@ -44,4 +44,24 @@ describe('BackupDashboard reports only recorded backup coverage', () => {
 
     expect(screen.getByText('backup.dashboard.healthMessages.noBackups')).toBeInTheDocument();
   });
+
+  it('does not crash when a legacy failed-run error is not stored as text', () => {
+    expect(() => render(
+      <BackupDashboard
+        status={{
+          lastBackup: {
+            id: 3,
+            status: 'failed',
+            backup_type: 'manual',
+            created_at: '2026-10-17T10:00:00.000Z',
+            duration_seconds: 0,
+            error_message: { message: 'legacy error object' } as any,
+          },
+        }}
+        config={{ backup_enabled: true, backup_destination_type: 'local' }}
+        onRunBackup={vi.fn()}
+        isBackupRunning={false}
+      />,
+    )).not.toThrow();
+  });
 });

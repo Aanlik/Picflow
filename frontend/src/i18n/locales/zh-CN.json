@@ -69,6 +69,7 @@
     "menu": "菜单",
     "deleted": "已删除",
     "actions": "操作",
+    "processing": "处理中…",
     "copyFailed": "无法复制到剪贴板",
     "searching": "搜索中…",
     "language": "语言"
@@ -171,6 +172,8 @@
     "create": "创建交付链接",
     "created": "已创建的交付链接",
     "createFailed": "无法创建交付链接",
+    "loadFailed": "无法加载文件交付列表。",
+    "loadDetailFailed": "无法加载此交付链接的详情。",
     "empty": "还没有客户文件交付。创建安全链接即可分享文件。",
     "untitled": "未命名的文件交付",
     "linkCopied": "分享链接已复制",
@@ -303,7 +306,7 @@
     "page": "第 {{current}} 页，共 {{total}} 页",
     "storageManagement": "存储管理",
     "storageInfo": "归档会一直保留，直到手动删除。可设置保留期限，控制存储占用。",
-    "confirmRestore": "确定恢复此归档吗？恢复后，该项目将重新启用。",
+    "confirmRestore": "确定从归档中恢复此项目吗？恢复后会保留归档前的草稿或启用状态。",
     "confirmDelete": "确定永久删除此归档吗？此操作不可撤销。",
     "restoreSuccess": "归档已成功恢复",
     "deleteSuccess": "归档已永久删除",
@@ -488,6 +491,9 @@
     "videoFormatUnsupported": "当前浏览器不支持该视频格式，请下载后观看",
     "videoLoadFailed": "视频加载失败",
     "batchSelect": "批量选择",
+    "batchActions": "批量操作",
+    "selectPhotoForBatch": "选择这张照片",
+    "deselectPhotoForBatch": "取消选择这张照片",
     "selectPhoto": "选择 {{filename}}",
     "sortLabelDate": "日期",
     "sortLabelName": "名称",
@@ -519,6 +525,7 @@
     "failedToDeleteCategory": "删除分类失败",
     "categoryName": "分类名称",
     "slug": "分类标识（英文或数字）",
+    "slugAlreadyExists": "这个分类标识已被使用，请换一个。",
     "noCategoriesYet": "尚未设置分类，可添加分类整理照片。",
     "deleteConfirm": "确定删除“{{name}}”吗？",
     "setCoverPhoto": "设置封面照片",
@@ -1117,8 +1124,8 @@
       "rateLimitTitle": "API 请求频率限制",
       "rateLimitIntro": "限制每个客户端 IP 在指定时间内的 API 请求数量。超限请求会收到 HTTP 429 响应，过低的上限可能导致相册无法继续加载。",
       "rateLimitEnabled": "启用 API 速率限制器",
-      "rateLimitWindowMinutes": "窗口(分钟)",
-      "rateLimitWindowMinutesHelp": "每个客户端IP滑动窗口. 1–60.",
+      "rateLimitWindowMinutes": "时间窗口（分钟）",
+      "rateLimitWindowMinutesHelp": "按每个客户端 IP 统计滑动时间窗口，范围为 1–60 分钟。",
       "rateLimitMaxRequests": "每个窗口的最大请求",
       "rateLimitMaxRequestsHelp": "每个时间窗口内非豁免 API 请求的上限，默认为 300，允许范围为 10–1000。",
       "rateLimitAuthMaxRequests": "每个时间窗口内允许的登录失败次数",
@@ -1452,6 +1459,10 @@
       "running": "正在检查方向...",
       "resultSuccess": "上次处理：检查 {{checked}} 张，修正 {{corrected}} 张，错误 {{failed}} 项",
       "staleTiers": "{{count}} 个缓存文件清理失败，可能仍显示旧方向；存储恢复可写后请重新处理。",
+      "failedPhotosTitle": "未能修正的照片",
+      "failedPhoto": "{{filename}}：{{reason}}",
+      "moreFailedPhotos_one": "另有 {{count}} 项失败未显示",
+      "moreFailedPhotos_other": "另有 {{count}} 项失败未显示",
       "staleTiers_one": "{{count}} 个缓存文件清理失败，可能仍显示旧方向；存储恢复可写后请重新处理。",
       "staleTiers_other": "{{count}} 个缓存文件清理失败，可能仍显示旧方向；存储恢复可写后请重新处理。"
     },
@@ -1461,6 +1472,8 @@
   "branding": {
     "title": "品牌主题",
     "subtitle": "自定义相册的外观和感觉",
+    "loadFailed": "品牌设置暂时无法加载",
+    "loadFailedHelp": "品牌或主题数据读取失败。请重试；未加载完成时不会保存默认值。",
     "loadingBranding": "正在加载品牌设置...",
     "themeAndStyle": "主题与样式",
     "companyInfo": "企业信息",
@@ -2000,6 +2013,7 @@
       "noInvites": "还没有邀请",
       "copyLink": "复制链接",
       "revokeInvite": "撤销",
+      "removedGuest": "已移除客户",
       "deletedToast": "客户已删除",
       "deletedError": "删除客户失败",
       "mergedToast": "客户记录已合并",
@@ -2034,7 +2048,7 @@
       "loadingDetail": "正在加载选中内容...",
       "detail": {
         "noComments": "无评论",
-        "empty": "此类别中没有选择",
+        "empty": "该客户在此类别中尚无互动记录",
         "all": "全部",
         "liked": "已点赞",
         "favorited": "已收藏",
@@ -2177,6 +2191,7 @@
     "errorDetails": "错误细节",
     "requiredFields": "请填写所有必填信息",
     "eventCreationFailed": "创建项目失败",
+    "eventCreationFailedWithRequestId": "创建项目失败（请求编号：{{requestId}}）",
     "noShareLink": "暂无可用的分享链接",
     "copyFailed": "复制链接失败"
   },
@@ -2217,6 +2232,8 @@
   "cms": {
     "title": "内容页面",
     "subtitle": "管理法律和信息网页",
+    "loadFailed": "内容页面暂时无法加载",
+    "loadFailedHelp": "页面内容或站点设置读取失败。请重试；保存内容前请确认数据已加载。",
     "loadingPages": "正在加载页面...",
     "pages": "页面",
     "previewLinks": "预览链接",
@@ -2326,6 +2343,8 @@
     }
   },
   "backup": {
+    "loadFailed": "无法读取备份状态",
+    "loadFailedHelp": "备份状态或配置暂时不可用。请重试后再操作。",
     "picpeak": {
       "restoreIntro": "上传此实例或其他实例导出的 .picpeak 文件。支持将 SQLite 备份恢复到 PostgreSQL（用于升级）；其他数据库类型必须与当前实例一致。",
       "crossEngineNote": "跨数据库类型恢复：已将 SQLite 备份转换为 PostgreSQL 数据库。",
@@ -3659,6 +3678,10 @@
     "rescan": "重新扫描目录",
     "syncComplete": "已同步检查 {{photos}} 张照片；{{errors}} 项异常需要处理。",
     "rescanComplete": "已扫描检查 {{photos}} 张照片；{{errors}} 项异常需要处理。",
+    "operationFailed": "操作未完成：{{reason}}",
+    "operationNotCompleted": "同步服务未提供完成结果，请检查服务状态后重试。",
+    "stageArchivedReadOnly": "项目流程已归档，当前不会执行同步或扫描。可将阶段改回后继续处理。",
+    "archivedReadOnly": "项目已归档；恢复项目后才能同步或修改流程。",
     "retryFailed": "重试失败任务",
     "retryQueued": "已重新排入 {{count}} 个任务",
     "retryQueued_one": "已重新排入 {{count}} 个任务",
@@ -3848,6 +3871,8 @@
     "title": "下载所选照片",
     "instructions": "请逐个点击文件开始下载。浏览器可能会要求确认。文件会保留原名，不会打包成 ZIP。",
     "file": "第 {{number}} 张照片",
-    "opened": "已发起下载"
+    "opened": "已发起下载",
+    "downloading": "正在准备文件",
+    "failed": "下载失败，请重试"
   }
 }

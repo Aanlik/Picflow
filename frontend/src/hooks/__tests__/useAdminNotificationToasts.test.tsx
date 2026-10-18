@@ -76,6 +76,30 @@ describe('useAdminNotificationToasts', () => {
     });
   });
 
+  it('keeps the current admin own saved action in the bell without duplicating the save toast', () => {
+    const initial = [{ id: 1, type: 'branding_updated', actorType: 'admin', actorId: 7, isRead: false }];
+    const { rerender } = renderHook(
+      ({ notifications, currentAdminId }) => useAdminNotificationToasts(notifications as never, currentAdminId),
+      { initialProps: { notifications: initial, currentAdminId: 7 } },
+    );
+
+    rerender({
+      notifications: [...initial, { id: 2, type: 'branding_updated', actorType: 'admin', actorId: 7, isRead: false }],
+      currentAdminId: 7,
+    });
+    expect(info).not.toHaveBeenCalled();
+
+    rerender({
+      notifications: [
+        ...initial,
+        { id: 2, type: 'branding_updated', actorType: 'admin', actorId: 7, isRead: false },
+        { id: 3, type: 'branding_updated', actorType: 'admin', actorId: 8, isRead: false },
+      ],
+      currentAdminId: 7,
+    });
+    expect(info).toHaveBeenCalledTimes(1);
+  });
+
   it('does not show a popup for already-read notifications', () => {
     const initial = [{ id: 1, type: 'guest_feedback_comment', actorType: 'guest', isRead: false }];
     const { rerender } = renderHook(

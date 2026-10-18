@@ -67,6 +67,7 @@ router.get('/', adminAuth, requirePermission(['settings.view', 'notifications.vi
       id: notification.id,
       type: notification.activity_type,
       actorType: notification.actor_type,
+      actorId: notification.actor_id == null ? null : Number(notification.actor_id),
       actorName: notification.actor_name,
       eventName: notification.event_name,
       eventId: notification.event_id,

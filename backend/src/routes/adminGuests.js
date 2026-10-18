@@ -12,7 +12,7 @@ const { errorResponse } = require('../utils/routeHelpers');
 const { ValidationError } = require('../utils/errors');
 const { formatBoolean } = require('../utils/dbCompat');
 const { getAbsoluteFrontendUrl } = require('../utils/frontendUrl');
-const { sanitizeForZipEntry } = require('../utils/filenameSanitizer');
+const { sanitizeForZipEntry, buildContentDisposition } = require('../utils/filenameSanitizer');
 
 // ----------------------------------------------------------------------------
 // Helpers
@@ -328,10 +328,6 @@ router.get(
         .where({ event_id: eventId, is_deleted: false })
         .select('id', 'name');
 
-      if (guests.length === 0) {
-        return res.status(404).json({ error: 'No guests to export' });
-      }
-
       res.setHeader('Content-Type', 'application/zip');
       res.setHeader(
         'Content-Disposition',
@@ -502,12 +498,12 @@ router.get(
 
       if (format === 'json') {
         res.setHeader('Content-Type', 'application/json');
-        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        res.setHeader('Content-Disposition', buildContentDisposition(filename));
         return res.send(JSON.stringify({ guest: serializeGuest(guest), selections }, null, 2));
       }
       if (format === 'csv') {
         res.setHeader('Content-Type', 'text/csv');
-        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        res.setHeader('Content-Disposition', buildContentDisposition(filename));
         const header = 'filename,original_filename,feedback_type';
         const rows = selections.map(
           (s) =>
@@ -517,7 +513,7 @@ router.get(
       }
       // txt — one filename per line
       res.setHeader('Content-Type', 'text/plain');
-      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      res.setHeader('Content-Disposition', buildContentDisposition(filename));
       return res.send(selections.map((s) => s.original_filename || s.source_filename || s.filename).join('\n'));
     } catch (error) {
       errorResponse(res, error, 500, 'Failed to export guest');

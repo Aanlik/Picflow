@@ -207,6 +207,13 @@ async function replacePhoto(existingPhoto, newFileTempPath, { originalFilename, 
         : { source_filename: existingPhoto.original_filename || originalFilename }),
       path: relativePath,
       thumbnail_path: thumbnailPath,
+      // A replacement is a new image version. The canonical preview is a
+      // separately stored, full-size derivative keyed by the previous row;
+      // retaining its path makes ensurePreviewImage treat V1 as current and
+      // clients keep seeing the old pixels even after the version/ETag moves.
+      // Null it atomically with the file metadata so the next request builds
+      // the preview from the newly committed original.
+      preview_path: null,
       size_bytes: stats.size,
       width,
       height,
@@ -245,6 +252,9 @@ async function replacePhoto(existingPhoto, newFileTempPath, { originalFilename, 
     }
     if (existingPhoto.thumbnail_path && existingPhoto.thumbnail_path !== thumbnailPath) {
       await storage.delete(existingPhoto.thumbnail_path).catch(() => {});
+    }
+    if (existingPhoto.preview_path) {
+      await storage.delete(existingPhoto.preview_path).catch(() => {});
     }
     // Responsive tiers, keyed off the OLD row (#1095 / #492). Their key embeds
     // the basename, which the update below replaces — so this is the last

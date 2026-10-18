@@ -58,6 +58,7 @@ export const AdminPhotoGrid: React.FC<AdminPhotoGridProps> = ({
   const [anchor, setAnchor] = useState<{ index: number; photoId: number } | null>(null);
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [retryingPhotos, setRetryingPhotos] = useState<Set<number>>(new Set());
   const [deletingPhotos, setDeletingPhotos] = useState<Set<number>>(new Set());
   const [isCategoryModalOpen, setIsCategoryModalOpen] = useState(false);
   const [isUpdatingCategory, setIsUpdatingCategory] = useState(false);
@@ -435,8 +436,16 @@ export const AdminPhotoGrid: React.FC<AdminPhotoGridProps> = ({
                     {t('admin.photos.processingFailed', 'Failed')}
                   </p>
                   <button
+                    type="button"
+                    aria-label={`${t('upload.retryFailed', 'Retry')} ${photo.filename}`}
+                    data-testid={`admin-photo-retry-${photo.id}`}
+                    disabled={retryingPhotos.has(photo.id)}
+                    onPointerDown={(e) => e.stopPropagation()}
                     onClick={async (e) => {
+                      e.preventDefault();
                       e.stopPropagation();
+                      if (retryingPhotos.has(photo.id)) return;
+                      setRetryingPhotos((current) => new Set(current).add(photo.id));
                       try {
                         await uploadsService.retryPhoto(photo.id);
                         toast.success(t('admin.photos.retryQueued', 'Retry queued'));
@@ -445,12 +454,18 @@ export const AdminPhotoGrid: React.FC<AdminPhotoGridProps> = ({
                         queryClient.invalidateQueries({ queryKey: ['admin-event-photos'] });
                       } catch (err: any) {
                         toast.error(err?.response?.data?.error || t('upload.retryFailed'));
+                      } finally {
+                        setRetryingPhotos((current) => {
+                          const next = new Set(current);
+                          next.delete(photo.id);
+                          return next;
+                        });
                       }
                     }}
-                    className="mt-1 px-2 py-0.5 rounded bg-red-200 dark:bg-red-800 text-[10px] inline-flex items-center gap-1"
+                    className="relative z-30 mt-1 min-h-8 px-3 py-1 rounded bg-red-200 dark:bg-red-800 text-xs inline-flex items-center gap-1 disabled:cursor-wait disabled:opacity-60"
                   >
-                    <RefreshCw className="w-2.5 h-2.5" />
-                    {t('upload.retryFailed', 'Retry')}
+                    <RefreshCw className={`w-3 h-3 ${retryingPhotos.has(photo.id) ? 'animate-spin' : ''}`} />
+                    {retryingPhotos.has(photo.id) ? t('common.processing', 'Processing…') : t('upload.retryFailed', 'Retry')}
                   </button>
                 </div>
               ) : photo.thumbnail_url ? (
@@ -473,7 +488,11 @@ export const AdminPhotoGrid: React.FC<AdminPhotoGridProps> = ({
             </div>
 
             {/* Overlay with actions */}
-            <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity">
+            {/* Keep the visual hover tint from becoming an invisible click shield.
+                Failed uploads have a retry button in the thumbnail beneath this
+                overlay; without pointer-events-none the overlay swallowed that
+                click and the tile opened its detail drawer instead. */}
+            <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity">
               <div className="absolute bottom-0 left-0 right-0 p-3">
                 <p className="text-white text-xs font-medium truncate mb-1">
                   {photo.filename}
@@ -492,7 +511,7 @@ export const AdminPhotoGrid: React.FC<AdminPhotoGridProps> = ({
                     <PermissionGate permission="photos.download">
                       <button
                         onClick={(e) => handleDownload(photo, e)}
-                        className="p-1 text-white hover:bg-white/20 rounded"
+                        className="pointer-events-auto p-1 text-white hover:bg-white/20 rounded"
                       >
                         <Download className="w-3 h-3" />
                       </button>
@@ -500,7 +519,7 @@ export const AdminPhotoGrid: React.FC<AdminPhotoGridProps> = ({
                     <PermissionGate permission="photos.delete">
                       <button
                         onClick={(e) => handleDeleteSingle(photo, e)}
-                        className="p-1 text-white hover:bg-white/20 rounded disabled:opacity-50"
+                        className="pointer-events-auto p-1 text-white hover:bg-white/20 rounded disabled:opacity-50"
                         disabled={isDeleting}
                       >
                         <Trash2 className="w-3 h-3" />

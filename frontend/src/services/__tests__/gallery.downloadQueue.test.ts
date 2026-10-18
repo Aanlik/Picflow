@@ -7,15 +7,15 @@ import { galleryService } from '../gallery.service';
 describe('gallery download queue', () => {
   beforeEach(() => { vi.clearAllMocks(); window.history.replaceState({}, '', '/'); });
   afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
-  it.each(['desktop Chrome', 'iPhone Safari', 'Android Chrome', 'iPhone MicroMessenger', 'Android MicroMessenger'])('%s gets one explicit link per selected photo', async (userAgent) => {
+  it.each(['desktop Chrome', 'iPhone Safari', 'Android Chrome', 'iPhone MicroMessenger', 'Android MicroMessenger'])('%s gets one authenticated download action per selected photo', async (userAgent) => {
     vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue(userAgent);
     const receive = vi.fn(); window.addEventListener(DOWNLOAD_QUEUE_EVENT, receive);
     const direct = vi.spyOn(galleryService, 'triggerDirectDownload').mockImplementation(() => {});
     await galleryService.downloadSelectedPhotos('shoot', [1, 2, 1], 'web');
     expect(direct).not.toHaveBeenCalled();
     expect(receive.mock.calls[0][0].detail).toEqual([
-      { photoId: 1, href: '/api/gallery/shoot/download/1?resolution=web' },
-      { photoId: 2, href: '/api/gallery/shoot/download/2?resolution=web' },
+      { slug: 'shoot', photoId: 1, resolution: 'web' },
+      { slug: 'shoot', photoId: 2, resolution: 'web' },
     ]);
     window.removeEventListener(DOWNLOAD_QUEUE_EVENT, receive);
   });

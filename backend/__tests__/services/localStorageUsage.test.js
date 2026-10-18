@@ -185,6 +185,34 @@ describe('localStorageUsage (#1164)', () => {
     expect((await measureLocalStorageUsage({ force: true })).total).toBe(500);
   });
 
+  it('does not let a pre-invalidation walk repopulate the cache with a stale snapshot', async () => {
+    const originalReaddir = fs.promises.readdir.bind(fs.promises);
+    let releaseOldWalk;
+    let markOldWalkStarted;
+    const oldWalkStarted = new Promise((resolve) => { markOldWalkStarted = resolve; });
+    const holdOldWalk = new Promise((resolve) => { releaseOldWalk = resolve; });
+    let held = false;
+    jest.spyOn(fs.promises, 'readdir').mockImplementation(async (directory, options) => {
+      if (!held && path.resolve(directory) === path.resolve(root)) {
+        held = true;
+        markOldWalkStarted();
+        await holdOldWalk;
+        // This is the old snapshot from before the new archive/photo bytes.
+        return [];
+      }
+      return originalReaddir(directory, options);
+    });
+
+    const oldMeasurement = measureLocalStorageUsage();
+    await oldWalkStarted;
+    await write(path.join('thumbnails', 'new.jpg'), 150);
+    resetLocalStorageUsageCache();
+    releaseOldWalk();
+
+    expect((await oldMeasurement).total).toBe(0);
+    expect((await measureLocalStorageUsage()).total).toBe(150);
+  });
+
   it('does not follow a symlink out of the storage root', async () => {
     // A link into EXTERNAL_MEDIA_ROOT would add the NAS back into the local
     // total — reinstating the exact confusion this replaces.

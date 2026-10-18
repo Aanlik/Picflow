@@ -96,7 +96,7 @@ describe('archive restore rebuilds the photo row faithfully', () => {
     return path.join('archives', name);
   }
 
-  async function seedArchivedEvent(archiveRelPath, slug) {
+  async function seedArchivedEvent(archiveRelPath, slug, state = {}) {
     const [row] = await db('events').insert({
       slug,
       event_type: 'project',
@@ -109,6 +109,7 @@ describe('archive restore rebuilds the photo row faithfully', () => {
       expires_at: new Date().toISOString(),
       is_archived: 1, // sqlite stores booleans as 0/1, see utils/dbCompat
       archive_path: archiveRelPath,
+      ...state,
     }).returning('id');
     return typeof row === 'object' ? row.id : row;
   }
@@ -119,6 +120,24 @@ describe('archive restore rebuilds the photo row faithfully', () => {
     const res = await request(app).post(`/admin/archives/${eventId}/restore`).send({});
     expect(res.status).toBe(200);
   };
+
+  it('restores an archived draft without enabling its public gallery', async () => {
+    const archiveRelPath = await writeArchive('draft-state.zip', {
+      'photos_manifest.json': manifestOf([]),
+    });
+    const eventId = await seedArchivedEvent(archiveRelPath, 'draft-state-event', {
+      is_draft: 1,
+      // Legacy create code left this true even for drafts.
+      is_active: 1,
+    });
+
+    await restore(eventId);
+
+    const restored = await db('events').where({ id: eventId }).first();
+    expect(Boolean(restored.is_archived)).toBe(false);
+    expect(Boolean(restored.is_draft)).toBe(true);
+    expect(Boolean(restored.is_active)).toBe(false);
+  });
 
   const columnByFilename = async (eventId, column) => Object.fromEntries(
     (await db('photos').where('event_id', eventId)).map((p) => [p.filename, p[column]]),

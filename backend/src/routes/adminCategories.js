@@ -111,7 +111,7 @@ router.post('/', adminAuth, requirePermission('settings.edit'), [
       .first();
 
     if (existing) {
-      return res.status(400).json({ error: 'Category with this slug already exists' });
+      return res.status(400).json({ error: 'Category with this slug already exists', code: 'CATEGORY_SLUG_EXISTS' });
     }
 
     // Append to the end of its scope so a new category doesn't jump to the
@@ -196,7 +196,7 @@ router.put('/:id', adminAuth, requirePermission('settings.edit'), [
         if (category.is_global) this.where('is_global', formatBoolean(true));
         else this.where('event_id', category.event_id);
       }).first();
-      if (duplicate) return res.status(400).json({ error: 'Category with this slug already exists' });
+      if (duplicate) return res.status(400).json({ error: 'Category with this slug already exists', code: 'CATEGORY_SLUG_EXISTS' });
       updateData.slug = slug;
     }
 

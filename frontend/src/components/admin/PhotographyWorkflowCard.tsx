@@ -42,6 +42,7 @@ type RequestItem = {
 };
 type Workflow = {
   configured?: boolean;
+  project_archived?: boolean;
   auto_bind_available?: boolean;
   auto_bind_mount_missing?: boolean;
   suggested_raw_subdir?: string | null;
@@ -77,7 +78,7 @@ function translatedWorkflowError(cause: any, t: (key: string, options?: any) => 
   return typeof cause?.response?.data?.error === 'string' ? cause.response.data.error : t(fallbackKey);
 }
 
-export function PhotographyWorkflowCard({ eventId }: { eventId: number }) {
+export function PhotographyWorkflowCard({ eventId, isArchived = false }: { eventId: number; isArchived?: boolean }) {
   const { t } = useTranslation();
   const [workflow, setWorkflow] = useState<Workflow | null>(null);
   const [requests, setRequests] = useState<RequestItem[]>([]);
@@ -138,15 +139,23 @@ export function PhotographyWorkflowCard({ eventId }: { eventId: number }) {
       await refresh();
       if (successKey) {
         const result = response?.data || {};
-        const message = t(successKey, {
-          photos: result.photos_processed ?? 0,
-          errors: result.error_count ?? 0,
-        });
-        if (result.success === false || Number(result.error_count) > 0) {
+        const errorDetails = Array.isArray(result.errors)
+          ? result.errors.filter((entry: unknown): entry is string => typeof entry === 'string' && entry.trim().length > 0)
+          : [];
+        if (result.success !== true || Number(result.error_count) > 0 || result.blocked === true) {
+          const reason = typeof result.error === 'string'
+            ? result.error
+            : errorDetails[0] || t('photographyWorkflow.operationNotCompleted');
+          const message = t('photographyWorkflow.operationFailed', { reason });
           toast.warning(message);
-          if (Array.isArray(result.errors) && result.errors.length > 0) setError(result.errors.slice(0, 3).join('；'));
+          if (typeof result.error === 'string' || errorDetails.length > 0) {
+            setError(typeof result.error === 'string' ? result.error : errorDetails.slice(0, 3).join('；'));
+          }
         } else {
-          toast.success(message);
+          toast.success(t(successKey, {
+            photos: result.photos_processed ?? 0,
+            errors: result.error_count ?? 0,
+          }));
           setError('');
         }
       }
@@ -165,6 +174,9 @@ export function PhotographyWorkflowCard({ eventId }: { eventId: number }) {
     .filter((request) => !['cancelled', 'completed', 'closed'].includes(request.status))
     .map((request) => request.photo_id)), [requests]);
   const stage = workflow?.stage || 'SELECTING';
+  const projectArchived = isArchived || workflow?.project_archived === true;
+  const stageArchived = stage === 'ARCHIVED';
+  const syncBlocked = projectArchived || stageArchived;
   const photoFilterCounts = useMemo(
     () => countWorkflowPhotos(photos, stage, activeRequestPhotoIds),
     [photos, stage, activeRequestPhotoIds],
@@ -191,16 +203,16 @@ export function PhotographyWorkflowCard({ eventId }: { eventId: number }) {
               : t('photographyWorkflow.disconnected')}</p>}
       </div>
       {isBound && <div className="flex flex-wrap items-center gap-2">
-        <select aria-label={t('photographyWorkflow.projectStage')} value={workflow?.stage || 'SELECTING'} disabled={busy} onChange={(event) => void perform(() => api.post(`/admin/photography-workflow/${eventId}/stage`, { stage: event.target.value }))} className="h-9 min-w-[132px] shrink-0 rounded-md border border-neutral-300 bg-white px-3 text-sm leading-none dark:border-neutral-700 dark:bg-neutral-900">
+        <select aria-label={t('photographyWorkflow.projectStage')} value={workflow?.stage || 'SELECTING'} disabled={busy || projectArchived} onChange={(event) => void perform(() => api.post(`/admin/photography-workflow/${eventId}/stage`, { stage: event.target.value }))} className="h-9 min-w-[132px] shrink-0 rounded-md border border-neutral-300 bg-white px-3 text-sm leading-none dark:border-neutral-700 dark:bg-neutral-900">
           {stageValues.map((stage) => <option key={stage} value={stage}>{t(`photographyWorkflow.stage.${stage}`)}</option>)}
         </select>
-        <Button variant="outline" size="sm" disabled={busy} onClick={() => void perform(() => api.post(`/admin/photography-workflow/${eventId}/sync`, {}), 'photographyWorkflow.syncComplete')}>
+        <Button variant="outline" size="sm" disabled={busy || syncBlocked} onClick={() => void perform(() => api.post(`/admin/photography-workflow/${eventId}/sync`, {}), 'photographyWorkflow.syncComplete')}>
           <RefreshCw className="mr-2 h-4 w-4" />{t('photographyWorkflow.syncNow')}
         </Button>
-        <Button variant="outline" size="sm" disabled={busy} onClick={() => void perform(() => api.post(`/admin/photography-workflow/${eventId}/rescan`, {}), 'photographyWorkflow.rescanComplete')}>
+        <Button variant="outline" size="sm" disabled={busy || syncBlocked} onClick={() => void perform(() => api.post(`/admin/photography-workflow/${eventId}/rescan`, {}), 'photographyWorkflow.rescanComplete')}>
           {t('photographyWorkflow.rescan')}
         </Button>
-        {(workflow?.summary?.['异常'] || 0) > 0 && <Button variant="outline" size="sm" disabled={busy} onClick={() => {
+        {(workflow?.summary?.['异常'] || 0) > 0 && <Button variant="outline" size="sm" disabled={busy || syncBlocked} onClick={() => {
           void perform(async () => {
             try {
               const result = await api.post(`/admin/photography-workflow/${eventId}/retry`, { confirm_unknown: false });
@@ -219,6 +231,12 @@ export function PhotographyWorkflowCard({ eventId }: { eventId: number }) {
         }}>{t('photographyWorkflow.retryFailed')}</Button>}
       </div>}
     </div>
+    {projectArchived && <p role="status" className="rounded-md bg-neutral-100 px-3 py-2 text-sm text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
+      {t('photographyWorkflow.archivedReadOnly', '项目已归档；恢复项目后才能同步或修改流程。')}
+    </p>}
+    {!projectArchived && stageArchived && <p role="status" className="rounded-md bg-neutral-100 px-3 py-2 text-sm text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
+      {t('photographyWorkflow.stageArchivedReadOnly', '项目流程已归档，当前不会执行同步或扫描。可将阶段改回后继续处理。')}
+    </p>}
 
     {loading ? <p className="text-sm text-neutral-500">{t('photographyWorkflow.loading')}</p> : null}
     {error && <p role="alert" className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950/40 dark:text-red-300">{error}</p>}
@@ -226,7 +244,7 @@ export function PhotographyWorkflowCard({ eventId }: { eventId: number }) {
       <p className="text-sm text-neutral-600 dark:text-neutral-300">{t('photographyWorkflow.notBound')}</p>
       {workflow.auto_bind_available && <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4 dark:border-emerald-900 dark:bg-emerald-950/30">
         <p className="text-sm text-emerald-950 dark:text-emerald-100">{t('photographyWorkflow.autoMountDescription', { path: workflow.suggested_raw_subdir })}</p>
-        <Button className="mt-3" disabled={busy} onClick={autoBind}>{t('photographyWorkflow.autoMount')}</Button>
+        <Button className="mt-3" disabled={busy || syncBlocked} onClick={autoBind}>{t('photographyWorkflow.autoMount')}</Button>
       </div>}
       {workflow.auto_bind_mount_missing && <p className="rounded-lg bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950/30 dark:text-amber-100">{t('photographyWorkflow.autoMountNotReady', { path: workflow.suggested_raw_subdir })}</p>}
     </div>}

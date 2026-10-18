@@ -42,6 +42,11 @@ export const LegalPage: React.FC = () => {
   // Extract page slug from pathname if not in params (for static routes like /impressum)
   const pathname = window.location.pathname;
   const pageSlug = slug || pathname.split('/').pop() || '';
+  // The gallery-not-found page is an error state, not legal/content navigation.
+  // Rendering the standard legal footer here offered links that send a client
+  // away from a missing gallery and a brand row the photographer intentionally
+  // removed from this surface.
+  const isGalleryNotFound = pageSlug === 'gallery-not-found' || pageSlug === 'not-found';
   
   const { data: settingsData } = usePublicSettings();
 
@@ -159,7 +164,7 @@ export const LegalPage: React.FC = () => {
       </main>
 
       {/* Footer */}
-      <footer className="mt-auto py-8 border-t border-neutral-200">
+      {!isGalleryNotFound && <footer className="mt-auto py-8 border-t border-neutral-200">
         <div className="container text-center">
           <div className="flex justify-center gap-4 text-sm">
             <Link
@@ -179,7 +184,7 @@ export const LegalPage: React.FC = () => {
           <p className="text-sm text-neutral-500 mt-4">
             © {new Date().getFullYear()} {tAudit("ui.copyright")}</p>
         </div>
-      </footer>
+      </footer>}
     </div>
   );
 };

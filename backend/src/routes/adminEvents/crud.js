@@ -174,7 +174,13 @@ module.exports = (router) => {
       });
       res.json(created);
     } catch (error) {
-      if (error.isOperational) return res.status(error.statusCode).json(error.responseBody || { error: error.message, code: error.code });
+      if (error.isOperational) {
+        const responseBody = error.responseBody || { error: error.message, code: error.code };
+        return res.status(error.statusCode).json({
+          ...responseBody,
+          ...(req.id && { requestId: req.id }),
+        });
+      }
       if (isDuplicateSlugError(error)) {
         logger.warn('Event creation lost the slug race', { error: error.message });
         return res.status(409).json(DUPLICATE_SLUG_RESPONSE);

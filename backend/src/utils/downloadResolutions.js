@@ -16,6 +16,7 @@
  */
 
 const { getAppSetting } = require('./appSettings');
+const { parseBooleanInput } = require('./parsers');
 
 const TTL_MS = 5000;
 let cache = null; // { at, val }
@@ -82,8 +83,8 @@ async function getDownloadGlobals() {
 
   const val = {
     standard_resolution: typeof standard === 'string' && standard ? standard : ORIGINAL,
-    picker_enabled: pickerEnabled === true,
-    allow_original: allowOriginal === true,
+    picker_enabled: parseBooleanInput(pickerEnabled, false),
+    allow_original: parseBooleanInput(allowOriginal, false),
     resolutions: normalisePresets(presets),
   };
   cache = { at: now, val };
@@ -98,7 +99,7 @@ function invalidateDownloadGlobals() {
 /** NULL/undefined = inherit the global; an explicit value wins. */
 function inherit(eventValue, globalValue) {
   if (eventValue === null || eventValue === undefined) return globalValue;
-  return eventValue === true || eventValue === 1;
+  return parseBooleanInput(eventValue, false);
 }
 
 /**

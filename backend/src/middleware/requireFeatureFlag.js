@@ -4,7 +4,9 @@
  * Belt-and-braces gate for admin routes whose feature can be toggled in
  * Settings → Features. The frontend hides disabled surfaces, but a direct API
  * hit must still be refused so a disabled feature is never actable. Mirrors the
- * truthy logic feature_flags uses everywhere (true | 1 | '1').
+ * accepted enabled values are shared by the API gate and settings response
+ * (true, 1, '1', 'true', 'yes', 'on'). In particular, strings such as '0'
+ * and 'false' must never become enabled merely because they are non-empty.
  *
  * Cached: several gated endpoints and the dashboard
  * polls several, so a per-request DB read is wasteful. Flags change rarely and
@@ -19,8 +21,14 @@ const { db } = require('../database/db');
 const TTL_MS = 10_000;
 const cache = new Map(); // key -> { enabled, expires }
 
+function flagEnabledFromValue(value) {
+  if (value === true || value === 1) return true;
+  if (typeof value !== 'string') return false;
+  return ['1', 'true', 'yes', 'on'].includes(value.trim().toLowerCase());
+}
+
 function flagEnabledFromRow(row) {
-  return !!(row && (row.value === true || row.value === 1 || row.value === '1'));
+  return !!row && flagEnabledFromValue(row.value);
 }
 
 async function isFeatureEnabled(key) {
@@ -52,4 +60,4 @@ function requireFeatureFlag(key, code) {
   };
 }
 
-module.exports = { requireFeatureFlag, isFeatureEnabled, invalidateFeatureFlagCache };
+module.exports = { requireFeatureFlag, isFeatureEnabled, invalidateFeatureFlagCache, flagEnabledFromValue };

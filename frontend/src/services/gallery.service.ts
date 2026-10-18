@@ -223,27 +223,21 @@ export const galleryService = {
     return response.data;
   },
 
-  // Save single photo. iOS routes through the Web Share API so the
-  // share sheet's "Save Image" action lands the file in Photos.
-  // Everywhere else (Android, desktop) navigates a hidden anchor
-  // straight at the download URL — the browser's native download UI
-  // shows up immediately and its progress lives in the notification
-  // shade. Buffering the blob through fetch first (the original
-  // path) added ~5s of dead air on cellular before any visible
-  // feedback, prompting users to re-click and produce duplicate
-  // downloads (#554 follow-up). Direct navigation eliminates the
-  // latency outright rather than masking it with a spinner.
-  async savePhotoToDevice(slug: string, photoId: number, filename: string): Promise<void> {
+  // Save a single photo through the authenticated API client before handing
+  // it to the browser. Gallery passwords produce a bearer token kept in
+  // sessionStorage and attached by the Axios interceptor; a native anchor
+  // navigation cannot carry that Authorization header, so protected galleries
+  // silently fail (or fall through to the tile's preview click). The small
+  // buffering cost is preferable to a download control that does nothing.
+  // iOS still gets the native Save-to-Photos share sheet when supported.
+  async savePhotoToDevice(slug: string, photoId: number, filename: string, resolution?: string): Promise<void> {
+    const fetched = await this.fetchPhotoBlob(slug, photoId, resolution);
+    const resolvedFilename = fetched.serverFilename || filename;
+
     if (!isIOS()) {
-      this.triggerDirectDownload(
-        withAdminPreview(api.getUri({ url: `/gallery/${slug}/download/${photoId}` })),
-        filename,
-      );
+      this.triggerBrowserDownload(fetched.blob, resolvedFilename);
       return;
     }
-
-    const fetched = await this.fetchPhotoBlob(slug, photoId);
-    const resolvedFilename = fetched.serverFilename || filename;
 
     // canShare() returns false on browsers without Web Share file
     // support. Probe with a representative File so the negotiation
@@ -282,6 +276,7 @@ export const galleryService = {
   async fetchPhotoBlob(
     slug: string,
     photoId: number,
+    resolution?: string,
   ): Promise<{ blob: Blob; serverFilename: string | null }> {
     const readResponse = (response: AxiosResponse<Blob>) => {
       const headerName =
@@ -295,6 +290,7 @@ export const galleryService = {
     try {
       const response = await api.get<Blob>(`/gallery/${slug}/download/${photoId}`, {
         responseType: 'blob',
+        ...(resolution ? { params: { resolution } } : {}),
       });
       return readResponse(response);
     } catch (error) {
@@ -307,6 +303,7 @@ export const galleryService = {
       // so serverFilename will be null and the caller's name wins.
       const response = await api.get<Blob>(`/gallery/${slug}/photo/${photoId}`, {
         responseType: 'blob',
+        ...(resolution ? { params: { resolution } } : {}),
       });
       return readResponse(response);
     }
@@ -335,18 +332,18 @@ export const galleryService = {
   triggerDirectDownload(href: string, filename: string): void {
     const link = document.createElement('a');
     link.href = href;
-    link.setAttribute('download', filename);
+    // An empty download attribute falls back to the URL path instead of the
+    // server's RFC 6266 filename. Omit it to honor Content-Disposition.
+    if (filename) link.setAttribute('download', filename);
     document.body.appendChild(link);
     link.click();
     link.remove();
   },
 
-  // Download single photo — kept as the canonical name for the existing
-  // grid + lightbox-action callers that haven't been migrated to the
-  // share-aware savePhotoToDevice path yet.
-  async downloadPhoto(slug: string, photoId: number, filename: string): Promise<void> {
-    const fetched = await this.fetchPhotoBlob(slug, photoId);
-    this.triggerBrowserDownload(fetched.blob, fetched.serverFilename || filename);
+  // Retain one download contract for grid cards and the lightbox, including
+  // bearer/guest headers, filename resolution, and mobile Save-to-Photos.
+  async downloadPhoto(slug: string, photoId: number, _filename: string, resolution?: string): Promise<void> {
+    await this.savePhotoToDevice(slug, photoId, _filename, resolution);
   },
 
   // Download all photos as ZIP
@@ -384,19 +381,25 @@ export const galleryService = {
   // single click, sometimes saving the first response more than once. For a
   // multi-file selection, present one explicit link per photo so the user can
   // authorize each same-origin download reliably on desktop and mobile.
-  async downloadSelectedPhotos(slug: string, photoIds: number[], resolution?: string): Promise<void> {
+  async downloadSelectedPhotos(
+    slug: string,
+    photoIds: number[],
+    resolution?: string,
+    filenames?: Record<number, string>,
+  ): Promise<void> {
     const uniqueIds = [...new Set(photoIds)];
     if (uniqueIds.length > 1) {
-      const query = resolution ? `?resolution=${encodeURIComponent(resolution)}` : '';
       window.dispatchEvent(new CustomEvent(DOWNLOAD_QUEUE_EVENT, { detail: uniqueIds.map(photoId => ({
-        photoId, href: withAdminPreview(`/api/gallery/${slug}/download/${photoId}${query}`),
+        slug,
+        photoId,
+        ...(filenames?.[photoId] ? { filename: filenames[photoId] } : {}),
+        ...(resolution ? { resolution } : {}),
       })) }));
       return;
     }
-    for (const photoId of uniqueIds) {
-      const query = resolution ? `?resolution=${encodeURIComponent(resolution)}` : '';
-      const href = withAdminPreview(`/api/gallery/${slug}/download/${photoId}${query}`);
-      this.triggerDirectDownload(href, `photo-${photoId}`);
+    if (uniqueIds.length === 1) {
+      const photoId = uniqueIds[0];
+      await this.savePhotoToDevice(slug, photoId, filenames?.[photoId] || `photo-${photoId}`, resolution);
     }
   },
 

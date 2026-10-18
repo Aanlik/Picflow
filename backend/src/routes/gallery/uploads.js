@@ -44,6 +44,7 @@ router.post('/:slug/upload', verifyGalleryAccess, denySlideshowToken, async (req
 
     // Import multer and photo processing
     const multer = require('multer');
+    const { normalizeMultipartFilename } = require('../../utils/normalizeMultipartFilename');
     const { getAllowedMimeTypes, getMaxFilesPerUpload, getMaxFileSizeBytes, DEFAULT_MAX_FILE_SIZE_MB } = require('../../services/uploadSettings');
     const { validateFileType, normalizeUploadMimeType } = require('../../utils/fileSecurityUtils');
 
@@ -102,6 +103,7 @@ router.post('/:slug/upload', verifyGalleryAccess, denySlideshowToken, async (req
       fileFilter: (req, file, cb) => {
         // Assigned, not just compared: multer copies this object into
         // req.files, so processing stores the canonical type.
+        file.originalname = normalizeMultipartFilename(file.originalname);
         file.mimetype = normalizeUploadMimeType(file.originalname, file.mimetype);
         if (validateFileType(file.originalname, file.mimetype, allowedMimeTypes)) {
           cb(null, true);

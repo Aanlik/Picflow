@@ -65,9 +65,12 @@ export const GuestInviteDialog: React.FC<GuestInviteDialogProps> = ({ eventId, o
           <button
             type="button"
             onClick={onClose}
+            aria-label={t('common.close', 'Close')}
+            title={t('common.close', 'Close')}
             className="p-1 text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100"
           >
             <X className="w-5 h-5" />
+            <span className="sr-only">{t('common.close', 'Close')}</span>
           </button>
         </div>
 
@@ -119,7 +122,9 @@ export const GuestInviteDialog: React.FC<GuestInviteDialogProps> = ({ eventId, o
                     <div className="flex items-start justify-between gap-2">
                       <div className="flex-1 min-w-0">
                         <div className="font-medium text-sm text-neutral-900 dark:text-neutral-100">
-                          {invite.guest.name}
+                          {String(invite.guest?.name || '').trim().toLowerCase() === 'removed'
+                            ? t('admin.guests.removedGuest', '已移除客户')
+                            : invite.guest?.name || t('admin.guests.removedGuest', '已移除客户')}
                         </div>
                         <div className="text-xs mt-1">
                           <span
@@ -131,7 +136,7 @@ export const GuestInviteDialog: React.FC<GuestInviteDialogProps> = ({ eventId, o
                                 : 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400'
                             }`}
                           >
-                            {t(`admin.guests.inviteStatus.${invite.status}`, invite.status)}
+                            {t(`admin.guests.inviteStatus.${String(invite.status).toLowerCase()}`, invite.status)}
                           </span>
                         </div>
                         <div className="text-xs text-neutral-500 dark:text-neutral-400 truncate mt-1 font-mono">

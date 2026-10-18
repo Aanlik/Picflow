@@ -525,7 +525,15 @@ router.put('/downloads', adminAuth, requirePermission('settings.edit'), async (r
 // ──────────────────────────────────────────────────────────────────────────
 // Get settings by type
 // ──────────────────────────────────────────────────────────────────────────
-router.get('/:type', adminAuth, requirePermission('settings.view'), async (req, res) => {
+router.get('/:type', adminAuth, (req, res, next) => {
+  // Branding's read-only permission is intentionally narrower than settings.view.
+  // The settings page used to expose the Branding tab for branding.view while
+  // this generic read route denied it, producing an endless/failed page load.
+  const permissions = ['branding', 'theme'].includes(req.params.type)
+    ? ['settings.view', 'branding.view']
+    : ['settings.view'];
+  return requirePermission(permissions)(req, res, next);
+}, async (req, res) => {
   try {
     const { type } = req.params;
     const settings = await db('app_settings')

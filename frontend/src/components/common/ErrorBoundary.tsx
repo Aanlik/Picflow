@@ -81,9 +81,16 @@ export class PageErrorBoundary extends Component<Props, State> {
   }
 
   componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
-    if (process.env.NODE_ENV === 'development') {
-      console.error('Page error:', error, errorInfo);
-    }
+    // Production previously hid the render exception behind the generic
+    // error page, leaving no way to distinguish a stale deployment from a
+    // page-specific data-shape crash. Keep details out of the UI/API, but
+    // preserve a local diagnostic in the browser console for support.
+    console.error('[Picflow] Unhandled page render error', {
+      name: error.name,
+      message: error.message,
+      stack: error.stack,
+      componentStack: errorInfo.componentStack,
+    });
   }
 
   handleReset = () => {

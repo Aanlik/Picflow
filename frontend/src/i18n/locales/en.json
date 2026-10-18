@@ -69,6 +69,7 @@
     "menu": "Menu",
     "deleted": "Deleted.",
     "actions": "Actions",
+    "processing": "Processing…",
     "copyFailed": "Could not copy to clipboard",
     "searching": "Searching…",
     "language": "Language"
@@ -171,6 +172,8 @@
     "create": "Create transfer",
     "created": "Transfer created",
     "createFailed": "Could not create transfer",
+    "loadFailed": "Could not load the transfer list.",
+    "loadDetailFailed": "Could not load this transfer.",
     "empty": "No transfers yet. Create one to share files.",
     "untitled": "Untitled transfer",
     "linkCopied": "Link copied to clipboard",
@@ -303,7 +306,7 @@
     "page": "Page {{current}} of {{total}}",
     "storageManagement": "Storage Management",
     "storageInfo": "Archives are stored permanently unless manually deleted. Consider implementing a retention policy to manage storage costs.",
-    "confirmRestore": "Are you sure you want to restore this archive? The event will become active again.",
+    "confirmRestore": "Restore this project from the archive? Its saved draft or active state will be preserved.",
     "confirmDelete": "Are you sure you want to permanently delete this archive? This action cannot be undone.",
     "restoreSuccess": "Archive restored successfully",
     "deleteSuccess": "Archive deleted permanently",
@@ -488,6 +491,9 @@
     "videoFormatUnsupported": "This video format cannot be played in this browser. Download it to watch it.",
     "videoLoadFailed": "This video could not be loaded.",
     "batchSelect": "Select multiple photos",
+    "batchActions": "Batch actions",
+    "selectPhotoForBatch": "Select this photo",
+    "deselectPhotoForBatch": "Deselect this photo",
     "selectPhoto": "Select {{filename}}",
     "sortLabelDate": "date",
     "sortLabelName": "name",
@@ -519,6 +525,7 @@
     "failedToDeleteCategory": "Failed to delete category",
     "categoryName": "Category name",
     "slug": "Category ID (English letters or numbers)",
+    "slugAlreadyExists": "This category identifier is already in use. Choose another one.",
     "noCategoriesYet": "No categories yet. Create your first category to organize photos.",
     "deleteConfirm": "Are you sure you want to delete \"{{name}}\"?",
     "setCoverPhoto": "Set Cover Photo",
@@ -1452,6 +1459,10 @@
       "running": "Checking orientation...",
       "resultSuccess": "Last run: {{checked}} checked, {{corrected}} corrected, {{failed}} errors",
       "staleTiers": "{{count}} cached size(s) could not be deleted and will keep serving the old orientation — re-run once storage is writable.",
+      "failedPhotosTitle": "Photos that could not be repaired",
+      "failedPhoto": "{{filename}}: {{reason}}",
+      "moreFailedPhotos_one": "{{count}} more failure not shown",
+      "moreFailedPhotos_other": "{{count}} more failures not shown",
       "staleTiers_one": "{{count}} cached size(s) could not be deleted and will keep serving the old orientation — re-run once storage is writable.",
       "staleTiers_other": "{{count}} cached size(s) could not be deleted and will keep serving the old orientation — re-run once storage is writable."
     },
@@ -1461,6 +1472,8 @@
   "branding": {
     "title": "Branding & Themes",
     "subtitle": "Customize the look and feel of your galleries",
+    "loadFailed": "Branding settings are temporarily unavailable",
+    "loadFailedHelp": "Brand or theme data could not be loaded. Retry; defaults will not be saved while the data is missing.",
     "loadingBranding": "Loading branding settings...",
     "themeAndStyle": "Theme & Style",
     "companyInfo": "Company Information",
@@ -2000,6 +2013,7 @@
       "noInvites": "No invites yet",
       "copyLink": "Copy link",
       "revokeInvite": "Revoke",
+      "removedGuest": "Removed guest",
       "deletedToast": "Guest removed",
       "deletedError": "Failed to remove guest",
       "mergedToast": "Guests merged",
@@ -2177,6 +2191,7 @@
     "errorDetails": "Error Details",
     "requiredFields": "Please fill in all required fields",
     "eventCreationFailed": "Failed to create event",
+    "eventCreationFailedWithRequestId": "Failed to create event (request ID: {{requestId}})",
     "noShareLink": "No share link available",
     "copyFailed": "Failed to copy link"
   },
@@ -2217,6 +2232,8 @@
   "cms": {
     "title": "CMS Pages",
     "subtitle": "Manage legal and informational pages",
+    "loadFailed": "CMS pages are temporarily unavailable",
+    "loadFailedHelp": "Page content or site settings could not be loaded. Retry and confirm the data is visible before saving.",
     "loadingPages": "Loading pages...",
     "pages": "Pages",
     "previewLinks": "Preview Links",
@@ -2326,6 +2343,8 @@
     }
   },
   "backup": {
+    "loadFailed": "Backup status could not be loaded",
+    "loadFailedHelp": "Backup status or configuration is temporarily unavailable. Retry before making changes.",
     "picpeak": {
       "restoreIntro": "Upload a .picpeak taken from this or another instance. Restoring a SQLite backup onto a PostgreSQL instance is supported (the upgrade path); other engine combinations must match.",
       "crossEngineNote": "Cross-engine restore: a SQLite backup was converted onto this PostgreSQL instance.",
@@ -3659,6 +3678,10 @@
     "rescan": "Rescan folders",
     "syncComplete": "Sync checked {{photos}} photos; {{errors}} issue(s) need attention.",
     "rescanComplete": "Folder scan checked {{photos}} photos; {{errors}} issue(s) need attention.",
+    "operationFailed": "Operation not completed: {{reason}}",
+    "operationNotCompleted": "The sync service did not confirm completion. Check the service status and try again.",
+    "stageArchivedReadOnly": "This project workflow is archived, so sync and scans are paused. Change the stage to continue processing.",
+    "archivedReadOnly": "This project is archived. Restore it before syncing or changing its workflow.",
     "retryFailed": "Retry failed tasks",
     "retryQueued": "Requeued {{count}} task(s)",
     "retryQueued_one": "Requeued {{count}} task",
@@ -3848,6 +3871,8 @@
     "title": "Download selected photos",
     "instructions": "Select each file to start its download. Your browser may ask for confirmation. Files keep their original names; no ZIP is created.",
     "file": "Photo {{number}}",
-    "opened": "Download requested"
+    "opened": "Download started",
+    "downloading": "Preparing file",
+    "failed": "Download failed. Select to retry."
   }
 }

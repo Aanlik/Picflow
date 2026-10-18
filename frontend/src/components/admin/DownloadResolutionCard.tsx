@@ -23,6 +23,7 @@ import { Button, Card, Loading } from '../common';
 import { api } from '../../config/api';
 import type { DownloadResolutionChoice } from '../../types';
 import { downloadResolutionLabel } from '../../utils/downloadResolutionLabel';
+import { parseBooleanInput } from '../../utils/parsers';
 
 const INHERIT = '__inherit__';
 const ORIGINAL = 'original';
@@ -35,14 +36,14 @@ interface Payload {
   };
   globals: {
     standard_resolution: string;
-    picker_enabled: boolean;
-    allow_original: boolean;
+    picker_enabled: boolean | number | string;
+    allow_original: boolean | number | string;
     resolutions: DownloadResolutionChoice[];
   };
   effective: {
     standard: string;
-    picker_enabled: boolean;
-    allow_original: boolean;
+    picker_enabled: boolean | number | string;
+    allow_original: boolean | number | string;
     choices: DownloadResolutionChoice[];
   };
 }
@@ -53,8 +54,12 @@ export interface DownloadResolutionCardProps {
 }
 
 /** null → "Inherit"; true/false → explicit. */
-const triToSelect = (v: boolean | null | undefined) =>
-  (v === null || v === undefined ? INHERIT : String(v));
+const triToSelect = (v: boolean | number | string | null | undefined) => {
+  if (v === null || v === undefined || v === '') return INHERIT;
+  if (v === true || v === 1 || v === '1' || v === 'true') return 'true';
+  if (v === false || v === 0 || v === '0' || v === 'false') return 'false';
+  return INHERIT;
+};
 const selectToTri = (v: string) => (v === INHERIT ? null : v === 'true');
 
 export const DownloadResolutionCard: React.FC<DownloadResolutionCardProps> = ({ eventId, onChanged }) => {
@@ -153,7 +158,7 @@ export const DownloadResolutionCard: React.FC<DownloadResolutionCardProps> = ({ 
           <select className={selectClass} value={picker} onChange={(e) => setPicker(e.target.value)}>
             <option value={INHERIT}>
               {t('settings.downloads.inheritWith', 'Inherit ({{value}})', {
-                value: data.globals.picker_enabled ? t('common.on', 'on') : t('common.off', 'off'),
+                value: parseBooleanInput(data.globals.picker_enabled, false) ? t('common.on', 'on') : t('common.off', 'off'),
               })}
             </option>
             <option value="true">{t('common.on', 'on')}</option>
@@ -172,7 +177,7 @@ export const DownloadResolutionCard: React.FC<DownloadResolutionCardProps> = ({ 
           >
             <option value={INHERIT}>
               {t('settings.downloads.inheritWith', 'Inherit ({{value}})', {
-                value: data.globals.allow_original ? t('common.on', 'on') : t('common.off', 'off'),
+                value: parseBooleanInput(data.globals.allow_original, false) ? t('common.on', 'on') : t('common.off', 'off'),
               })}
             </option>
             <option value="true">{t('common.on', 'on')}</option>
@@ -186,7 +191,7 @@ export const DownloadResolutionCard: React.FC<DownloadResolutionCardProps> = ({ 
         {t('settings.downloads.effective', 'Currently hands out: {{standard}}', {
           standard: effectiveStandardLabel,
         })}
-        {data.effective.picker_enabled
+        {parseBooleanInput(data.effective.picker_enabled, false)
           ? ` · ${t('settings.downloads.pickerOn', 'guests may choose another size')}`
           : ''}
       </p>

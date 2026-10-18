@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Save, Eye, Palette, Upload } from 'lucide-react';
+import { Save, Eye, Palette, Upload, AlertCircle, RefreshCw } from 'lucide-react';
 import { toast } from 'react-toastify';
 import { Button, Card, Input, ErrorBoundary, Loading, MarkdownContent } from '../../components/common';
 import { ThemeCustomizerEnhanced, GalleryPreview } from '../../components/admin';
@@ -52,13 +52,13 @@ export const BrandingPage: React.FC = () => {
   const faviconInputRef = useRef<HTMLInputElement>(null);
 
   // Fetch current settings
-  const { data: settings, isLoading } = useQuery({
+  const { data: settings, isLoading, isError: settingsError, refetch: refetchSettings } = useQuery({
     queryKey: ['admin-settings', 'branding'],
     queryFn: () => settingsService.getSettingsByType('branding'),
   });
 
   // Fetch theme settings
-  const { data: themeSettings } = useQuery({
+  const { data: themeSettings, isLoading: isThemeLoading, isError: themeError, refetch: refetchTheme } = useQuery({
     queryKey: ['admin-settings', 'theme'],
     queryFn: () => settingsService.getSettingsByType('theme'),
   });
@@ -329,11 +329,37 @@ export const BrandingPage: React.FC = () => {
     }
   };
 
-  if (isLoading) {
+  if (isLoading || isThemeLoading) {
     return (
       <div className="flex items-center justify-center min-h-[400px]">
         <Loading size="lg" text={t('branding.loadingBranding')} />
       </div>
+    );
+  }
+
+  if (settingsError || themeError) {
+    return (
+      <Card className="p-6">
+        <div className="flex items-start gap-3">
+          <AlertCircle className="mt-0.5 h-5 w-5 text-red-600 dark:text-red-400" />
+          <div>
+            <h1 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">
+              {t('branding.loadFailed', '品牌设置暂时无法加载')}
+            </h1>
+            <p className="mt-1 text-sm text-neutral-600 dark:text-neutral-400">
+              {t('branding.loadFailedHelp', '品牌或主题数据读取失败。请重试；未加载完成时不会保存默认值。')}
+            </p>
+            <Button
+              className="mt-4"
+              variant="outline"
+              leftIcon={<RefreshCw className="h-4 w-4" />}
+              onClick={() => { void refetchSettings(); void refetchTheme(); }}
+            >
+              {t('common.retry', '重试')}
+            </Button>
+          </div>
+        </div>
+      </Card>
     );
   }
 

@@ -88,7 +88,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
     <div className="grid grid-cols-1 items-start gap-6 xl:grid-cols-2">
       {/* Keep the workflow visible first, with room for its progress table and requests. */}
       <div className="xl:col-span-2">
-        <PhotographyWorkflowCard eventId={event.id} />
+        <PhotographyWorkflowCard eventId={event.id} isArchived={event.is_archived} />
       </div>
 
       {/* Project information and sharing tools. */}

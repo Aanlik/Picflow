@@ -272,7 +272,9 @@ export const PhotoCard: React.FC<PhotoCardProps> = ({
     isSelected || isSelectionMode || overlayVisible,
   );
 
-  const buttonType = actionVariant === 'dark' ? ('button' as const) : undefined;
+  // These controls can appear in custom themed layouts that wrap a tile in a
+  // form. Never let an icon action inherit the browser's implicit submit type.
+  const buttonType = 'button' as const;
   const actionButtonClass =
     actionVariant === 'dark'
       ? 'p-2 bg-white/20 hover:bg-white/40 rounded-full transition-colors'
@@ -484,11 +486,12 @@ export const PhotoCard: React.FC<PhotoCardProps> = ({
                 >
                   <Maximize2 className={actionIconClass} />
                 </button>
-                {allowDownloads && (
+                {!isTouchDevice && allowDownloads && photo.category_allow_downloads !== false && (
                   <button
                     type={buttonType}
                     className={actionButtonClass}
                     onClick={(e) => {
+                      e.preventDefault();
                       e.stopPropagation();
                       onDownload(e);
                       hideOverlay();
@@ -502,6 +505,26 @@ export const PhotoCard: React.FC<PhotoCardProps> = ({
               </>
             )}
           </div>
+
+          {/* On touch screens, an overlay that only appears after tapping the
+              photo makes the first tap feel like a broken download control
+              (and can open the lightbox on hybrid browsers). Keep the card's
+              download action visible and independently tappable instead. */}
+          {isTouchDevice && allowDownloads && photo.category_allow_downloads !== false && !isSelectionMode && (
+            <button
+              type="button"
+              className="absolute bottom-2 right-2 z-20 inline-flex h-9 w-9 items-center justify-center rounded-full border border-white/70 bg-white/95 text-neutral-900 shadow-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                onDownload(event);
+              }}
+              aria-label={tAudit('ui.downloadPhoto')}
+              title={tAudit('ui.downloadPhoto')}
+            >
+              <Download className="h-4 w-4" aria-hidden="true" />
+            </button>
+          )}
 
           {/* Identity Modal (self-managed mode) */}
           {identityMode === 'self' && (

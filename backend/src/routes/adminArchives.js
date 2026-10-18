@@ -5,6 +5,7 @@ const { db } = require('../database/db');
 const { buildContentDisposition } = require('../utils/filenameSanitizer');
 const { deleteWithHistory } = require('../services/changeHistory');
 const { formatBoolean } = require('../utils/dbCompat');
+const { parseBooleanInput } = require('../utils/parsers');
 const { slugify } = require('../utils/slug');
 const { adminAuth } = require('../middleware/auth');
 const { requirePermission } = require('../middleware/permissions');
@@ -631,7 +632,13 @@ router.post('/:id/restore', adminAuth, requirePermission('archives.restore'), re
       .where('id', req.params.id)
       .update({
         is_archived: false,
-        is_active: true,
+        // Never publish a draft while restoring it. Older create code left
+        // is_active=true on drafts, so normalise that legacy combination;
+        // otherwise preserve the exact active/inactive state of published
+        // projects.
+        is_active: parseBooleanInput(archive.is_draft, false)
+          ? formatBoolean(false)
+          : archive.is_active,
         archive_path: null,
         // Cleared with the path it measures — a restored event has no zip, and
         // a stale size would be re-shown verbatim if it is archived again

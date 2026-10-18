@@ -15,6 +15,9 @@ interface StoryCarouselProps {
   id: string;
   allowDownloads?: boolean;
   useEnhancedProtection?: boolean;
+  isSelectionMode?: boolean;
+  selectedPhotos?: Set<number>;
+  onPhotoSelect?: (photoId: number) => void;
 }
 
 export const StoryCarousel: React.FC<StoryCarouselProps> = ({
@@ -26,6 +29,9 @@ export const StoryCarousel: React.FC<StoryCarouselProps> = ({
   id,
   allowDownloads = true,
   useEnhancedProtection = false,
+  isSelectionMode = false,
+  selectedPhotos = new Set(),
+  onPhotoSelect,
 }) => {
   return (
     <div id={id} className="story-carousel">
@@ -46,6 +52,9 @@ export const StoryCarousel: React.FC<StoryCarouselProps> = ({
                 isFavorite={favorites.has(photo.id)}
                 onToggleFavorite={onToggleFavorite}
                 onClick={() => onPhotoClick(photo)}
+                isSelectionMode={isSelectionMode}
+                isSelected={selectedPhotos.has(photo.id)}
+                onToggleSelect={onPhotoSelect}
                 slug={slug}
                 galleryId={id}
                 allowDownloads={allowDownloads}

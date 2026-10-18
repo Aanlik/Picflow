@@ -9,6 +9,7 @@ import { useDownloadPhoto } from '../../hooks/useGallery';
 import { PhotoLightbox } from './PhotoLightbox';
 import { Button, AuthenticatedImage } from '../common';
 import { galleryService } from '../../services/gallery.service';
+import { getPhotoDownloadFilenames } from './downloadSelection';
 
 interface PhotoGridProps {
   photos: Photo[];
@@ -103,7 +104,7 @@ export const PhotoGrid: React.FC<PhotoGridProps> = ({
     toastify.info(t('gallery.downloadStarted', { photoCount: ids.length }));
 
     try {
-      await galleryService.downloadSelectedPhotos(slug, ids);
+      await galleryService.downloadSelectedPhotos(slug, ids, undefined, getPhotoDownloadFilenames(photos, ids));
     } catch {
       toastify.error(t('gallery.downloadError'));
     } finally {

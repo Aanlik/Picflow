@@ -5,6 +5,7 @@ export interface Notification {
   id: number;
   type: string;
   actorType: string;
+  actorId?: number | null;
   actorName: string | null;
   eventName?: string;
   eventId?: number;

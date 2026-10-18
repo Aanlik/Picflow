@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'react-toastify';
-import { FileText, Globe, Clock, Sparkles, ShieldCheck, Image as ImageIcon, Trash2 } from 'lucide-react';
+import { FileText, Globe, Clock, Sparkles, ShieldCheck, Image as ImageIcon, Trash2, AlertCircle, RefreshCw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { debounce } from 'lodash';
 import DOMPurify from 'dompurify';
@@ -14,6 +14,12 @@ import { settingsService, PublicSiteBranding } from '../../services/settings.ser
 import { buildResourceUrl } from '../../utils/url';
 import { useLocalizedDate } from '../../hooks/useLocalizedDate';
 import { useMutationWithToast } from '../../hooks';
+import { parseBooleanInput } from '../../utils/parsers';
+import { resolvePublicSitePreviewColors } from './publicSitePreview';
+
+// SQLite and older settings endpoints may return booleans as 0/1 or "0"/"1".
+// Boolean("0") is true, which incorrectly enables the public-site editor.
+export const parsePublicSiteEnabled = (value: unknown): boolean => parseBooleanInput(value, false);
 
 export const CMSPage: React.FC = () => {
   const { t: tAudit } = useTranslation();
@@ -33,20 +39,24 @@ export const CMSPage: React.FC = () => {
   const [publicSiteBranding, setPublicSiteBranding] = useState<PublicSiteBranding | undefined>(undefined);
 
   // Fetch CMS pages
-  const { data: pages, isLoading } = useQuery({
+  const { data: pages, isLoading, isError: pagesError, refetch: refetchPages } = useQuery({
     queryKey: ['cms-pages'],
     queryFn: cmsService.getPages,
   });
 
-  const { data: adminSettings, isLoading: isLoadingAdminSettings } = useQuery({
+  const { data: adminSettings, isLoading: isLoadingAdminSettings, isError: settingsError, refetch: refetchSettings } = useQuery({
     queryKey: ['admin-settings'],
     queryFn: () => settingsService.getAllSettings(),
   });
 
-  const { data: publicSiteDefaults, isLoading: isLoadingPublicDefaults } = useQuery({
+  const { data: publicSiteDefaults, isLoading: isLoadingPublicDefaults, isError: defaultsError, refetch: refetchPublicDefaults } = useQuery({
     queryKey: ['public-site-defaults'],
     queryFn: () => settingsService.getPublicSiteDefaults(),
   });
+
+  // A stale/partial API response should never crash this page or be mistaken
+  // for an empty CMS. Guard the list shape before any effect or render reads it.
+  const pageList = Array.isArray(pages) ? pages : [];
 
   // Update page mutation
   const updateMutation = useMutation({
@@ -142,7 +152,7 @@ export const CMSPage: React.FC = () => {
       return;
     }
 
-    setPublicSiteEnabled(Boolean(adminSettings.general_public_site_enabled));
+    setPublicSiteEnabled(parsePublicSiteEnabled(adminSettings.general_public_site_enabled));
     setPublicSiteHtml((adminSettings.general_public_site_html as string) || '');
     setPublicSiteCss((adminSettings.general_public_site_custom_css as string) || '');
   }, [adminSettings]);
@@ -160,13 +170,13 @@ export const CMSPage: React.FC = () => {
   // Load page data when selection changes
   React.useEffect(() => {
     if (pages) {
-      const page = pages.find(p => p.slug === selectedPage);
+      const page = pageList.find(p => p.slug === selectedPage);
       if (page) {
         setEditForm(page);
         setHasUnsavedChanges(false);
       }
     }
-  }, [pages, selectedPage]);
+  }, [pageList, selectedPage]);
 
   const handleSave = () => {
     autoSave.cancel(); // Cancel any pending auto-save
@@ -248,7 +258,7 @@ export const CMSPage: React.FC = () => {
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, [hasUnsavedChanges]);
 
-  const currentPage = pages?.find(p => p.slug === selectedPage);
+  const currentPage = pageList.find(p => p.slug === selectedPage);
   const publicSiteSanitizedHtml = useMemo(() => DOMPurify.sanitize(publicSiteHtml || '', {
     ALLOWED_TAGS: [
       'a', 'article', 'aside', 'blockquote', 'br', 'button', 'caption', 'div', 'em',
@@ -307,9 +317,13 @@ export const CMSPage: React.FC = () => {
   const publicSitePreview = useMemo(() => {
     const previewLanguage = i18n.resolvedLanguage || i18n.language || 'en';
     const branding = publicSiteBranding || publicSiteDefaults?.branding;
+    // Legacy/partial settings may contain a branding object without its
+    // palette. Directly reading branding.colors.primary made CMS render throw
+    // and the whole page fall into the generic error screen.
+    const colors = resolvePublicSitePreviewColors(branding);
     const substitutedHtml = applyBrandTokens(publicSiteSanitizedHtml, branding);
     const inlineStyles = [
-      branding ? `:root {\n  --brand-primary: ${branding.colors.primary};\n  --brand-accent: ${branding.colors.accent};\n  --brand-background: ${branding.colors.background};\n  --brand-text: ${branding.colors.text};\n  --brand-surface: ${branding.colors.surface || '#ffffff'};\n  --brand-elevated: ${branding.colors.elevated || '#f5f5f5'};\n  --brand-border: ${branding.colors.border || '#e5e5e5'};\n  --brand-muted-text: ${branding.colors.mutedText || '#737373'};\n}` : '',
+      branding ? `:root {\n  --brand-primary: ${colors.primary};\n  --brand-accent: ${colors.accent};\n  --brand-background: ${colors.background};\n  --brand-text: ${colors.text};\n  --brand-surface: ${colors.surface};\n  --brand-elevated: ${colors.elevated};\n  --brand-border: ${colors.border};\n  --brand-muted-text: ${colors.mutedText};\n}` : '',
       publicSiteBaseCss,
       publicSiteSanitizedCss ? `/* Custom styles */\n${publicSiteSanitizedCss}` : ''
     ].filter(Boolean).join('\n\n');
@@ -371,6 +385,32 @@ export const CMSPage: React.FC = () => {
       <div className="flex items-center justify-center min-h-[400px]">
         <Loading size="lg" text={t('cms.loadingPages')} />
       </div>
+    );
+  }
+
+  if (pagesError || settingsError || defaultsError) {
+    return (
+      <Card className="p-6">
+        <div className="flex items-start gap-3">
+          <AlertCircle className="mt-0.5 h-5 w-5 text-red-600 dark:text-red-400" />
+          <div>
+            <h1 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">
+              {t('cms.loadFailed', '内容页面暂时无法加载')}
+            </h1>
+            <p className="mt-1 text-sm text-neutral-600 dark:text-neutral-400">
+              {t('cms.loadFailedHelp', '页面内容或站点设置读取失败。请重试；保存内容前请确认数据已加载。')}
+            </p>
+            <Button
+              className="mt-4"
+              variant="outline"
+              leftIcon={<RefreshCw className="h-4 w-4" />}
+              onClick={() => { void refetchPages(); void refetchSettings(); void refetchPublicDefaults(); }}
+            >
+              {t('common.retry', '重试')}
+            </Button>
+          </div>
+        </div>
+      </Card>
     );
   }
 
@@ -516,7 +556,7 @@ export const CMSPage: React.FC = () => {
           <Card padding="md">
             <h2 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100 mb-4">{t('cms.pages')}</h2>
             <div className="space-y-2">
-              {pages?.map((page) => (
+              {pageList.map((page) => (
                 <button
                   key={page.slug}
                   onClick={() => {

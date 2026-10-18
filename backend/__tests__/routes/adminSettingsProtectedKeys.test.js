@@ -31,7 +31,7 @@ const STORED_URL = 'https://stored.example';
 
 describe('settings protected-key boundary (/general)', () => {
   let db; let cleanup; let app;
-  let superTok; let mgrTok;
+  let superTok; let mgrTok; let brandingViewTok;
 
   const auth = (req, tok) => req.set('Authorization', `Bearer ${tok}`);
   const readSiteUrl = async () => {
@@ -54,11 +54,20 @@ describe('settings protected-key boundary (/general)', () => {
       { name: 'office_mgr', permissions: ['settings.view', 'settings.edit'] },
       superId,
     );
+    const brandingRole = await svc.createRole(
+      { name: 'branding_viewer', permissions: ['branding.view'] },
+      superId,
+    );
     const ins = await db('admin_users').insert({
       username: 'office', email: 'office@example.com', password_hash: 'x',
       role_id: mgrRole.id, must_change_password: false, created_at: new Date(),
     }).returning('id');
     mgrTok = mintAdminToken(ins[0]?.id ?? ins[0]);
+    const brandingUser = await db('admin_users').insert({
+      username: 'brand-viewer', email: 'brand-viewer@example.com', password_hash: 'x',
+      role_id: brandingRole.id, must_change_password: false, created_at: new Date(),
+    }).returning('id');
+    brandingViewTok = mintAdminToken(brandingUser[0]?.id ?? brandingUser[0]);
 
     await db('app_settings').insert({
       setting_key: 'general_site_url', setting_value: JSON.stringify(STORED_URL), setting_type: 'general',
@@ -95,6 +104,12 @@ describe('settings protected-key boundary (/general)', () => {
       .send({ general_site_url: 'https://new.example' });
     expect(res.status).toBe(200);
     expect(await readSiteUrl()).toBe('https://new.example');
+  });
+
+  it.each(['branding', 'theme'])('branding.view-only role can load /%s for the Branding page', async (type) => {
+    const res = await auth(request(app).get(`/api/admin/settings/${type}`), brandingViewTok);
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(expect.any(Object));
   });
 
   // Backup destinations and the manifest location are owned by

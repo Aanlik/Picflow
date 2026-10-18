@@ -10,7 +10,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'react-toastify';
 import {
-  Plus, Send, Download, Trash2, Upload, X, Copy, Image as ImageIcon,
+  Plus, Send, Download, Trash2, Upload, X, Copy, Image as ImageIcon, AlertCircle,
   Clock, Ban, RefreshCw, Paperclip, FileText,
 } from 'lucide-react';
 
@@ -48,7 +48,7 @@ export const TransfersPage: React.FC = () => {
   const [showCreate, setShowCreate] = useState(false);
   const [detailId, setDetailId] = useState<number | null>(null);
 
-  const { data: transfers, isLoading, refetch } = useQuery({
+  const { data: transfers, isLoading, isError, refetch } = useQuery({
     queryKey: ['admin-transfers'],
     queryFn: () => transfersService.list(),
   });
@@ -80,6 +80,16 @@ export const TransfersPage: React.FC = () => {
 
       {isLoading ? (
         <Loading />
+      ) : isError ? (
+        <Card>
+          <CardContent className="py-10 text-center">
+            <AlertCircle className="mx-auto mb-3 h-8 w-8 text-red-500" />
+            <p className="text-neutral-700 dark:text-neutral-300">{t('transfers.loadFailed', '无法加载文件交付列表。')}</p>
+            <Button className="mt-4" variant="outline" onClick={() => void refetch()}>
+              {t('common.retry', '重试')}
+            </Button>
+          </CardContent>
+        </Card>
       ) : !transfers || transfers.length === 0 ? (
         <Card>
           <CardContent className="py-12 text-center text-neutral-500">
@@ -337,7 +347,7 @@ const TransferDetailModal: React.FC<DetailProps> = ({ transferId, onClose, onCop
   const fmtDate = (d: string | null) => (d ? formatDateTime(d) : '—');
   const [showPicker, setShowPicker] = useState(false);
 
-  const { data: transfer, isLoading, refetch } = useQuery({
+  const { data: transfer, isLoading, isError, refetch } = useQuery({
     queryKey: ['admin-transfer', transferId],
     queryFn: () => transfersService.get(transferId),
   });
@@ -404,8 +414,19 @@ const TransferDetailModal: React.FC<DetailProps> = ({ transferId, onClose, onCop
           <button onClick={onClose} className="rounded p-1 text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800"><X className="h-5 w-5" /></button>
         </div>
 
-        {isLoading || !transfer ? (
+        {isLoading ? (
           <div className="p-8"><Loading /></div>
+        ) : isError || !transfer ? (
+          <div className="p-8 text-center">
+            <AlertCircle className="mx-auto mb-3 h-8 w-8 text-red-500" />
+            <p className="text-sm text-neutral-700 dark:text-neutral-300">
+              {t('transfers.loadDetailFailed', '无法加载此交付链接的详情。')}
+            </p>
+            <div className="mt-4 flex justify-center gap-2">
+              <Button variant="outline" onClick={() => void refetch()}>{t('common.retry', '重试')}</Button>
+              <Button variant="ghost" onClick={onClose}>{t('common.close', '关闭')}</Button>
+            </div>
+          </div>
         ) : (
           <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-5">
             {/* Prominent recipient link + download-all, up top */}

@@ -17,8 +17,8 @@ const IPADOS_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/6
 const ANDROID_UA = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 Chrome/120.0.0.0';
 const DESKTOP_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/17.0 Safari/605.1.15';
 
-// Stub the photo blob fetch + the <a download> trigger so the test
-// only exercises the iOS-vs-other branching logic. fetchPhotoBlob is
+// Stub the photo blob fetch + the download trigger so the test
+// exercises the iOS-vs-other branching logic. fetchPhotoBlob is
 // network; triggerBrowserDownload calls document.createElement + click
 // which is side-effecty in jsdom (and not what we're testing here).
 const fetchedBlob = { blob: new Blob(['x'], { type: 'image/jpeg' }), serverFilename: 'IMG_0001.jpg' };
@@ -73,15 +73,8 @@ describe('galleryService.savePhotoToDevice — iOS gating (#554)', () => {
     expect(galleryService.triggerDirectDownload).not.toHaveBeenCalled();
   });
 
-  it('navigates straight to the download URL on Android (no blob round-trip)', async () => {
-    // #554 fix: canShare is true on Chrome Android but the share sheet
-    // has no "Save Image" action, so the share path is iOS-only. The
-    // follow-up issue (Rekoo-PS, post-#556) was that the Android
-    // fallback fetched the blob through JS before clicking <a download>,
-    // adding ~5s of dead air before the browser's download UI appeared
-    // and prompting users to re-click. Going straight to the download
-    // URL hands the fetch to the browser, which shows its own progress
-    // immediately — no spinner needed.
+  it('uses the authenticated fetch and browser download on Android', async () => {
+    // A native anchor cannot carry the gallery bearer token injected by Axios.
     const share = vi.fn().mockResolvedValue(undefined);
     const canShare = vi.fn().mockReturnValue(true);
     installNavigator({ userAgent: ANDROID_UA, share, canShare });
@@ -89,23 +82,19 @@ describe('galleryService.savePhotoToDevice — iOS gating (#554)', () => {
     await galleryService.savePhotoToDevice('slug', 1, 'fallback.jpg');
 
     expect(share).not.toHaveBeenCalled();
-    expect(galleryService.fetchPhotoBlob).not.toHaveBeenCalled();
-    expect(galleryService.triggerBrowserDownload).not.toHaveBeenCalled();
-    expect(galleryService.triggerDirectDownload).toHaveBeenCalledTimes(1);
-    expect(galleryService.triggerDirectDownload).toHaveBeenCalledWith(
-      expect.stringMatching(/\/gallery\/slug\/download\/1$/),
-      'fallback.jpg',
-    );
+    expect(galleryService.fetchPhotoBlob).toHaveBeenCalledWith('slug', 1, undefined);
+    expect(galleryService.triggerBrowserDownload).toHaveBeenCalledWith(fetchedBlob.blob, 'IMG_0001.jpg');
+    expect(galleryService.triggerDirectDownload).not.toHaveBeenCalled();
   });
 
-  it('navigates straight to the download URL on desktop Safari (no share / canShare APIs)', async () => {
+  it('uses the authenticated fetch and browser download on desktop Safari', async () => {
     installNavigator({ userAgent: DESKTOP_UA });
 
     await galleryService.savePhotoToDevice('slug', 1, 'fallback.jpg');
 
-    expect(galleryService.fetchPhotoBlob).not.toHaveBeenCalled();
-    expect(galleryService.triggerBrowserDownload).not.toHaveBeenCalled();
-    expect(galleryService.triggerDirectDownload).toHaveBeenCalledTimes(1);
+    expect(galleryService.fetchPhotoBlob).toHaveBeenCalledWith('slug', 1, undefined);
+    expect(galleryService.triggerBrowserDownload).toHaveBeenCalledWith(fetchedBlob.blob, 'IMG_0001.jpg');
+    expect(galleryService.triggerDirectDownload).not.toHaveBeenCalled();
   });
 
   it('detects iPadOS 13+ (reports as MacIntel + touch) as iOS', async () => {
@@ -124,6 +113,7 @@ describe('galleryService.savePhotoToDevice — iOS gating (#554)', () => {
     expect(share).toHaveBeenCalledTimes(1);
     expect(galleryService.triggerBrowserDownload).not.toHaveBeenCalled();
     expect(galleryService.triggerDirectDownload).not.toHaveBeenCalled();
+    expect(galleryService.fetchPhotoBlob).toHaveBeenCalledWith('slug', 1, undefined);
   });
 
   it('does NOT treat a regular Mac (MacIntel + no touch) as iOS', async () => {
@@ -140,7 +130,9 @@ describe('galleryService.savePhotoToDevice — iOS gating (#554)', () => {
     await galleryService.savePhotoToDevice('slug', 1, 'fallback.jpg');
 
     expect(share).not.toHaveBeenCalled();
-    expect(galleryService.triggerDirectDownload).toHaveBeenCalledTimes(1);
+    expect(galleryService.fetchPhotoBlob).toHaveBeenCalledWith('slug', 1, undefined);
+    expect(galleryService.triggerBrowserDownload).toHaveBeenCalledWith(fetchedBlob.blob, 'IMG_0001.jpg');
+    expect(galleryService.triggerDirectDownload).not.toHaveBeenCalled();
   });
 
   it('does not fall back to download when the user dismisses the iOS share sheet (AbortError)', async () => {

@@ -630,7 +630,14 @@ router.get('/:slug/preview/:photoId',
       // Tier is part of the etag: without it a client that already holds the
       // 1920 rendition would get a 304 for its 640 request and render the
       // wrong size, which is the whole point of the feature inverted.
-      const etag = `"preview-${photoId}-${tierWidth || 'def'}-${mtimeMs}${watermarkHash}"`;
+      // External-media replacement can preserve source mtime while replacing
+      // the managed rendition. Include the delivery version in the validator
+      // as well as the URL so a lightbox cannot receive a V1 304 for V2.
+      const requestedRetouchVersion = Number.parseInt(req.query.retouch_v, 10);
+      const retouchVersion = Number.isSafeInteger(requestedRetouchVersion) && requestedRetouchVersion > 0
+        ? `-r${requestedRetouchVersion}`
+        : '';
+      const etag = `"preview-${photoId}-${tierWidth || 'def'}-${mtimeMs}${watermarkHash}${retouchVersion}"`;
       if (req.headers['if-none-match'] === etag) {
         return res.status(304).end();
       }

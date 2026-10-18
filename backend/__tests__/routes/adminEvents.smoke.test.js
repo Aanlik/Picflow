@@ -99,12 +99,53 @@ describe('admin events CRUD endpoints (smoke)', () => {
       expect(row).toBeDefined();
       expect(row.event_name).toBe('Smoke Wedding');
       expect(row.created_by).toBe(adminId);
+      expect(Boolean(row.is_draft)).toBe(true);
+      expect(Boolean(row.is_active)).toBe(false);
 
       // Folder structure is created under STORAGE_PATH/events/active/<slug>.
       const eventDir = path.join(process.env.STORAGE_PATH, 'events/active', res.body.slug);
       expect(fs.existsSync(path.join(eventDir, 'collages'))).toBe(true);
       expect(fs.existsSync(path.join(eventDir, 'individual'))).toBe(true);
 
+    });
+
+    it('creates an explicitly published project as active', async () => {
+      const res = await auth(request(app).post('/api/admin/events')).send({
+        event_type: 'project',
+        event_name: 'Published Project',
+        event_date: '2026-09-03',
+        customer_name: 'Client Person',
+        require_password: false,
+        is_draft: false,
+      });
+
+      expect(res.status).toBe(200);
+      const row = await db('events').where({ id: res.body.id }).first();
+      expect(Boolean(row.is_draft)).toBe(false);
+      expect(Boolean(row.is_active)).toBe(true);
+    });
+
+    it('removes its new workspace when the database transaction rolls back', async () => {
+      await db.raw(`CREATE TRIGGER fail_rollback_workspace_insert
+        BEFORE INSERT ON events
+        WHEN NEW.event_name = 'Rollback Workspace Test'
+        BEGIN SELECT RAISE(ABORT, 'forced transaction failure'); END`);
+      try {
+        const res = await auth(request(app).post('/api/admin/events')).send({
+          event_type: 'project',
+          event_name: 'Rollback Workspace Test',
+          event_date: '2026-09-04',
+          customer_name: 'Client Person',
+          require_password: false,
+          is_draft: true,
+        });
+
+        expect(res.status).toBe(500);
+        expect(await db('events').where({ slug: 'rollback-workspace-test-2026-09-04' })).toHaveLength(0);
+        expect(fs.existsSync(path.join(process.env.STORAGE_PATH, 'events/active/rollback-workspace-test-2026-09-04'))).toBe(false);
+      } finally {
+        await db.raw('DROP TRIGGER IF EXISTS fail_rollback_workspace_insert');
+      }
     });
 
     it('409s (not 500) when the slug uniqueness race is lost', async () => {

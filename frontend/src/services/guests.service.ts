@@ -1,4 +1,5 @@
 import { api } from '../config/api';
+import { parseContentDispositionFilename } from '../utils/contentDisposition';
 
 export interface GuestIdentity {
   id: number;
@@ -122,20 +123,26 @@ class GuestsService {
     await api.post(`/admin/events/${eventId}/guests/${keepId}/merge`, { mergeIds });
   }
 
-  async exportGuest(eventId: number, guestId: number, format: 'txt' | 'csv' | 'json'): Promise<Blob> {
+  async exportGuest(eventId: number, guestId: number, format: 'txt' | 'csv' | 'json'): Promise<{ blob: Blob; filename: string | null }> {
     const response = await api.get(`/admin/events/${eventId}/guests/${guestId}/export`, {
       params: { format },
       responseType: 'blob',
     });
-    return response.data;
+    return {
+      blob: response.data,
+      filename: parseContentDispositionFilename(response.headers?.['content-disposition']),
+    };
   }
 
-  async exportAllGuests(eventId: number, format: 'txt' | 'csv' | 'json'): Promise<Blob> {
+  async exportAllGuests(eventId: number, format: 'txt' | 'csv' | 'json'): Promise<{ blob: Blob; filename: string | null }> {
     const response = await api.get(`/admin/events/${eventId}/guests/export-all`, {
       params: { format },
       responseType: 'blob',
     });
-    return response.data;
+    return {
+      blob: response.data,
+      filename: parseContentDispositionFilename(response.headers?.['content-disposition']),
+    };
   }
 
   async listInvites(eventId: number): Promise<{ invites: GuestInvite[] }> {

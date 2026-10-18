@@ -140,10 +140,9 @@ class PhotoExportService {
     // request body — it decides whose marks the export carries.
     const photos = await this.getPhotosWithFeedback(eventId, photoIds, options.admin_id || null);
 
-    if (photos.length === 0) {
-      throw new Error('No photos to export');
-    }
-
+    // An empty filter is a valid Lightroom/export result. Returning an empty
+    // TXT, header-only CSV, metadata JSON with total_photos=0, or empty XMP
+    // ZIP is more useful than a 500 that hides the fact the filter matched 0.
     switch (format) {
     case 'txt':
       return this.exportAsTxt(photos, options);

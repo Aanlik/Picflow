@@ -130,6 +130,19 @@ afterEach(() => {
 });
 
 describe('PhotoCard overlay hit-testing (#1263)', () => {
+  it('keeps touch download visible and prevents the card from opening the preview', () => {
+    const onClick = vi.fn();
+    const onDownload = vi.fn();
+    renderCard({ onClick, onDownload });
+
+    const download = screen.getByRole('button', { name: 'ui.downloadPhoto' });
+    expect(download).toHaveClass('bottom-2', 'right-2');
+    fireEvent.click(download);
+
+    expect(onDownload).toHaveBeenCalledTimes(1);
+    expect(onClick).not.toHaveBeenCalled();
+  });
+
   it('sends one like toggle when the customer double-clicks before the request settles', async () => {
     stubTouchDevice(false);
     let finishRequest!: () => void;
@@ -178,6 +191,20 @@ describe('PhotoCard overlay hit-testing (#1263)', () => {
     // Second tap on the tile body now opens the photo.
     fireEvent.click(container.querySelector('.tile')!);
     expect(onClick).toHaveBeenCalledTimes(1);
+  });
+
+  it('runs the photo download action without opening the preview', () => {
+    const onClick = vi.fn();
+    const onDownload = vi.fn();
+    const { container } = renderCard({ onClick, onDownload });
+
+    // Desktop hover normally reveals this action; emulate the same visible
+    // state before clicking it in jsdom.
+    fireEvent.click(container.querySelector('.tile')!);
+    fireEvent.click(screen.getByRole('button', { name: 'ui.downloadPhoto' }));
+
+    expect(onDownload).toHaveBeenCalledOnce();
+    expect(onClick).not.toHaveBeenCalled();
   });
 
   it('keeps the selection checkbox inert while it is invisible', () => {

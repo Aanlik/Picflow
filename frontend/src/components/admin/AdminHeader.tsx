@@ -194,7 +194,7 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({ onMenuClick }) => {
 
   const notifications = useMemo(() => notificationsData?.notifications ?? [], [notificationsData?.notifications]);
   const unreadCount = notificationsData?.unreadCount || 0;
-  useAdminNotificationToasts(notificationsData?.notifications);
+  useAdminNotificationToasts(notificationsData?.notifications, user?.id);
 
   return (
     // border-b is on the OUTER <header> so it spans the full header

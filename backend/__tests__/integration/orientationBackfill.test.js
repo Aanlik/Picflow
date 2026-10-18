@@ -229,6 +229,23 @@ describe('orientation backfill (#1198)', () => {
     expect(done.body.lastResult.staleTiers).toBe(0);
   });
 
+  it('reports the failed photo and a localized reason when the source is missing', async () => {
+    const { photoId } = await seed({ orientation: null, storedWidth: 400, storedHeight: 200, filename: 'missing-source.jpg' });
+    await fs.promises.unlink(path.join(storageRoot, 'events/active/orientbf', 'missing-source.jpg'));
+
+    await run();
+    const done = await settle();
+
+    expect(done.body.lastResult.failed).toBe(1);
+    expect(done.body.lastResult.failures).toEqual([
+      expect.objectContaining({
+        photo_id: photoId,
+        filename: 'missing-source.jpg',
+        reason: '源文件不存在或当前不可访问',
+      }),
+    ]);
+  });
+
   it('invalidates renditions when only the dimensions were wrong', async () => {
     const { photoId } = await seed({
       orientation: null, storedWidth: 999, storedHeight: 111,

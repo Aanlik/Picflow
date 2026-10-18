@@ -43,7 +43,7 @@ interface BackupRecord {
   created_at: string;
   duration_seconds: number;
   started_at?: string;
-  error_message?: string;
+  error_message?: unknown;
   statistics?: BackupStatistics;
   contentSummary?: {
     databaseIncluded: boolean;
@@ -134,6 +134,11 @@ export const BackupDashboard: React.FC<BackupDashboardProps> = ({ status, config
   const lastBackup = status?.lastBackup;                       // any status
   const lastSuccessfulBackup = status?.lastSuccessfulBackup;   // status='completed' only
   const zombieRuns = status?.zombieRuns ?? [];
+  const lastBackupErrorMessage = typeof lastBackup?.error_message === 'string'
+    ? lastBackup.error_message
+    : typeof lastBackup?.error_message === 'object' && lastBackup.error_message !== null
+      ? String((lastBackup.error_message as { message?: unknown }).message || '')
+      : '';
   const statistics = lastSuccessfulBackup?.statistics ?? lastBackup?.statistics ?? {};
   const isConfigured = config && config.backup_destination_type;
   const isEnabled = config?.backup_enabled;
@@ -263,10 +268,10 @@ export const BackupDashboard: React.FC<BackupDashboardProps> = ({ status, config
                 {t('backup.dashboard.lastAttempt', 'Last attempt')}: {formatDistanceToNow(new Date(lastBackup.created_at), { addSuffix: true })}
                 {' · '}
                 {t(`backup.dashboard.status.${lastBackup.status}`, lastBackup.status)}
-                {lastBackup.status === 'failed' && lastBackup.error_message && (
+                {lastBackup.status === 'failed' && lastBackupErrorMessage && (
                   <span className="block text-xs text-red-600 dark:text-red-400 mt-0.5">
-                    {backupErrorText(backupErrorCode(lastBackup.error_message), t)
-                      ?? lastBackup.error_message.split('\n')[0].slice(0, 200)}
+                    {backupErrorText(backupErrorCode(lastBackupErrorMessage), t)
+                      ?? lastBackupErrorMessage.split('\n')[0].slice(0, 200)}
                   </span>
                 )}
               </p>

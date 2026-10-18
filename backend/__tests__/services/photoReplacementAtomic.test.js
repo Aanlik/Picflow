@@ -19,11 +19,12 @@ const { replacePhoto } = require('../../src/services/photoReplacementService');
 let directory;
 beforeEach(() => { directory = fs.mkdtempSync(path.join(os.tmpdir(), 'replace-atomic-')); mockEvents.length = 0; jest.clearAllMocks(); });
 afterEach(() => fs.rmSync(directory, { recursive: true, force: true }));
-const run = () => { const file = path.join(directory, 'new.jpg'); fs.writeFileSync(file, 'new'); return replacePhoto({ id: 1, filename: 'old.jpg', event_id: 7, thumbnail_path: 'old-thumb' }, file, { originalFilename: 'DSC.JPG', mimeType: 'image/jpeg', event: { event_name: 'Project', slug: 'project' } }); };
+const run = () => { const file = path.join(directory, 'new.jpg'); fs.writeFileSync(file, 'new'); return replacePhoto({ id: 1, filename: 'old.jpg', event_id: 7, thumbnail_path: 'old-thumb', preview_path: 'old-preview' }, file, { originalFilename: 'DSC.JPG', mimeType: 'image/jpeg', event: { event_name: 'Project', slug: 'project' } }); };
 test('storage failure preserves the old original and derivatives', async () => {
   mockStorage.putFromFile.mockRejectedValueOnce(new Error('disk full'));
   expect((await run()).success).toBe(false);
   expect(mockStorage.delete).not.toHaveBeenCalledWith('old-original');
+  expect(mockStorage.delete).not.toHaveBeenCalledWith('old-preview');
   expect(mockStorage.delete).not.toHaveBeenCalledWith('old-thumb');
   expect(mockUpdate).not.toHaveBeenCalled();
 });
@@ -35,8 +36,10 @@ test('database failure reclaims only the new object', async () => {
 });
 test('successful commit precedes old original deletion', async () => {
   expect((await run()).success).toBe(true);
+  expect(mockUpdate.mock.calls[0][0]).toMatchObject({ preview_path: null });
   expect(mockEvents.indexOf('put')).toBeLessThan(mockEvents.indexOf('commit'));
   expect(mockEvents.indexOf('commit')).toBeLessThan(mockEvents.indexOf('delete:old-original'));
+  expect(mockEvents.indexOf('commit')).toBeLessThan(mockEvents.indexOf('delete:old-preview'));
 });
 test('a concurrent photo change preserves old bytes', async () => {
   mockUpdate.mockResolvedValueOnce(0);

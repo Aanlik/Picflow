@@ -45,9 +45,9 @@ export const GalleryStoryLayout: React.FC<GalleryStoryLayoutProps> = ({
   onOpenPhotoWithFeedback: _onOpenPhotoWithFeedback,
   onFeedbackChange,
   onDownload: _onDownload,
-  selectedPhotos: _selectedPhotos,
-  isSelectionMode: _isSelectionMode,
-  onPhotoSelect: _onPhotoSelect,
+  selectedPhotos = new Set(),
+  isSelectionMode = false,
+  onPhotoSelect,
   eventName,
   eventDate,
   allowDownloads = true,
@@ -64,13 +64,10 @@ export const GalleryStoryLayout: React.FC<GalleryStoryLayoutProps> = ({
   onLogout,
   showOriginalFilename = false,
 }) => {
-  // These props are passed by parent but we use our own feedback system, so mark as intentionally unused
+  // Story owns its like/lightbox surface but shares the gallery selection state.
   void _onPhotoClick;
   void _onOpenPhotoWithFeedback;
   void _onDownload;
-  void _selectedPhotos;
-  void _isSelectionMode;
-  void _onPhotoSelect;
   const { t } = useTranslation();
   const [scrolled, setScrolled] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -277,6 +274,9 @@ export const GalleryStoryLayout: React.FC<GalleryStoryLayoutProps> = ({
                   favorites={favorites}
                   onToggleFavorite={handleToggleFavorite}
                   onPhotoClick={handleOpenLightbox}
+                  isSelectionMode={isSelectionMode}
+                  selectedPhotos={selectedPhotos}
+                  onPhotoSelect={onPhotoSelect}
                   slug={slug}
                   allowDownloads={allowDownloads}
                   useEnhancedProtection={useEnhancedProtection}
@@ -291,6 +291,9 @@ export const GalleryStoryLayout: React.FC<GalleryStoryLayoutProps> = ({
                       isFavorite={favorites.has(photo.id)}
                       onToggleFavorite={handleToggleFavorite}
                       onClick={() => handleOpenLightbox(photo)}
+                      isSelectionMode={isSelectionMode}
+                      isSelected={selectedPhotos.has(photo.id)}
+                      onToggleSelect={onPhotoSelect}
                       slug={slug}
                       galleryId={`gallery-${scene.id}`}
                       allowDownloads={allowDownloads}

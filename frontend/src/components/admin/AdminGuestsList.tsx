@@ -67,15 +67,16 @@ export const AdminGuestsList: React.FC<AdminGuestsListProps> = ({ eventId, event
 
   const handleExport = async (guest: AdminGuest, format: 'txt' | 'csv' | 'json') => {
     try {
-      const blob = await guestsService.exportGuest(eventId, guest.id, format);
+      const { blob, filename } = await guestsService.exportGuest(eventId, guest.id, format);
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${guest.name.replace(/[^a-zA-Z0-9_-]/g, '_')}.${format}`;
+      const fallbackName = guest.name.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').trim() || `客户_${guest.id}`;
+      a.download = filename || `${fallbackName}_${guest.id}.${format}`;
       document.body.appendChild(a);
       a.click();
       a.remove();
-      window.URL.revokeObjectURL(url);
+      window.setTimeout(() => window.URL.revokeObjectURL(url), 60_000);
     } catch {
       toast.error(t('admin.guests.exportError', 'Export failed'));
     }
@@ -83,15 +84,15 @@ export const AdminGuestsList: React.FC<AdminGuestsListProps> = ({ eventId, event
 
   const handleExportAll = async (format: 'txt' | 'csv' | 'json') => {
     try {
-      const blob = await guestsService.exportAllGuests(eventId, format);
+      const { blob, filename } = await guestsService.exportAllGuests(eventId, format);
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `event-${eventId}-guests.zip`;
+      a.download = filename || `event-${eventId}-guests.zip`;
       document.body.appendChild(a);
       a.click();
       a.remove();
-      window.URL.revokeObjectURL(url);
+      window.setTimeout(() => window.URL.revokeObjectURL(url), 60_000);
     } catch {
       toast.error(t('admin.guests.exportError', 'Export failed'));
     }

@@ -26,7 +26,11 @@ vi.mock('../../../contexts/FeatureFlagsContext', () => ({
   useFeatureEnabled: () => false,
 }));
 
-const permissionsState = { hasAnyPermission: (_: string[]) => true, isLoading: false };
+const permissionsState = {
+  hasAnyPermission: (_: string[]) => true,
+  hasPermission: (_: string) => true,
+  isLoading: false,
+};
 vi.mock('../../../contexts/PermissionsContext', () => ({
   usePermissions: () => permissionsState,
 }));
@@ -71,12 +75,14 @@ function renderAt(tab: string) {
 describe('SettingsPage fresh-mount permission race (QA J.08)', () => {
   beforeEach(() => {
     permissionsState.hasAnyPermission = () => true;
+    permissionsState.hasPermission = () => true;
     permissionsState.isLoading = false;
   });
 
   it('does not crash on a deep-linked tab while permissions are still loading', () => {
     permissionsState.isLoading = true;
     permissionsState.hasAnyPermission = () => false;
+    permissionsState.hasPermission = () => false;
 
     expect(() => renderAt('downloads')).not.toThrow();
     expect(screen.getByText('settings.loadingSettings')).toBeInTheDocument();

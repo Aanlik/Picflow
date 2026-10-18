@@ -74,17 +74,19 @@ describe('Download All with a download-restricted category', () => {
 
   const downloadAll = (event) => request(app)
     .get(`/api/gallery/${event.slug}/download-all`)
-    .set('Authorization', `Bearer ${jwt.sign(
-      { eventId: event.id, eventSlug: event.slug, type: 'gallery' },
-      process.env.JWT_SECRET,
-      { expiresIn: '1h', issuer: 'picpeak-auth' },
-    )}`)
+    .set('Authorization', `Bearer ${galleryToken(event)}`)
     .buffer(true)
     .parse((response, cb) => {
       const chunks = [];
       response.on('data', (c) => chunks.push(c));
       response.on('end', () => cb(null, Buffer.concat(chunks)));
     });
+
+  const galleryToken = (event) => jwt.sign(
+      { eventId: event.id, eventSlug: event.slug, type: 'gallery' },
+      process.env.JWT_SECRET,
+      { expiresIn: '1h', issuer: 'picpeak-auth' },
+    );
 
   beforeAll(async () => {
     ({ db, cleanup } = await bootTestDb());
@@ -128,5 +130,39 @@ describe('Download All with a download-restricted category', () => {
     expect(res.status).toBe(200);
     expect(downloadZipService.getZipInfo).toHaveBeenCalled();
     expect(res.body.equals(mockCachedBody)).toBe(true);
+  });
+
+  it('blocks a direct download from a category that opted out', async () => {
+    const event = await createEvent(false);
+    const restricted = await db('photos').where({ event_id: event.id, filename: 'restricted.jpg' }).first();
+
+    const response = await request(app)
+      .get(`/api/gallery/${event.slug}/download/${restricted.id}`)
+      .set('Authorization', `Bearer ${galleryToken(event)}`);
+
+    expect(response.status).toBe(403);
+    expect(response.body.error).toMatch(/category/i);
+    expect(mockStorage.get).not.toHaveBeenCalled();
+  });
+
+  it('omits opted-out photos from a selected-photo archive', async () => {
+    const event = await createEvent(false);
+    const photos = await db('photos').where({ event_id: event.id });
+
+    const response = await request(app)
+      .post(`/api/gallery/${event.slug}/download-selected`)
+      .set('Authorization', `Bearer ${galleryToken(event)}`)
+      .send({ photo_ids: photos.map((photo) => photo.id) })
+      .buffer(true)
+      .parse((res, callback) => {
+        const chunks = [];
+        res.on('data', (chunk) => chunks.push(chunk));
+        res.on('end', () => callback(null, Buffer.concat(chunks)));
+      });
+
+    expect(response.status).toBe(200);
+    const readKeys = mockStorage.get.mock.calls.map(([key]) => key);
+    expect(readKeys.some((key) => key.endsWith('open.jpg'))).toBe(true);
+    expect(readKeys.some((key) => key.endsWith('restricted.jpg'))).toBe(false);
   });
 });

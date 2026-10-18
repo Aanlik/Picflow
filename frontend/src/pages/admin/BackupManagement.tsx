@@ -53,7 +53,7 @@ export const BackupManagement: React.FC = () => {
     { id: 'coverage' as const, label: t('backup.tabs.coverage', 'Coverage'), icon: FolderTree },
   ];
 
-  const { data: backupStatus, isLoading: statusLoading } = useQuery({
+  const { data: backupStatus, isLoading: statusLoading, isError: statusError, refetch: refetchStatus } = useQuery({
     queryKey: ['backup-status'],
     queryFn: async () => {
       const response = await api.get('/admin/backup/status');
@@ -62,7 +62,7 @@ export const BackupManagement: React.FC = () => {
     refetchInterval: 10000,
   });
 
-  const { data: backupConfig, isLoading: configLoading } = useQuery({
+  const { data: backupConfig, isLoading: configLoading, isError: configError, refetch: refetchConfig } = useQuery({
     queryKey: ['backup-config'],
     queryFn: async () => {
       const response = await api.get('/admin/backup/config');
@@ -109,6 +109,37 @@ export const BackupManagement: React.FC = () => {
     return (
       <div className="p-8">
         <Loading />
+      </div>
+    );
+  }
+
+  // Missing status/config is not the same thing as an empty backup history or
+  // a disabled backup. Avoid rendering misleading defaults after an API error
+  // (and avoid allowing a destructive config save against an unknown state).
+  if (statusError || configError) {
+    return (
+      <div className="p-8 max-w-7xl mx-auto">
+        <Card className="p-6">
+          <div className="flex items-start gap-3">
+            <AlertCircle className="mt-0.5 h-5 w-5 text-red-600 dark:text-red-400" />
+            <div>
+              <h1 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">
+                {t('backup.loadFailed', '无法读取备份状态')}
+              </h1>
+              <p className="mt-1 text-sm text-neutral-600 dark:text-neutral-400">
+                {t('backup.loadFailedHelp', '备份状态或配置暂时不可用。请重试后再操作。')}
+              </p>
+              <Button
+                className="mt-4"
+                variant="outline"
+                leftIcon={<RefreshCw className="h-4 w-4" />}
+                onClick={() => { void refetchStatus(); void refetchConfig(); }}
+              >
+                {t('common.retry', '重试')}
+              </Button>
+            </div>
+          </div>
+        </Card>
       </div>
     );
   }

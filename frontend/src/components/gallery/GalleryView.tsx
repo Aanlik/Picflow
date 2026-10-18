@@ -17,6 +17,7 @@ import { useGalleryAuth, useTheme } from '../../contexts';
 import { useGalleryPhotos, useDownloadAllPhotos } from '../../hooks/useGallery';
 import { useGalleryFeedbackSettings } from '../../hooks/useGalleryFeedbackSettings';
 import { PhotoGridWithLayouts } from './PhotoGridWithLayouts';
+import { GalleryBatchSelectionToolbar } from './GalleryBatchSelectionToolbar';
 import { GalleryFolderTiles } from './GalleryFolderTiles';
 import {
   findFolderByKey,
@@ -47,7 +48,7 @@ import { usePublicSettings } from '../../hooks/usePublicSettings';
 import type { Photo } from '../../types';
 import { GALLERY_THEME_PRESETS } from '../../types/theme.types';
 import { useQueryClient } from '@tanstack/react-query';
-import { getDownloadableSelectedPhotoIds } from './downloadSelection';
+import { getDownloadableSelectedPhotoIds, getPhotoDownloadFilenames } from './downloadSelection';
 import { BatchFeedbackControls } from './BatchFeedbackControls';
 import { categoryLabel } from '../../utils/categoryLabel';
 import { versionedRetouchUrl } from '../../utils/versionedRetouchUrl';
@@ -709,7 +710,12 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ slug, event, requiresP
 
     toastify.info(t('gallery.downloadStarted', { photoCount: selectedPhotoIds.length }));
     try {
-      await galleryService.downloadSelectedPhotos(slug, selectedPhotoIds);
+      await galleryService.downloadSelectedPhotos(
+        slug,
+        selectedPhotoIds,
+        undefined,
+        getPhotoDownloadFilenames(filteredPhotos, selectedPhotoIds),
+      );
       setSelectedPhotos(new Set());
       setIsSelectionMode(false);
     } catch {
@@ -758,7 +764,12 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ slug, event, requiresP
     }
 
 
-    await galleryService.downloadSelectedPhotos(slug, folderDownloadIds);
+    await galleryService.downloadSelectedPhotos(
+      slug,
+      folderDownloadIds,
+      undefined,
+      getPhotoDownloadFilenames(scopedPhotos, folderDownloadIds),
+    );
   };
 
   // Calculate photo counts per category
@@ -915,6 +926,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ slug, event, requiresP
   // Full-page layouts (gallery-premium, gallery-story) have their own integrated UI
   // Skip all wrapper elements (header, footer, sidebar, filters) for these layouts
   const isFullPageLayout = theme.galleryLayout === 'gallery-premium' || theme.galleryLayout === 'gallery-story';
+  const isStoryLayout = theme.galleryLayout === 'gallery-story';
 
   // Does this session hold something worth dropping? A password gallery and a
   // PIN client do; both provide a credential that can be explicitly cleared.
@@ -1002,7 +1014,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ slug, event, requiresP
             still get `filteredPhotos`, so without this the foldered photos
             would be hidden with no way in. Contained width so the folder strip
             reads as chrome against the full-bleed grid below it. */}
-        {hasFolderNav && (
+        {(hasFolderNav || (isStoryLayout && (filteredPhotos.length > 1 || isSelectionMode))) && (
           // Story's `.story-nav` is fixed across this same band at z-index 50.
           // Raising the strip above it is necessary for the chips to be
           // clickable at all, but the strip is mostly empty space — so the
@@ -1010,9 +1022,27 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ slug, event, requiresP
           // search/favourites/logout underneath. Only the real controls opt back
           // in via pointer-events-auto.
           <div className="relative z-[60] pointer-events-none max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3 flex items-center gap-3 flex-wrap">
-            <div className="pointer-events-auto flex items-center gap-3 flex-wrap">
-              {buildFolderNav(true)}
-            </div>
+            {hasFolderNav && (
+              <div className="pointer-events-auto flex items-center gap-3 flex-wrap">
+                {buildFolderNav(true)}
+              </div>
+            )}
+            {isStoryLayout && (
+              <GalleryBatchSelectionToolbar
+                isSelectionMode={isSelectionMode}
+                selectedCount={selectedPhotos.size}
+                downloadableCount={getDownloadableSelectedPhotoIds(filteredPhotos, selectedPhotos).length}
+                allowDownloads={allowDownloads}
+                isDownloading={downloadAllMutation.isPending}
+                onToggleSelectionMode={() => {
+                  setIsSelectionMode((active) => !active);
+                  if (isSelectionMode) setSelectedPhotos(new Set());
+                }}
+                onSelectAll={() => setSelectedPhotos(new Set(filteredPhotos.map((photo) => photo.id)))}
+                onDeselectAll={() => setSelectedPhotos(new Set())}
+                onDownloadSelected={() => void handleDownloadSelected()}
+              />
+            )}
             {/* Hidden when a category opts out of downloads (#640): this routes
                 to the whole-gallery zip, which contains every event photo with
                 no per-category filter, so offering it here would hand a guest
@@ -1116,6 +1146,18 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ slug, event, requiresP
           onLogout={showLogoutControl ? logout : undefined}
           showOriginalFilename={showOriginalFilename}
         />
+
+        {isSelectionMode && selectedPhotos.size > 0 && (feedbackEnabled || retouchWorkflow?.enabled) && (
+          <div className="mx-auto mt-4 max-w-7xl px-4 sm:px-6 lg:px-8">
+            <BatchFeedbackControls
+              slug={slug}
+              photoIds={Array.from(selectedPhotos)}
+              retouchEnabled={Boolean(retouchWorkflow?.enabled)}
+              commentsEnabled={Boolean(feedbackEnabled && feedbackSettings?.allow_comments)}
+              requireGuestName={!!feedbackSettings?.require_name_email}
+            />
+          </div>
+        )}
 
         {/* Upload Modal for full-page layouts */}
         {showUploadModal && (data?.event?.allow_user_uploads || event?.allow_user_uploads) && (
@@ -1352,6 +1394,21 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ slug, event, requiresP
               ))}
             </div>
           </section>
+        )}
+
+        {isSelectionMode && selectedPhotos.size > 0 && allowDownloads && getDownloadableSelectedPhotoIds(filteredPhotos, selectedPhotos).length > 0 && (
+          <div className="mt-4 flex flex-wrap items-center gap-2">
+            <Button
+              variant="primary"
+              size="sm"
+              leftIcon={<Download className="h-4 w-4" />}
+              onClick={() => void handleDownloadSelected()}
+              disabled={downloadAllMutation.isPending}
+              aria-label={t('gallery.downloadSelected', { count: getDownloadableSelectedPhotoIds(filteredPhotos, selectedPhotos).length })}
+            >
+              {t('gallery.downloadSelected', { count: getDownloadableSelectedPhotoIds(filteredPhotos, selectedPhotos).length })}
+            </Button>
+          </div>
         )}
 
         {isSelectionMode && selectedPhotos.size > 0 && (feedbackEnabled || retouchWorkflow?.enabled) && (

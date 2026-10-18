@@ -15,7 +15,7 @@ const router = express.Router();
 const { db, logActivity } = require('../database/db');
 const { adminAuth } = require('../middleware/auth');
 const { requirePermission } = require('../middleware/permissions');
-const { invalidateFeatureFlagCache } = require('../middleware/requireFeatureFlag');
+const { invalidateFeatureFlagCache, flagEnabledFromValue } = require('../middleware/requireFeatureFlag');
 const logger = require('../utils/logger');
 
 // Canonical flag list. Keep in sync with the `FeatureKey` union in
@@ -48,7 +48,7 @@ async function readAllFlags() {
   const result = { ...DEFAULT_FLAGS };
   for (const row of rows) {
     if (KNOWN_FLAGS.includes(row.key)) {
-      result[row.key] = Boolean(row.value);
+      result[row.key] = flagEnabledFromValue(row.value);
     }
   }
   return result;

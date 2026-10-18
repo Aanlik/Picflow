@@ -28,6 +28,16 @@ function creationError(body) {
   return error;
 }
 
+async function pathExists(target) {
+  try {
+    await fs.access(target);
+    return true;
+  } catch (error) {
+    if (error?.code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
 /** Shared creation operation. v1 explicitly publishes immediately and accepts
  * an optional absolute expiry; admin/legacy use configured field requirements.
  */
@@ -192,7 +202,8 @@ async function createEvent(data, { actor, source = 'admin' } = {}) {
   let slug = baseSlug;
   let counter = 1;
 
-  while (await db('events').where({ slug }).first()) {
+  const activeEventsPath = path.join(getStoragePath(), 'events', 'active');
+  while (await db('events').where({ slug }).first() || await pathExists(path.join(activeEventsPath, slug))) {
     slug = `${baseSlug}-${counter}`;
     counter++;
   }
@@ -233,12 +244,6 @@ async function createEvent(data, { actor, source = 'admin' } = {}) {
     }
     expires_at.setDate(expires_at.getDate() + parseInt(expiration_days, 10));
   }
-
-  // Create folder structure
-  const storagePath = getStoragePath();
-  const eventPath = path.join(storagePath, 'events/active', slug);
-  await fs.mkdir(path.join(eventPath, 'collages'), { recursive: true });
-  await fs.mkdir(path.join(eventPath, 'individual'), { recursive: true });
 
   // Sync header_style / hero_divider_style from color_theme JSON when not
   // explicitly provided in the request body (#158).
@@ -357,6 +362,10 @@ async function createEvent(data, { actor, source = 'admin' } = {}) {
     share_link: shareLinkToStore,
     share_token: shareToken,
     expires_at: expires_at ? expires_at.toISOString() : null,
+    // Drafts must not carry an enabled gallery flag. The public routes also
+    // check is_draft, but leaving is_active=true made archived drafts appear
+    // active after restore (and exposed inconsistent status in the workbench).
+    is_active: formatBoolean(!parseBooleanInput(is_draft, true)),
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
     created_by: actor.id,
@@ -404,33 +413,60 @@ async function createEvent(data, { actor, source = 'admin' } = {}) {
     og_image_share_enabled: formatBoolean(input.og_image_share_enabled === true),
   };
 
-  // The gallery row and its feedback configuration commit together.
-  const eventId = await db.transaction(async trx => {
-    const result = await trx('events').insert(insertData).returning('id');
-    const eventId = result[0]?.id ?? result[0];
-    // Insert feedback settings if feedback is enabled
-    if (feedback_enabled) {
-      await trx('event_feedback_settings').insert({
-        event_id: eventId,
-        feedback_enabled: formatBoolean(feedback_enabled),
-        allow_ratings: formatBoolean(feedbackDefaults.allow_ratings),
-        allow_likes: formatBoolean(feedbackDefaults.allow_likes),
-        allow_comments: formatBoolean(feedbackDefaults.allow_comments),
-        allow_favorites: formatBoolean(feedbackDefaults.allow_favorites),
-        allow_reactions: formatBoolean(feedbackDefaults.allow_reactions),
-        allow_color_labels: formatBoolean(feedbackDefaults.allow_color_labels),
-        keybind_mode: feedbackDefaults.keybind_mode,
-        show_feedback_to_guests: formatBoolean(show_feedback_to_guests),
-        identity_mode: ['simple', 'guest', 'shared'].includes(identityModeInput)
-          ? identityModeInput
-          : 'simple',
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
-      });
-    }
+  // The gallery row and its feedback configuration commit together. Create
+  // the filesystem workspace immediately before the transaction, and remove
+  // only the directory this request actually created if persistence fails.
+  // A stale directory from an earlier failed install is never reused or
+  // deleted: slug selection above advances to a fresh path instead.
+  const eventPath = path.join(activeEventsPath, slug);
+  await fs.mkdir(activeEventsPath, { recursive: true });
+  let createdEventPath = false;
+  let eventId;
+  try {
+    await fs.mkdir(eventPath);
+    createdEventPath = true;
+    await fs.mkdir(path.join(eventPath, 'collages'));
+    await fs.mkdir(path.join(eventPath, 'individual'));
 
-    return eventId;
-  });
+    eventId = await db.transaction(async trx => {
+      const result = await trx('events').insert(insertData).returning('id');
+      const eventId = result[0]?.id ?? result[0];
+      // Insert feedback settings if feedback is enabled
+      if (feedback_enabled) {
+        await trx('event_feedback_settings').insert({
+          event_id: eventId,
+          feedback_enabled: formatBoolean(feedback_enabled),
+          allow_ratings: formatBoolean(feedbackDefaults.allow_ratings),
+          allow_likes: formatBoolean(feedbackDefaults.allow_likes),
+          allow_comments: formatBoolean(feedbackDefaults.allow_comments),
+          allow_favorites: formatBoolean(feedbackDefaults.allow_favorites),
+          allow_reactions: formatBoolean(feedbackDefaults.allow_reactions),
+          allow_color_labels: formatBoolean(feedbackDefaults.allow_color_labels),
+          keybind_mode: feedbackDefaults.keybind_mode,
+          show_feedback_to_guests: formatBoolean(show_feedback_to_guests),
+          identity_mode: ['simple', 'guest', 'shared'].includes(identityModeInput)
+            ? identityModeInput
+            : 'simple',
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        });
+      }
+
+      return eventId;
+    });
+  } catch (error) {
+    if (createdEventPath) {
+      try {
+        await fs.rm(eventPath, { recursive: true, force: true });
+      } catch (cleanupError) {
+        logger.warn('Failed to remove project files after creation rollback', {
+          slug,
+          error: cleanupError.message,
+        });
+      }
+    }
+    throw error;
+  }
   // #1271 — the setting was read before the hashes; re-check after the write
   await dropCopiesIfStorageOff(eventId);
 

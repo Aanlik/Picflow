@@ -46,6 +46,11 @@ let cache = null;
 // and the storage tab on one page, hit the same cold cache and would otherwise
 // each stat every file on the disk.
 let inFlight = null;
+// A walk that started before an archive/delete/reset must never publish its
+// old snapshot after the cache was invalidated. Clearing `inFlight` does not
+// cancel its promise, so a generation fence prevents a late stale result from
+// repopulating the cache.
+let generation = 0;
 
 /**
  * The external media root, resolved, when it lies inside the storage root.
@@ -165,15 +170,23 @@ async function walk(absDir, relDir, acc) {
  * @returns {Promise<{total:number, files:number, breakdown:object, partial:boolean, measuredAt:string, root:string}>}
  */
 async function measureLocalStorageUsage(opts = {}) {
+  if (opts.force) generation += 1;
   const now = Date.now();
   if (!opts.force && cache && now - cache.at < TTL_MS) return cache.value;
   // Share a walk already underway rather than starting a second one.
   if (!opts.force && inFlight) return inFlight;
 
-  inFlight = runMeasurement()
-    .then((value) => { cache = { at: Date.now(), value }; return value; })
-    .finally(() => { inFlight = null; });
-  return inFlight;
+  const requestGeneration = generation;
+  const request = runMeasurement()
+    .then((value) => {
+      if (requestGeneration === generation) cache = { at: Date.now(), value };
+      return value;
+    })
+    .finally(() => {
+      if (inFlight === request) inFlight = null;
+    });
+  inFlight = request;
+  return request;
 }
 
 async function runMeasurement() {
@@ -204,6 +217,7 @@ async function runMeasurement() {
 
 /** Test seam — the TTL cache would otherwise outlive a temp storage root. */
 function resetLocalStorageUsageCache() {
+  generation += 1;
   cache = null;
   inFlight = null;
 }

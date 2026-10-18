@@ -46,6 +46,7 @@ const getStoragePath = () => process.env.STORAGE_PATH || path.join(__dirname, '.
 // with the gallery upload route.
 const { findScopedCategory, outOfScopeCategoryError } = require('../utils/categoryScope');
 const { photoCapOf, countEventPhotos } = require('../services/photoCap');
+const { normalizeMultipartFilename } = require('../utils/normalizeMultipartFilename');
 
 // Configure multer for file uploads
 // IMPORTANT: Using synchronous functions to prevent file corruption
@@ -118,6 +119,7 @@ const createUpload = (maxFileSizeBytes, maxFiles) => multer({
   fileFilter: (req, file, cb) => {
     // req.allowedMimeTypes is populated by the middleware that runs before multer
     const allowedMimeTypes = req.allowedMimeTypes || ['image/jpeg', 'image/png', 'image/webp'];
+    file.originalname = normalizeMultipartFilename(file.originalname);
     // Assigned, not just compared: multer copies this object into req.files,
     // so the content validator and the stored mime_type see the canonical type.
     file.mimetype = normalizeUploadMimeType(file.originalname, file.mimetype);

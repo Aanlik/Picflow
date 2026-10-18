@@ -8,12 +8,28 @@ const { requirePermission } = require('../middleware/permissions');
 const { db, logActivity } = require('../database/db');
 const { bridgeRequest, getProjectDetail, setWorkflowStage } = require('../services/photographyWorkflowBridge');
 const { getExternalMediaRoot, resolveExternalPath } = require('../services/externalMediaService');
+const { parseBooleanInput } = require('../utils/parsers');
 
 const router = express.Router();
 router.use(adminAuth, requirePermission('events.view'));
 
 function parseId(value) {
   return /^\d+$/.test(String(value)) && Number(value) > 0;
+}
+
+async function rejectArchivedEvent(req, res) {
+  const event = await db('events').where({ id: Number(req.params.eventId) }).first();
+  if (!event) {
+    res.sendStatus(404);
+    return true;
+  }
+  const archived = parseBooleanInput(event.is_archived, false);
+  const archiving = parseBooleanInput(event.is_archiving, false);
+  if (archived || archiving) {
+    res.status(409).json({ error: '已归档的项目不能执行同步操作，请先恢复项目', code: 'EVENT_ARCHIVED' });
+    return true;
+  }
+  return false;
 }
 
 function bridgeFailure(result) {
@@ -73,10 +89,12 @@ router.get('/summary', async (req, res) => {
 });
 
 router.get('/:eventId', (req, res, next) => parseId(req.params.eventId) ? next() : res.sendStatus(400), requireEventOwnership, async (req, res) => {
+  const event = await db('events').where({ id: Number(req.params.eventId) }).first();
+  if (!event) return res.sendStatus(404);
+  const projectArchived = parseBooleanInput(event.is_archived, false) || parseBooleanInput(event.is_archiving, false);
   const result = await getProjectDetail(req.params.eventId);
-  if (!result.configured) return res.status(503).json(bridgeFailure(result));
+  if (!result.configured) return res.status(503).json({ ...bridgeFailure(result), project_archived: projectArchived });
   if (result.status === 404) {
-    const event = await db('events').where({ id: Number(req.params.eventId) }).first();
     const suggestedRawSubdir = cameraSubdirectory(event);
     const mountStatus = suggestedRawSubdir
       ? await bridgeRequest(`/api/projects/${Number(req.params.eventId)}/mount-status?raw_subdir=${encodeURIComponent(suggestedRawSubdir)}`)
@@ -88,6 +106,7 @@ router.get('/:eventId', (req, res, next) => parseId(req.params.eventId) ? next()
       auto_bind_mount_missing: Boolean(suggestedRawSubdir && !autoBindAvailable),
       suggested_raw_subdir: suggestedRawSubdir,
       project_name: event?.event_name || event?.slug || '',
+      project_archived: projectArchived,
     });
   }
   if (result.status !== 200) return res.status(503).json(bridgeFailure(result));
@@ -100,7 +119,7 @@ router.get('/:eventId', (req, res, next) => parseId(req.params.eventId) ? next()
       cancelled: Boolean(photo.cancelled || photo.selection_cancelled || photo.withdraw_pending),
     }))
     : result.data?.photos;
-  res.json({ ...result.data, photos, configured: true });
+  res.json({ ...result.data, photos, configured: true, project_archived: projectArchived });
 });
 
 router.get('/:eventId/requests', (req, res, next) => parseId(req.params.eventId) ? next() : res.sendStatus(400), requireEventOwnership, async (req, res) => {
@@ -117,6 +136,7 @@ router.get('/:eventId/requests', (req, res, next) => parseId(req.params.eventId)
 });
 
 router.post('/:eventId/auto-bind', requirePermission('events.edit'), (req, res, next) => parseId(req.params.eventId) ? next() : res.sendStatus(400), requireEventOwnership, async (req, res) => {
+  if (await rejectArchivedEvent(req, res)) return;
   const eventId = Number(req.params.eventId);
   const event = await db('events').where({ id: eventId }).first();
   const rawSubdir = cameraSubdirectory(event);
@@ -149,7 +169,7 @@ router.post('/:eventId/stage', requirePermission('events.edit'), (req, res, next
   if (!['SELECTING', 'EDITING', 'DELIVERED', 'ARCHIVED'].includes(req.body?.stage)) return res.status(400).json({ error: '无效的项目阶段' });
   const event = await db('events').where({ id: Number(req.params.eventId) }).first();
   if (!event) return res.sendStatus(404);
-  if (event.is_archived || event.is_archiving) {
+  if (parseBooleanInput(event.is_archived, false) || parseBooleanInput(event.is_archiving, false)) {
     return res.status(409).json({ error: '已归档的项目不能直接更改阶段，请先恢复项目' });
   }
   const result = await setWorkflowStage(Number(req.params.eventId), req.body.stage);
@@ -158,18 +178,21 @@ router.post('/:eventId/stage', requirePermission('events.edit'), (req, res, next
 });
 
 router.post('/:eventId/sync', requirePermission('events.edit'), (req, res, next) => parseId(req.params.eventId) ? next() : res.sendStatus(400), requireEventOwnership, async (req, res) => {
+  if (await rejectArchivedEvent(req, res)) return;
   const result = await bridgeRequest(`/api/projects/${Number(req.params.eventId)}/sync`, { method: 'POST', body: {} });
   if (result.status !== 200) return res.status(503).json({ error: '无法立即同步项目' });
   res.json(result.data);
 });
 
 router.post('/:eventId/rescan', requirePermission('events.edit'), (req, res, next) => parseId(req.params.eventId) ? next() : res.sendStatus(400), requireEventOwnership, async (req, res) => {
+  if (await rejectArchivedEvent(req, res)) return;
   const result = await bridgeRequest(`/api/projects/${Number(req.params.eventId)}/rescan`, { method: 'POST', body: {} });
   if (result.status !== 200) return res.status(503).json({ error: '无法重新扫描项目目录' });
   res.json(result.data);
 });
 
 router.post('/:eventId/retry', requirePermission('events.edit'), (req, res, next) => parseId(req.params.eventId) ? next() : res.sendStatus(400), requireEventOwnership, async (req, res) => {
+  if (await rejectArchivedEvent(req, res)) return;
   const result = await bridgeRequest(`/api/projects/${Number(req.params.eventId)}/retry`, {
     method: 'POST', body: { confirm_unknown: req.body?.confirm_unknown === true },
   });

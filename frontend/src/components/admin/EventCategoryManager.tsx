@@ -56,7 +56,9 @@ export const EventCategoryManager: React.FC<EventCategoryManagerProps> = ({ even
       setNewCategorySlug('');
       addingModal.close();
     },
-    errorMessage: t('categories.failedToCreateCategory'),
+    errorMessage: (error: any) => error?.response?.data?.code === 'CATEGORY_SLUG_EXISTS'
+      ? t('categories.slugAlreadyExists')
+      : error?.response?.data?.error || t('categories.failedToCreateCategory'),
   });
 
   // Delete category mutation

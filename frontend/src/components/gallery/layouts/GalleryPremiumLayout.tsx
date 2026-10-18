@@ -36,6 +36,7 @@ import { lightboxImageUrl } from '../imageTiers';
 import { renderPremiumLightboxImage } from './PremiumLightboxImage';
 import { useViewerLikeIds } from '../../../hooks/useViewerLikeIds';
 import { photoDisplayFilename } from '../../../utils/photoFilename';
+import { getPhotoDownloadFilenames } from '../downloadSelection';
 
 interface PhotoCardProps {
   photo: Photo;
@@ -427,11 +428,11 @@ export const GalleryPremiumLayout: React.FC<GalleryPremiumLayoutProps> = ({
     toast.info(t('gallery.downloadStarted', { photoCount: ids.length }));
 
     try {
-      await galleryService.downloadSelectedPhotos(slug, ids);
+      await galleryService.downloadSelectedPhotos(slug, ids, undefined, getPhotoDownloadFilenames(filteredPhotos, ids));
     } catch {
       toast.error(t('gallery.downloadError'));
     }
-  }, [selectedPhotos, slug, t, downloadChoices, onPickResolution]);
+  }, [selectedPhotos, slug, t, downloadChoices, onPickResolution, filteredPhotos]);
 
   const handleDownloadFromLightbox = useCallback((slide: { src?: string; photoId?: number }) => {
     if (!allowDownloads || !slide.src) return;

@@ -1,8 +1,12 @@
 import React, { useMemo } from 'react';
-import { Camera, Calendar } from 'lucide-react';
+import { Calendar, Camera } from 'lucide-react';
 import { ThemeConfig, GalleryLayoutType, HeroDividerStyle } from '../../types/theme.types';
 import { buildResourceUrl } from '../../utils/url';
 import { useTranslation } from 'react-i18next';
+import ceremonyPreview from '../../assets/theme-preview/ceremony.jpg';
+import receptionPreview from '../../assets/theme-preview/reception.jpg';
+import portraitPreview from '../../assets/theme-preview/portrait.jpg';
+import partyPreview from '../../assets/theme-preview/party.jpg';
 
 interface GalleryPreviewBranding {
   company_name?: string;
@@ -24,12 +28,14 @@ interface GalleryPreviewProps {
 }
 
 // Mock photo data for preview
+const previewImages = [ceremonyPreview, receptionPreview, portraitPreview, partyPreview];
+
 const generateMockPhotos = (count: number) => {
   return Array.from({ length: count }, (_, i) => ({
     id: i + 1,
     filename: `photo-${i + 1}.jpg`,
-    url: '',
-    thumbnail_url: '',
+    url: previewImages[i % previewImages.length],
+    thumbnail_url: previewImages[i % previewImages.length],
     type: i % 3 === 0 ? 'collage' : 'individual',
     category_id: (i % 4) + 1,
     category_key: ['sampleCeremony', 'sampleReception', 'samplePortraits', 'sampleParty'][i % 4],
@@ -50,9 +56,7 @@ const PreviewPhoto: React.FC<{
   aspectRatio = 'aspect-square'
 }) => { const { t: tAudit } = useTranslation(); return ((
   <div className={`relative overflow-hidden rounded-lg bg-gradient-to-br from-neutral-200 to-neutral-300 ${aspectRatio} ${className}`}>
-    <div className="absolute inset-0 flex items-center justify-center">
-      <Camera className="w-8 h-8 text-neutral-400" />
-    </div>
+    <img src={photo.thumbnail_url} alt={photo.filename} className="absolute inset-0 h-full w-full object-cover" loading="lazy" />
     <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/60 to-transparent p-2">
       <p className="text-white text-xs truncate">{photo.filename}</p>
       {photo.category_key && (

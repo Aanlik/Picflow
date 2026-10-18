@@ -1,6 +1,6 @@
 import React, { useRef, useState } from 'react';
 import { motion, useInView } from 'framer-motion';
-import { Heart } from 'lucide-react';
+import { Check, Heart } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { AuthenticatedImage } from '../../../common';
 import { ColorLabelBadge } from '../../ColorLabelBadge';
@@ -19,6 +19,9 @@ interface StoryPhotoCardProps {
   useEnhancedProtection?: boolean;
   featured?: boolean;
   galleryId: string;
+  isSelectionMode?: boolean;
+  isSelected?: boolean;
+  onToggleSelect?: (id: number) => void;
 }
 
 export const StoryPhotoCard: React.FC<StoryPhotoCardProps> = ({
@@ -29,6 +32,9 @@ export const StoryPhotoCard: React.FC<StoryPhotoCardProps> = ({
   onClick,
   slug,
   featured = false,
+  isSelectionMode = false,
+  isSelected = false,
+  onToggleSelect,
   galleryId: _galleryId
 }) => {
   const { t } = useTranslation();
@@ -58,7 +64,7 @@ export const StoryPhotoCard: React.FC<StoryPhotoCardProps> = ({
       whileInView={{ opacity: 1, y: 0 }}
       viewport={{ once: true, margin: '-50px' }}
       transition={{ delay: Math.min(index * 0.05, 0.3) }}
-      className={`story-photo-card group ${featured ? 'story-gallery-grid-featured' : ''}`}
+      className={`story-photo-card group ${featured ? 'story-gallery-grid-featured' : ''} ${isSelected ? 'ring-4 ring-accent ring-inset' : ''}`}
     >
       <a
         href={photo.url}
@@ -70,6 +76,12 @@ export const StoryPhotoCard: React.FC<StoryPhotoCardProps> = ({
         data-pswp-height={photo.height || 800}
         data-photo-id={photo.id}
         onClick={(e) => {
+          if (isSelectionMode) {
+            e.preventDefault();
+            e.stopPropagation();
+            onToggleSelect?.(photo.id);
+            return;
+          }
           if (onClick) {
             e.preventDefault();
             onClick();
@@ -105,6 +117,22 @@ export const StoryPhotoCard: React.FC<StoryPhotoCardProps> = ({
         />
         )}
       </a>
+
+      {isSelectionMode && (
+        <button
+          type="button"
+          className={`absolute left-3 top-3 z-20 flex h-8 w-8 items-center justify-center rounded-full border-2 shadow ${isSelected ? 'border-accent bg-accent text-white' : 'border-white bg-black/30 text-white'}`}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            onToggleSelect?.(photo.id);
+          }}
+          aria-label={isSelected ? t('gallery.deselectPhotoForBatch', '取消选择这张照片') : t('gallery.selectPhotoForBatch', '选择这张照片')}
+          aria-pressed={isSelected}
+        >
+          {isSelected && <Check size={18} aria-hidden="true" />}
+        </button>
+      )}
 
       <WorkflowStatusBadge photo={photo} position="top-2 right-2" />
       <ColorLabelBadge

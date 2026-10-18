@@ -70,6 +70,7 @@ export const PhotosTab: React.FC<PhotosTabProps> = ({
           // outcome toast belongs to PhotoUpload, which knows the counts.
           queryClient.invalidateQueries({ queryKey: ['admin-event', id] });
           queryClient.invalidateQueries({ queryKey: ['admin-event-photos', id] });
+          queryClient.invalidateQueries({ queryKey: ['admin-event-filter-summary', id] });
           refetchPhotos();
         }}
       />

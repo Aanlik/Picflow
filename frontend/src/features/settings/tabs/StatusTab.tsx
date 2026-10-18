@@ -659,7 +659,7 @@ export const StatusTab: React.FC<StatusTabProps> = ({
           </div>
 
           {captureDateStatus.lastResult && (
-            <p className="text-sm text-neutral-600 dark:text-neutral-400 mb-4">
+            <div className="text-sm text-neutral-600 dark:text-neutral-400 mb-4">
               {/* Two buckets on purpose: "the mount is gone" and "these files
                   carry no date" need different reactions. The middle number is
                   worded as "no date found" rather than "without EXIF" because
@@ -690,7 +690,7 @@ export const StatusTab: React.FC<StatusTabProps> = ({
                   })}
                 </span>
               )}
-            </p>
+            </div>
           )}
 
           <div className="flex justify-end">
@@ -724,7 +724,7 @@ export const StatusTab: React.FC<StatusTabProps> = ({
           </p>
 
           {orientationStatus.lastResult && (
-            <p className="text-sm text-neutral-600 dark:text-neutral-400 mb-4">
+            <div className="text-sm text-neutral-600 dark:text-neutral-400 mb-4">
               {t('settings.orientationBackfill.resultSuccess', {
                 checked: orientationStatus.lastResult.checked,
                 corrected: orientationStatus.lastResult.corrected,
@@ -739,7 +739,22 @@ export const StatusTab: React.FC<StatusTabProps> = ({
                   })}
                 </span>
               )}
-            </p>
+              {Array.isArray(orientationStatus.lastResult.failures) && orientationStatus.lastResult.failures.length > 0 && (
+                <ul className="mt-2 space-y-1 text-sm text-red-700 dark:text-red-300" aria-label={t('settings.orientationBackfill.failedPhotosTitle')}>
+                  {orientationStatus.lastResult.failures.map((failure: { photo_id: number; filename?: string; reason?: string }) => (
+                    <li key={`${failure.photo_id}-${failure.filename || ''}`}>
+                      {t('settings.orientationBackfill.failedPhoto', {
+                        filename: failure.filename || `#${failure.photo_id}`,
+                        reason: (failure.reason || t('errors.somethingWentWrong')).slice(0, 240),
+                      })}
+                    </li>
+                  ))}
+                  {Number(orientationStatus.lastResult.failed) > orientationStatus.lastResult.failures.length && (
+                    <li>{t('settings.orientationBackfill.moreFailedPhotos', { count: Number(orientationStatus.lastResult.failed) - orientationStatus.lastResult.failures.length })}</li>
+                  )}
+                </ul>
+              )}
+            </div>
           )}
 
           <div className="flex justify-end">

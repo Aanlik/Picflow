@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PhotographyWorkflowCard } from '../PhotographyWorkflowCard';
 import { api } from '../../../config/api';
 vi.mock('../../../config/api', () => ({ api: { get: vi.fn(), post: vi.fn(), patch: vi.fn() } }));
-vi.mock('react-toastify', () => ({ toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() } }));
+vi.mock('react-toastify', () => ({ toast: { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() } }));
 import { toast } from 'react-toastify';
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.clearAllMocks(); });
 describe('photography workflow summary', () => {
@@ -70,6 +70,39 @@ describe('photography workflow summary', () => {
 
     await waitFor(() => expect(toast.success).toHaveBeenCalledWith(expect.stringMatching(/3/)));
     expect(api.post).toHaveBeenCalledWith('/admin/photography-workflow/7/retry', { confirm_unknown: false });
+  });
+
+  it('keeps the stage selector available but blocks sync controls for an archived workflow stage', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => url.endsWith('/requests')
+      ? { data: { requests: [] } } as any
+      : { data: { configured: true, stage: 'ARCHIVED', connected: true, summary: { '异常': 1 }, photos: [] } } as any);
+
+    render(<PhotographyWorkflowCard eventId={7} />);
+    const stage = await screen.findByRole('combobox', { name: 'Project stage' });
+    expect(stage).not.toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Sync now' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Rescan folders' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Retry failed tasks' })).toBeDisabled();
+    expect(screen.getByRole('status').textContent).toMatch(/workflow is archived/i);
+  });
+
+  it('does not report a failed Bridge sync as successful', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => url.endsWith('/requests')
+      ? { data: { requests: [] } } as any
+      : { data: { configured: true, stage: 'EDITING', connected: true, summary: {}, photos: [] } } as any);
+    vi.mocked(api.post).mockResolvedValue({ data: {
+      success: false,
+      photos_processed: 0,
+      error_count: 1,
+      errors: ['项目已归档，未执行同步'],
+    } } as any);
+
+    render(<PhotographyWorkflowCard eventId={7} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Sync now' }));
+
+    await waitFor(() => expect(toast.warning).toHaveBeenCalledWith(expect.stringContaining('项目已归档')));
+    expect(toast.success).not.toHaveBeenCalledWith(expect.stringMatching(/Sync checked/));
+    expect(api.post).toHaveBeenCalledWith('/admin/photography-workflow/7/sync', {});
   });
 });
 
