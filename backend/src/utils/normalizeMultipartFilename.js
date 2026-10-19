@@ -9,7 +9,13 @@
  * @returns {string}
  */
 function normalizeMultipartFilename(filename) {
-  if (typeof filename !== 'string' || !filename || /[^\u0000-\u00ff]/.test(filename)) return filename;
+  if (
+    typeof filename !== 'string' ||
+    !filename ||
+    Array.from(filename).some((character) => character.codePointAt(0) > 0xff)
+  ) {
+    return filename;
+  }
 
   const originalBytes = Buffer.from(filename, 'latin1');
   const decoded = originalBytes.toString('utf8');

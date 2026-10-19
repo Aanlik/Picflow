@@ -12,6 +12,7 @@ describe('normalizeMultipartFilename', () => {
   it('leaves normal ASCII and already-decoded Unicode unchanged', () => {
     expect(normalizeMultipartFilename('DSC04603.jpg')).toBe('DSC04603.jpg');
     expect(normalizeMultipartFilename('照片.jpg')).toBe('照片.jpg');
+    expect(normalizeMultipartFilename('portrait-📷.jpg')).toBe('portrait-📷.jpg');
   });
 
   it('preserves a genuine Latin-1 filename and malformed byte sequences', () => {
