@@ -29,6 +29,7 @@ import { isGalleryPublic } from '../../utils/accessControl';
 import { buildShareLinkUrl } from '../../utils/url';
 import type { Event } from '../../types';
 import { useTranslation } from 'react-i18next';
+import { STORAGE_INFO_QUERY_KEY } from '../../features/settings/hooks/useStorageInfo';
 
 const PAGE_SIZE = 20;
 
@@ -165,7 +166,7 @@ export const EventsListPage: React.FC = () => {
   // Archive mutation
   const archiveMutation = useMutationWithToast({
     mutationFn: eventsService.archiveEvent,
-    invalidateKeys: [['admin-events'], ['storage-info'], ['admin-storage-info']],
+    invalidateKeys: [['admin-events'], STORAGE_INFO_QUERY_KEY],
     successMessage: t('toast.eventArchived'),
   });
 
@@ -182,8 +183,7 @@ export const EventsListPage: React.FC = () => {
     mutationFn: eventsService.bulkArchiveEvents,
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['admin-events'] });
-      queryClient.invalidateQueries({ queryKey: ['storage-info'] });
-      queryClient.invalidateQueries({ queryKey: ['admin-storage-info'] });
+      queryClient.invalidateQueries({ queryKey: STORAGE_INFO_QUERY_KEY });
       setSelectedEvents([]);
       bulkArchiveModal.close();
 
@@ -204,8 +204,7 @@ export const EventsListPage: React.FC = () => {
     mutationFn: (eventIds: number[]) => eventsService.bulkDeleteEvents(eventIds),
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['admin-events'] });
-      queryClient.invalidateQueries({ queryKey: ['storage-info'] });
-      queryClient.invalidateQueries({ queryKey: ['admin-storage-info'] });
+      queryClient.invalidateQueries({ queryKey: STORAGE_INFO_QUERY_KEY });
       setSelectedEvents([]);
       bulkDeleteModal.close();
 

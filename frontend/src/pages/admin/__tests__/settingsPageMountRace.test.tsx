@@ -77,6 +77,7 @@ describe('SettingsPage fresh-mount permission race (QA J.08)', () => {
     permissionsState.hasAnyPermission = () => true;
     permissionsState.hasPermission = () => true;
     permissionsState.isLoading = false;
+    flagsState.isLoading = false;
   });
 
   it('does not crash on a deep-linked tab while permissions are still loading', () => {
@@ -99,5 +100,17 @@ describe('SettingsPage fresh-mount permission race (QA J.08)', () => {
 
     expect(() => renderAt('downloads')).not.toThrow();
     expect(screen.getByText('settings.title')).toBeInTheDocument();
+  });
+
+  it('renders a permitted branding tab while unrelated feature flags are still loading', () => {
+    permissionsState.hasAnyPermission = (permissions) => permissions.includes('branding.view');
+    permissionsState.hasPermission = (permission) => permission === 'branding.view';
+    permissionsState.isLoading = false;
+    flagsState.isLoading = true;
+
+    renderAt('branding');
+
+    expect(screen.getByRole('button', { name: 'Branding' })).toBeInTheDocument();
+    expect(screen.queryByText('settings.loadingSettings')).not.toBeInTheDocument();
   });
 });

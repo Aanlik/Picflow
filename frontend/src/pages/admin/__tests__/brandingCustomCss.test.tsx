@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { vi } from 'vitest';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
@@ -60,9 +60,13 @@ vi.mock('../../../components/admin', async () => {
 
 import { BrandingPage } from '../BrandingPage';
 import { ThemeProvider } from '../../../contexts/ThemeContext';
+import { toast } from 'react-toastify';
 
 describe('BrandingPage custom CSS persistence (#645)', () => {
-  beforeEach(() => localStorage.clear());
+  beforeEach(() => {
+    localStorage.clear();
+    vi.mocked(toast.success).mockClear();
+  });
 
   it('shows the saved custom CSS in the textarea on load for a Gallery Premium theme', async () => {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -79,5 +83,22 @@ describe('BrandingPage custom CSS persistence (#645)', () => {
     )) as HTMLTextAreaElement;
 
     await waitFor(() => expect(textarea.value).toBe(CSS));
+  });
+
+  it('shows one success notification after both branding and theme settings are saved', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <ThemeProvider>
+          <BrandingPage />
+        </ThemeProvider>
+      </QueryClientProvider>
+    );
+
+    await screen.findByPlaceholderText('ui.cssPlaceholder');
+    fireEvent.click(screen.getByRole('button', { name: 'branding.saveChanges' }));
+
+    await waitFor(() => expect(toast.success).toHaveBeenCalledTimes(1));
+    expect(toast.success).toHaveBeenCalledWith('toast.brandingAndThemeUpdated');
   });
 });

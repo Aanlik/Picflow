@@ -175,5 +175,24 @@ describe('rsync SSH key is a key file path', () => {
         backup_rsync_host: 'backup.example.com', backup_rsync_path: '/srv/backups', backup_rsync_ssh_key: PASTED_KEY,
       })).toThrow(/holds a pasted key, not a key file path/);
     });
+
+    it('accepts a new SSH host key once and refuses changed host keys', () => {
+      const backupService = require('../../src/services/backupService');
+      const keyDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'picpeak-rsync-test-key-'));
+      const keyPath = path.join(keyDirectory, 'backup_ed25519');
+      fs.writeFileSync(keyPath, 'test-only key placeholder', { mode: 0o600 });
+      try {
+        const args = backupService.buildRsyncArgs({
+          backup_rsync_host: 'backup.example.com',
+          backup_rsync_path: '/srv/backups',
+          backup_rsync_ssh_key: keyPath,
+        });
+
+        expect(args).toContain(`ssh -i ${keyPath} -o StrictHostKeyChecking=accept-new`);
+        expect(args.join(' ')).not.toContain('StrictHostKeyChecking=no');
+      } finally {
+        fs.rmSync(keyDirectory, { recursive: true, force: true });
+      }
+    });
   });
 });

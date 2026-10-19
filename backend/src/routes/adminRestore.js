@@ -97,7 +97,11 @@ router.post('/validate', requireSuperAdmin(), [
     // Constrain the caller-supplied paths to configured backup roots (GHSA-fw4c)
     const pathError = await checkRestorePathsAllowed(req.body);
     if (pathError) {
-      return res.status(400).json({ success: false, error: pathError });
+      return res.status(400).json({
+        success: false,
+        code: /unsafe/i.test(pathError) ? 'BACKUP_UNSAFE_PATH' : 'BACKUP_PATH_OUTSIDE',
+        error: pathError,
+      });
     }
 
     // Transform S3 config from frontend format
@@ -136,9 +140,13 @@ router.post('/validate', requireSuperAdmin(), [
     });
   } catch (error) {
     logger.error('Restore validation failed:', error);
+    const safeErrorCode = restoreErrorCode(error);
     res.status(400).json({
       success: false,
-      error: error.message || 'Restore validation failed',
+      code: safeErrorCode,
+      error: ['BACKUP_MANIFEST_MISSING', 'BACKUP_DATA_MISSING', 'BACKUP_DATA_CORRUPT', 'BACKUP_DATA_UNAVAILABLE', 'BACKUP_UNSAFE_PATH'].includes(safeErrorCode)
+        ? error.message
+        : 'Restore validation failed. Check the selected restore point and try again.',
       logs: restoreService.restoreLog
     });
   }
@@ -411,8 +419,8 @@ async function discoverAvailableBackups() {
 
   if (backupConfig.backup_destination_type === 'local') {
     const roots = new Set();
-    if (backupConfig.backup_destination_path) roots.add(backupConfig.backup_destination_path);
-    if (backupConfig.backup_manifest_path)    roots.add(backupConfig.backup_manifest_path);
+    roots.add(backupConfig.backup_destination_path || path.join(require('../config/storage').getStoragePath(), 'backups'));
+    if (backupConfig.backup_manifest_path) roots.add(backupConfig.backup_manifest_path);
 
     for (const root of roots) {
       try {
@@ -438,7 +446,7 @@ async function discoverAvailableBackups() {
               completed: stats?.mtime || null,
               source: 'disk',
               corrupt: true,
-              error: err.message,
+              error: 'Backup manifest is unreadable or damaged',
             });
           }
         }
@@ -458,8 +466,10 @@ async function discoverAvailableBackups() {
 
   for (const run of backupRuns) {
     if (run.manifest_id && seenManifestIds.has(run.manifest_id)) continue;
+    const isS3 = String(run.manifest_path || '').startsWith('s3://');
+    const manifestExists = isS3 || Boolean(await fs.stat(run.manifest_path).catch(() => null));
     backups.push({
-      type: run.manifest_path.startsWith('s3://') ? 's3' : 'local',
+      type: isS3 ? 's3' : 'local',
       name: `Backup ${run.completed_at}`,
       path: run.manifest_path,
       manifestId: run.manifest_id,
@@ -468,6 +478,8 @@ async function discoverAvailableBackups() {
       duration: run.duration_seconds,
       completed: run.completed_at,
       source: 'db',
+      corrupt: !manifestExists,
+      error: manifestExists ? null : 'Backup manifest is missing',
     });
   }
 
@@ -551,17 +563,28 @@ async function parseManifestMetadata(filePath) {
 
   const completed =
     parsed?.backup?.completed_at
+    || parsed?.backup?.timestamp
     || parsed?.manifest?.timestamp
+    || parsed?.manifest?.created
     || parsed?.completed_at
+    || parsed?.started_at
     || stats.mtime;
 
-  const filesCount =
-    (Array.isArray(parsed?.files) ? parsed.files.length : null)
-    ?? parsed?.backup?.total_files
-    ?? null;
+  const filesCount = Array.isArray(parsed?.files)
+    ? parsed.files.length
+    : (parsed?.files?.count != null && Number.isFinite(Number(parsed.files.count))
+      ? Number(parsed.files.count)
+      : (Array.isArray(parsed?.files?.manifest)
+        ? parsed.files.manifest.length
+        : (parsed?.files?.files_count
+          ?? parsed?.backup?.files_backed_up
+          ?? parsed?.backup?.total_files
+          ?? parsed?.statistics?.files_processed
+          ?? null)));
 
   const totalSizeBytes =
-    parsed?.backup?.total_size_bytes
+    parsed?.files?.total_size
+    ?? parsed?.backup?.total_size_bytes
     ?? parsed?.total_size_bytes
     ?? null;
 
@@ -619,8 +642,10 @@ router.post('/list-backups', requirePermission('backup.view'), async (req, res) 
       size: parseInt(b.size) || 0,
       total_size: parseInt(b.size) || 0,
       total_size_bytes: parseInt(b.size) || 0,
-      filesCount: b.filesCount || 0,
-      files_backed_up: b.filesCount || 0,
+      filesCount: b.filesCount ?? null,
+      files_backed_up: b.filesCount ?? null,
+      corrupt: b.corrupt || false,
+      error: b.corrupt ? (b.error || 'Backup manifest is unreadable or damaged') : undefined,
       duration: b.duration || null,
       duration_seconds: b.duration || null,
       created_at: b.completed,
@@ -635,7 +660,6 @@ router.post('/list-backups', requirePermission('backup.view'), async (req, res) 
       // UI can warn before the admin picks a files-only backup.
       database_included: b.databaseIncluded,
       databaseIncluded: b.databaseIncluded,
-      corrupt: b.corrupt || false,
       // Provenance: 'disk' (manifest read from filesystem) vs 'db'
       // (backup_runs row that the disk didn't surface) — useful for
       // debugging which side is missing.
@@ -795,6 +819,13 @@ async function getBackupConfig() {
 // restore workflow — so type tokens are excluded from the path check.
 const SOURCE_TYPE_TOKENS = ['local', 's3', 'upload'];
 
+function restoreErrorCode(error) {
+  if (['BACKUP_MANIFEST_MISSING', 'BACKUP_DATA_MISSING', 'BACKUP_DATA_CORRUPT', 'BACKUP_DATA_UNAVAILABLE', 'BACKUP_UNSAFE_PATH', 'BACKUP_PATH_OUTSIDE'].includes(error?.code)) return error.code;
+  if (error?.code === 'ENOENT' || /ENOENT|no such file or directory/i.test(error?.message || '')) return 'BACKUP_DATA_MISSING';
+  if (['EACCES', 'EPERM', 'EIO'].includes(error?.code)) return 'BACKUP_DATA_UNAVAILABLE';
+  return 'RESTORE_VALIDATION_FAILED';
+}
+
 async function checkRestorePathsAllowed({ source, manifestPath }) {
   const isS3 = (v) => typeof v === 'string' && v.startsWith('s3://');
   const isTypeToken = (v) => typeof v === 'string'
@@ -865,6 +896,18 @@ async function checkRestorePathsAllowed({ source, manifestPath }) {
         ? JSON.parse(raw)
         : null; // non-JSON (e.g. YAML) manifests are re-checked inside restoreService
       const dbBackupFile = parsed?.database?.backup_file;
+      const snapshotPath = parsed?.backup?.path;
+      if (typeof snapshotPath === 'string' && snapshotPath.trim() && !snapshotPath.startsWith('s3://')) {
+        if (path.isAbsolute(snapshotPath)) {
+          if (!isInsideRoots(snapshotPath)) {
+            logger.warn('Refusing restore: manifest snapshot path escapes configured backup roots', { manifestPath });
+            return 'Backup snapshot path must be inside a configured backup location';
+          }
+        } else if (path.posix.isAbsolute(snapshotPath) || snapshotPath.split(/[\\/]/).some((part) => part === '..')) {
+          logger.warn('Refusing restore: manifest snapshot path contains traversal', { manifestPath });
+          return 'Backup manifest contains an unsafe snapshot path';
+        }
+      }
       if (typeof dbBackupFile === 'string' && path.isAbsolute(dbBackupFile) && !isInsideRoots(dbBackupFile)) {
         // A backup manifest can be moved between NAS/container installations.
         // Its absolute path then describes the original host, while the same
@@ -910,4 +953,4 @@ async function checkRestorePathsAllowed({ source, manifestPath }) {
 module.exports = router;
 // Exposed for tests: the source/manifestPath containment rules (GHSA-fw4c) are
 // worth pinning directly, especially the source-TYPE-token carve-out.
-module.exports._internal = { checkRestorePathsAllowed, SOURCE_TYPE_TOKENS };
+module.exports._internal = { checkRestorePathsAllowed, SOURCE_TYPE_TOKENS, parseManifestMetadata, restoreErrorCode };

@@ -6,6 +6,7 @@ import { settingsService } from '../../../services/settings.service';
 import { adminService } from '../../../services/admin.service';
 import { useAdminAuth } from '../../../contexts';
 import { toBoolean, toNumber } from '../../../utils/parsers';
+import { STORAGE_INFO_QUERY_KEY } from './useStorageInfo';
 
 const BYTES_PER_GB = 1024 * 1024 * 1024;
 export const MAX_FILES_PER_UPLOAD_LIMIT = 2000;
@@ -481,8 +482,7 @@ export function useSettingsState(enabled = true) {
       toast.success(t('toast.settingsSaved'));
       setSoftLimitDirty(false);
       queryClient.invalidateQueries({ queryKey: ['admin-settings'] });
-      queryClient.invalidateQueries({ queryKey: ['admin-storage-info'] });
-      queryClient.invalidateQueries({ queryKey: ['storage-info'] });
+      queryClient.invalidateQueries({ queryKey: STORAGE_INFO_QUERY_KEY });
     },
     onError: () => {
       toast.error(t('toast.saveError'));
@@ -500,8 +500,7 @@ export function useSettingsState(enabled = true) {
       toast.success(t('toast.settingsSaved'));
       setOverrideDirty(false);
       queryClient.invalidateQueries({ queryKey: ['admin-settings'] });
-      queryClient.invalidateQueries({ queryKey: ['admin-storage-info'] });
-      queryClient.invalidateQueries({ queryKey: ['storage-info'] });
+      queryClient.invalidateQueries({ queryKey: STORAGE_INFO_QUERY_KEY });
     },
     onError: () => {
       toast.error(t('toast.saveError'));

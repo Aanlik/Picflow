@@ -77,6 +77,24 @@ describe('backupService — configurable walker (backup_paths)', () => {
     ]);
   });
 
+  it('fails a backup walk rather than silently omitting a symbolic-link source', async () => {
+    const sourceRoot = path.join(storagePath, 'events', 'active', 'link-check');
+    const outsideRoot = path.join(storagePath, 'outside-link-check');
+    fs.mkdirSync(sourceRoot, { recursive: true });
+    fs.mkdirSync(outsideRoot, { recursive: true });
+    fs.writeFileSync(path.join(outsideRoot, 'photo.jpg'), 'linked source');
+    const link = path.join(sourceRoot, 'linked');
+    fs.symlinkSync(outsideRoot, link, 'dir');
+
+    try {
+      await expect(backupService._internal.scanDirectory(sourceRoot, [], sourceRoot))
+        .rejects.toThrow(/Backup scan failed for a configured source directory/);
+    } finally {
+      fs.rmSync(sourceRoot, { recursive: true, force: true });
+      fs.rmSync(outsideRoot, { recursive: true, force: true });
+    }
+  });
+
   it('walks every default subdir when files are present', async () => {
     seedFile('events/active/E1/a.jpg');
     seedFile('thumbnails/E1/a.jpg');
@@ -254,6 +272,16 @@ describe('backupService — configurable walker (backup_paths)', () => {
         '/thumbnails/',
         '/events/archived/',
       ]));
+    });
+
+    it('does not mirror-delete files from the remote backup destination', () => {
+      const args = backupService.buildRsyncArgs({
+        backup_rsync_host: 'backup.example.com',
+        backup_rsync_path: '/srv/backups',
+      });
+
+      expect(args).not.toContain('--delete');
+      expect(args).toContain('--stats');
     });
 
     it('rows toggled off via include_in_default also become rsync excludes', async () => {

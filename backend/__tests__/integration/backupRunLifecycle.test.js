@@ -90,6 +90,62 @@ describe('backup restore-point download and cleanup', () => {
     return { id: inserted[0]?.id || inserted[0], manifestPath, payloadPath, databaseFile, fileContent };
   }
 
+  async function createImmutableSnapshotRun() {
+    const inserted = await db('backup_runs').insert({
+      started_at: new Date().toISOString(), status: 'running', backup_type: 'manual',
+    }).returning('id');
+    const id = inserted[0]?.id || inserted[0];
+    const snapshotName = `backup-${id}`;
+    const snapshotRoot = path.join(root, snapshotName);
+    const relative = 'events/active/standalone.txt';
+    const payloadPath = path.join(snapshotRoot, relative);
+    const content = 'standalone immutable snapshot';
+    await fs.mkdir(path.dirname(payloadPath), { recursive: true });
+    await fs.writeFile(payloadPath, content);
+    const manifest = await require('../../src/services/backupManifest').generateManifest({
+      backupType: 'full',
+      backupPath: snapshotName,
+      files: [{
+        relativePath: relative,
+        path: relative,
+        size: Buffer.byteLength(content),
+        checksum: crypto.createHash('sha256').update(content).digest('hex'),
+      }],
+      customMetadata: { backup_run_id: id, destination_type: 'local', local_snapshot: true },
+      parentBackupId: null,
+    });
+    const manifestPath = path.join(root, 'manifests', `snapshot-${id}.json`);
+    await fs.mkdir(path.dirname(manifestPath), { recursive: true });
+    await require('../../src/services/backupManifest').saveManifest(manifest, manifestPath);
+    await db('backup_runs').where({ id }).update({
+      completed_at: new Date().toISOString(), status: 'completed', files_backed_up: 1,
+      total_size_bytes: Buffer.byteLength(content), manifest_path: manifestPath,
+      manifest_id: manifest.backup.id,
+    });
+    return { id, snapshotRoot, manifestPath, relative, content };
+  }
+
+  async function createExpiredSnapshot({ ageDays = 40, parentId = null } = {}) {
+    const startedAt = new Date(Date.now() - ageDays * 24 * 60 * 60 * 1000).toISOString();
+    const inserted = await db('backup_runs').insert({
+      started_at: startedAt, completed_at: startedAt, status: 'completed', backup_type: 'manual',
+      files_backed_up: 0, total_size_bytes: 0, parent_backup_id: parentId,
+    }).returning('id');
+    const id = inserted[0]?.id || inserted[0];
+    const snapshotName = `backup-${id}`;
+    const snapshotRoot = path.join(root, snapshotName);
+    await fs.mkdir(snapshotRoot, { recursive: true });
+    const manifest = await require('../../src/services/backupManifest').generateManifest({
+      backupType: 'full', backupPath: snapshotName, files: [], parentBackupId: null,
+      customMetadata: { backup_run_id: id, destination_type: 'local', local_snapshot: true },
+    });
+    const manifestPath = path.join(root, 'manifests', `expired-${id}.json`);
+    await fs.mkdir(path.dirname(manifestPath), { recursive: true });
+    await require('../../src/services/backupManifest').saveManifest(manifest, manifestPath);
+    await db('backup_runs').where({ id }).update({ manifest_path: manifestPath, manifest_id: manifest.backup.id });
+    return { id, snapshotRoot, manifestPath };
+  }
+
   it('downloads the actual files listed by the manifest rather than a nonexistent per-run folder', async () => {
     const run = await createRun({ includeDatabase: true });
     const response = await request(app).get(`/api/admin/backup/download/${run.id}`)
@@ -115,6 +171,49 @@ describe('backup restore-point download and cleanup', () => {
     expect(status.body.lastSuccessfulBackup.contentSummary).toMatchObject({ databaseIncluded: true, activeProjectFiles: 1, filesInThisRun: 1 });
   });
 
+  it('downloads a generated-format immutable full snapshot without a parent manifest', async () => {
+    const run = await createImmutableSnapshotRun();
+    const response = await request(app).get(`/api/admin/backup/download/${run.id}`)
+      .set('Authorization', `Bearer ${token}`).buffer(true).parse((res, callback) => {
+        const chunks = [];
+        res.on('data', (chunk) => chunks.push(chunk));
+        res.on('end', () => callback(null, Buffer.concat(chunks)));
+      }).expect(200);
+
+    expect(response.headers['content-type']).toMatch(/application\/zip/);
+    const contents = unpackZip(response.body);
+    expect(contents.get(run.relative).toString()).toBe(run.content);
+    const manifest = JSON.parse(contents.get('manifest.json').toString());
+    expect(manifest.backup).toMatchObject({ type: 'full', parent_backup_id: null });
+    expect(manifest.metadata.local_snapshot).toBe(true);
+  });
+
+  it('refuses Windows drive paths in a local backup manifest before creating a ZIP', async () => {
+    const run = await createRun();
+    const backupManifest = require('../../src/services/backupManifest');
+    const manifest = await backupManifest.loadManifest(run.manifestPath);
+    manifest.files.manifest[0].path = 'C:/outside/private.txt';
+    manifest.verification.total_checksum = backupManifest.calculateManifestChecksum(manifest);
+    await backupManifest.saveManifest(manifest, run.manifestPath);
+
+    await request(app).get(`/api/admin/backup/download/${run.id}`)
+      .set('Authorization', `Bearer ${token}`).expect(409)
+      .then((response) => expect(response.body.error).toMatch(/unsafe file path/i));
+
+    await db('backup_runs').where({ id: run.id }).delete();
+    await fs.unlink(run.manifestPath).catch(() => {});
+    await fs.unlink(run.payloadPath).catch(() => {});
+  });
+
+  it('blocks a legacy restore point whose incremental parent is missing', async () => {
+    const run = await createRun({ parentId: 999999 });
+    const response = await request(app).get(`/api/admin/backup/download/${run.id}`)
+      .set('Authorization', `Bearer ${token}`).expect(409);
+
+    expect(response.body.error).toMatch(/parent backup required .* is missing/i);
+    expect(await db('backup_runs').where({ id: run.id }).first()).toBeTruthy();
+  });
+
   it('searches backup history by localized date, status, and actual backup type', async () => {
     const inserted = await db('backup_runs').insert({
       started_at: '2026-10-14 01:58:00', completed_at: '2026-10-14 02:01:00', status: 'completed',
@@ -127,6 +226,23 @@ describe('backup restore-point download and cleanup', () => {
       expect(response.body.recentBackups.some((run) => Number(run.id) === Number(id))).toBe(true);
     }
     await db('backup_runs').where({ id }).delete();
+  });
+
+  it('searches history by the displayed backup size and localized file count', async () => {
+    const id = (await db('backup_runs').insert({
+      started_at: '2026-10-15 00:13:00', completed_at: '2026-10-15 00:13:30', status: 'completed',
+      backup_type: 'manual', files_backed_up: 899, total_size_bytes: Math.round(4.34 * 1024 ** 3),
+    }).returning('id'))[0];
+    const runId = id?.id || id;
+
+    for (const term of ['4.34 GB', '899 个文件', '899']) {
+      const response = await request(app)
+        .get(`/api/admin/backup/status?includeHistory=true&search=${encodeURIComponent(term)}`)
+        .set('Authorization', `Bearer ${token}`).expect(200);
+      expect(response.body.recentBackups.some((run) => Number(run.id) === Number(runId))).toBe(true);
+    }
+
+    await db('backup_runs').where({ id: runId }).delete();
   });
 
   it('refuses to remove a restore point with an incremental dependent', async () => {
@@ -148,5 +264,36 @@ describe('backup restore-point download and cleanup', () => {
     expect(await db('backup_runs').where({ id: run.id }).first()).toBeUndefined();
     await expect(fs.access(run.manifestPath)).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(fs.access(run.payloadPath)).resolves.toBeUndefined();
+  });
+
+  it('expires an immutable local snapshot together with its manifest and row', async () => {
+    const backupService = require('../../src/services/backupService');
+    const expired = await createExpiredSnapshot();
+
+    const deletedCount = await backupService.cleanupOldBackupRuns(30);
+    expect(deletedCount).toBeGreaterThanOrEqual(1);
+
+    expect(await db('backup_runs').where({ id: expired.id }).first()).toBeUndefined();
+    await expect(fs.access(expired.manifestPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(fs.access(expired.snapshotRoot)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('keeps an expired parent while a surviving restore point references it', async () => {
+    const backupService = require('../../src/services/backupService');
+    const parent = await createExpiredSnapshot();
+    const child = await createExpiredSnapshot({ ageDays: 1, parentId: parent.id });
+    expect(Number((await db('backup_runs').where({ id: child.id }).first()).parent_backup_id)).toBe(Number(parent.id));
+    expect(new Date((await db('backup_runs').where({ id: child.id }).first()).started_at).getTime())
+      .toBeGreaterThan(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    expect(await db('backup_runs').where({ parent_backup_id: parent.id }).first()).toBeTruthy();
+    await backupService.cleanupOldBackupRuns(30);
+
+    expect(await db('backup_runs').where({ id: parent.id }).first()).toBeTruthy();
+    await expect(fs.access(parent.manifestPath)).resolves.toBeUndefined();
+    await expect(fs.access(parent.snapshotRoot)).resolves.toBeUndefined();
+    await db('backup_runs').where({ id: child.id }).delete();
+    await db('backup_runs').where({ id: parent.id }).delete();
+    await fs.rm(child.snapshotRoot, { recursive: true, force: true });
+    await fs.unlink(child.manifestPath).catch(() => {});
   });
 });

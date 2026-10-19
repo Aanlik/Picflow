@@ -2227,6 +2227,7 @@
     "settingsSaved": "设置已成功保存",
     "themeUpdated": "主题成功更新",
     "brandingUpdated": "成功更新品牌",
+    "brandingAndThemeUpdated": "品牌与主题已保存",
     "categoryUpdated": "成功更新分类",
     "brandingThemeMissing": "目前尚未保存品牌主题.",
     "brandingPaletteSynced": "已同步品牌配色。"
@@ -2697,7 +2698,13 @@
     },
     "restore": {
       "errors": {
-        "dbBackupOutsideConfiguredPath": "备份中的数据库文件不在已配置的备份目录内，系统已阻止恢复。请核对备份目录后重试。"
+        "dbBackupOutsideConfiguredPath": "备份中的数据库文件不在已配置的备份目录内，系统已阻止恢复。请核对备份目录后重试。",
+        "manifestMissing": "此还原点的清单文件缺失。请选择其他备份，或重新创建备份。",
+        "dataMissing": "此备份所需的文件不完整。请选择其他备份，或重新创建备份。",
+        "dataCorrupt": "备份文件与清单记录不一致，可能已损坏。请选择其他备份，或重新创建备份。",
+        "dataUnavailable": "Picflow 无法读取此备份目录。请检查 NAS 挂载和文件夹权限。",
+        "unsafePath": "此备份指向已配置目录之外，无法恢复。",
+        "pathOutsideConfiguredLocation": "所选恢复路径不在已配置的备份目录内，请选择已配置位置中的备份。"
       },
       "superAdminOnly": "恢复备份会替换此实例中的数据，包括用户账号和角色，因此仅超级管理员可以执行。",
       "steps": {
@@ -2743,6 +2750,10 @@
         "encryptedMessage": "请输入备份密码以继续恢复。",
         "enterPassphrase": "输入备份密码",
         "at": "时间",
+        "unknownDate": "日期不可用",
+        "fileCount_one": "{{count}} 个文件",
+        "fileCount_other": "{{count}} 个文件",
+        "fileCountUnknown": "文件数不可用",
         "filesOnlyHint": "此备份不包含数据库。恢复后无法找回数据库记录、账号和设置。",
         "filesOnlyBadge": "仅文件",
         "corruptHint": "备份文件无法读取，可能已损坏或不完整。",

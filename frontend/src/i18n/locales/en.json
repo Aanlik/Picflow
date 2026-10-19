@@ -2227,6 +2227,7 @@
     "settingsSaved": "Settings saved successfully",
     "themeUpdated": "Theme updated successfully",
     "brandingUpdated": "Branding updated successfully",
+    "brandingAndThemeUpdated": "Branding and theme saved successfully",
     "categoryUpdated": "Category updated successfully",
     "brandingThemeMissing": "No branding theme has been saved yet.",
     "brandingPaletteSynced": "Brand colors synced."
@@ -2697,7 +2698,13 @@
     },
     "restore": {
       "errors": {
-        "dbBackupOutsideConfiguredPath": "The database file in this backup is outside the configured backup locations, so restoration was blocked. Check the backup location and try again."
+        "dbBackupOutsideConfiguredPath": "The database file in this backup is outside the configured backup locations, so restoration was blocked. Check the backup location and try again.",
+        "manifestMissing": "This restore point is missing its manifest. Choose another backup or create a new one.",
+        "dataMissing": "Files required by this backup are missing. Choose another backup or create a new one.",
+        "dataCorrupt": "A backup file does not match its manifest and may be damaged. Choose another backup or create a new one.",
+        "dataUnavailable": "Picflow cannot read the selected backup location. Check the NAS mount and folder permissions.",
+        "unsafePath": "This backup points outside the configured backup folders and cannot be restored.",
+        "pathOutsideConfiguredLocation": "The selected restore path is outside the configured backup folders. Choose a backup from a configured location."
       },
       "superAdminOnly": "Restoring a backup replaces all data on this instance, user accounts and roles included, so only a Super Admin can do it.",
       "steps": {
@@ -2743,6 +2750,10 @@
         "encryptedMessage": "You'll need to provide the encryption passphrase to restore this backup.",
         "enterPassphrase": "Enter encryption passphrase",
         "at": "at",
+        "unknownDate": "Date unavailable",
+        "fileCount_one": "{{count}} file",
+        "fileCount_other": "{{count}} files",
+        "fileCountUnknown": "File count unavailable",
         "filesOnlyHint": "This backup has no database dump — restoring it will NOT recover database records, user accounts, or settings.",
         "filesOnlyBadge": "No DB",
         "corruptHint": "The manifest file is unreadable — the backup may be incomplete or damaged.",

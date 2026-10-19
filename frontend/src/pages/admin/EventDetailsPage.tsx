@@ -22,6 +22,7 @@ import { EventTabs } from './event-details/EventTabs';
 import { OverviewTab } from './event-details/OverviewTab';
 import { PhotosTab } from './event-details/PhotosTab';
 import { CategoriesTab } from './event-details/CategoriesTab';
+import { STORAGE_INFO_QUERY_KEY } from '../../features/settings/hooks/useStorageInfo';
 
 const ALL_TAB_KEYS: EventDetailsTab[] = ['overview', 'photos', 'categories', 'guests'];
 
@@ -281,8 +282,7 @@ export const EventDetailsPage: React.FC = () => {
         queryClient.invalidateQueries({ queryKey: ['admin-event', id] }),
         queryClient.invalidateQueries({ queryKey: ['admin-events'] }),
         queryClient.invalidateQueries({ queryKey: ['admin-archives'] }),
-        queryClient.invalidateQueries({ queryKey: ['storage-info'] }),
-        queryClient.invalidateQueries({ queryKey: ['admin-storage-info'] }),
+        queryClient.invalidateQueries({ queryKey: STORAGE_INFO_QUERY_KEY }),
       ]);
       toast.success(t('toast.eventArchived'));
       navigate('/admin/archives', { replace: true });

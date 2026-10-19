@@ -116,6 +116,7 @@ class BackupManifestGenerator {
           size: file.size,
           modified: file.modified,
           checksum: file.checksum,
+          ...(file.storageKey ? { storage_key: file.storageKey } : {}),
           type: this.getFileType(file.path),
           permissions: file.permissions
         }))
@@ -125,6 +126,7 @@ class BackupManifestGenerator {
       database: {
         type: databaseInfo.type || this.getDatabaseType(),
         backup_file: databaseInfo.backupFile,
+        ...(databaseInfo.storage_key ? { storage_key: databaseInfo.storage_key } : {}),
         size: databaseInfo.size,
         checksum: databaseInfo.checksum,
         tables: databaseInfo.tables || {},

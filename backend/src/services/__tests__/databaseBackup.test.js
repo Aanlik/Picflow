@@ -174,6 +174,73 @@ describe('DatabaseBackupService', () => {
     });
   });
 
+  describe('integrity validation', () => {
+    it('validates the SQLite dump before compression and records the real result', async () => {
+      const os = require('os');
+      const destination = await fs.mkdtemp(path.join(os.tmpdir(), 'picpeak-db-validation-'));
+      const queries = [];
+      let runStatistics;
+      db.mockImplementation((table) => {
+        if (table === 'app_settings') {
+          return {
+            where: jest.fn().mockReturnThis(),
+            select: jest.fn().mockResolvedValue([]),
+          };
+        }
+        if (table === 'knex_migrations') {
+          return { orderBy: jest.fn().mockReturnThis(), first: jest.fn().mockResolvedValue({ name: '001_init' }) };
+        }
+        if (table === 'database_backup_runs') {
+          return {
+            insert: jest.fn().mockReturnValue({ returning: jest.fn().mockResolvedValue([{ id: 41 }]) }),
+            where: jest.fn().mockReturnValue({
+              update: jest.fn().mockImplementation(async (fields) => {
+                runStatistics = JSON.parse(fields.statistics);
+                return 1;
+              }),
+            }),
+          };
+        }
+        throw new Error(`Unexpected table: ${table}`);
+      });
+
+      service.getDatabaseSize = jest.fn().mockResolvedValue(2048);
+      service.createSQLiteBackup = jest.fn(async (filePath) => fs.writeFile(filePath, 'sqlite dump'));
+      service.validateBackup = jest.fn(async (filePath) => {
+        queries.push(['validate', filePath]);
+        await fs.access(filePath);
+        return { valid: true, status: 'passed' };
+      });
+      service.compressFile = jest.fn(async (inputPath, outputPath) => {
+        queries.push(['compress', inputPath]);
+        await fs.writeFile(outputPath, 'compressed dump');
+        return { compressionRatio: '0.50' };
+      });
+
+      try {
+        const result = await service.backup({
+          destinationPath: destination,
+          compress: true,
+          validateIntegrity: true,
+          includeChecksums: false,
+        });
+
+        expect(result.success).toBe(true);
+        expect(queries.map(([step]) => step)).toEqual(['validate', 'compress']);
+        expect(queries[0][1]).toMatch(/\.sql$/);
+        expect(runStatistics).toMatchObject({ validated: true, validation_status: 'passed', compressed: true });
+      } finally {
+        await fs.rm(destination, { recursive: true, force: true });
+      }
+    });
+
+    it('does not claim a PostgreSQL dump passed an integrity check without a restore test', async () => {
+      service.dbType = 'postgresql';
+      const result = await service.validateBackup('/tmp/not-read-for-postgres.sql');
+      expect(result).toEqual({ valid: false, skipped: true, status: 'not_supported' });
+    });
+  });
+
   describe('backup configuration', () => {
     it('should get backup configuration from database', async () => {
       const mockConfig = [
@@ -515,7 +582,7 @@ describe('DatabaseBackupService', () => {
       const dbSpy = jest.fn();
       db.mockImplementation(dbSpy);
 
-      await service.cleanupOldBackups(bad);
+      await expect(service.cleanupOldBackups(bad)).rejects.toThrow(/integer from 1 to 3650/);
 
       expect(dbSpy).not.toHaveBeenCalled();
     });
@@ -523,33 +590,43 @@ describe('DatabaseBackupService', () => {
 
   describe('cleanupOldBackups', () => {
     it('should delete old backup files and records', async () => {
+      const destination = '/tmp/test-backup';
+      await fs.mkdir(destination, { recursive: true });
       const oldBackups = [
-        { id: 1, file_path: '/backup/old1.sql.gz' },
-        { id: 2, file_path: '/backup/old2.sql.gz' }
+        { id: 1, file_path: path.join(destination, 'old1.sql.gz'), completed_at: new Date(Date.now() - 40 * 86400000).toISOString() },
+        { id: 2, file_path: path.join(destination, 'old2.sql.gz'), completed_at: new Date(Date.now() - 40 * 86400000).toISOString() }
       ];
+      await Promise.all(oldBackups.map((backup) => fs.writeFile(backup.file_path, 'backup')));
 
-      db.mockReturnValue({
-        where: jest.fn().mockReturnThis(),
-        select: jest.fn().mockResolvedValue(oldBackups),
-        delete: jest.fn().mockResolvedValue(1)
+      db.mockImplementation((table) => {
+        if (table === 'app_settings') {
+          return {
+            where: jest.fn().mockReturnThis(),
+            select: jest.fn().mockResolvedValue([{
+              setting_key: 'database_backup_destination_path',
+              setting_value: JSON.stringify(destination),
+            }]),
+          };
+        }
+        if (table === 'database_backup_runs') {
+          let status;
+          const query = {
+            where: jest.fn((column, value) => { if (column === 'status') status = value; return query; }),
+            select: jest.fn().mockImplementation(async () => status === 'failed' ? [] : oldBackups),
+          };
+          return query;
+        }
+        throw new Error(`Unexpected table: ${table}`);
       });
+      db.transaction = jest.fn(async (callback) => callback((table) => ({
+        where: jest.fn().mockReturnValue({ delete: jest.fn().mockResolvedValue(table === 'database_backup_runs' ? 1 : 0) }),
+      })));
 
-      // Stub fs.promises.unlink via jest.spyOn so the original is
-      // restored when the test finishes. The previous form
-      // (`fs.unlink = jest.fn()`) leaked into every test that ran
-      // after this one in the same jest worker — most visibly
-      // integration/storageBackend.test.js, whose LocalFsStorage
-      // delete() became a silent no-op and the subsequent
-      // exists() assertion flipped from false to true. spyOn +
-      // mockRestore in afterEach keeps the stub scoped to this test.
-      const unlinkSpy = jest.spyOn(fs, 'unlink').mockResolvedValue(undefined);
+      const deleted = await service.cleanupOldBackups(30);
 
-      await service.cleanupOldBackups(30);
-
-      expect(unlinkSpy).toHaveBeenCalledTimes(2);
-      expect(unlinkSpy).toHaveBeenCalledWith('/backup/old1.sql.gz');
-      expect(unlinkSpy).toHaveBeenCalledWith('/backup/old2.sql.gz');
-      unlinkSpy.mockRestore();
+      expect(deleted).toBe(2);
+      await expect(fs.access(oldBackups[0].file_path)).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(fs.access(oldBackups[1].file_path)).rejects.toMatchObject({ code: 'ENOENT' });
     });
   });
 

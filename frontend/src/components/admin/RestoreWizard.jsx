@@ -32,7 +32,7 @@ import { useLocalizedDate } from '../../hooks/useLocalizedDate';
 
 export const RestoreWizard = () => {
   const { t } = useTranslation();
-  const { format: fmtDate, formatTime: fmtTime, formatDateTime: fmtDateTime } = useLocalizedDate();
+  const { formatDateTime: fmtDateTime } = useLocalizedDate();
   const [currentStep, setCurrentStep] = useState(0);
   
   const steps = [
@@ -78,6 +78,44 @@ export const RestoreWizard = () => {
   });
   const [validationResult, setValidationResult] = useState(null);
 
+  const restoreErrorMessage = (error, fallbackKey) => {
+    const code = error.response?.data?.code;
+    const codeKeys = {
+      BACKUP_MANIFEST_MISSING: 'backup.restore.errors.manifestMissing',
+      BACKUP_DATA_MISSING: 'backup.restore.errors.dataMissing',
+      BACKUP_DATA_CORRUPT: 'backup.restore.errors.dataCorrupt',
+      BACKUP_DATA_UNAVAILABLE: 'backup.restore.errors.dataUnavailable',
+      BACKUP_UNSAFE_PATH: 'backup.restore.errors.unsafePath',
+      BACKUP_PATH_OUTSIDE: 'backup.restore.errors.pathOutsideConfiguredLocation',
+    };
+    if (code && codeKeys[code]) return t(codeKeys[code]);
+
+    // Older servers do not return a stable error code. Never show raw OS
+    // errors here: they leak NAS paths and vary by platform/locale.
+    const legacyMessage = String(error.response?.data?.error || '');
+    if (legacyMessage === 'Manifest database.backup_file must be inside a configured backup location') {
+      return t('backup.restore.errors.dbBackupOutsideConfiguredPath');
+    }
+    return t(fallbackKey);
+  };
+
+  const restoreValidationMessages = (validation) => {
+    if (validation?.isValid || !validation?.errors?.length) return [];
+    const codeKeys = {
+      BACKUP_MANIFEST_MISSING: 'backup.restore.errors.manifestMissing',
+      BACKUP_DATA_MISSING: 'backup.restore.errors.dataMissing',
+      BACKUP_DATA_CORRUPT: 'backup.restore.errors.dataCorrupt',
+      BACKUP_DATA_UNAVAILABLE: 'backup.restore.errors.dataUnavailable',
+      BACKUP_UNSAFE_PATH: 'backup.restore.errors.unsafePath',
+      BACKUP_PATH_OUTSIDE: 'backup.restore.errors.pathOutsideConfiguredLocation',
+    };
+    // Preflight errors may contain server paths or operating-system details.
+    // Show stable localized guidance instead of echoing untrusted host text.
+    return [validation.errorCode && codeKeys[validation.errorCode]
+      ? t(codeKeys[validation.errorCode])
+      : t('backup.restore.validationFailed')];
+  };
+
   // Fetch restore status
   const { data: restoreStatus } = useQuery({
     queryKey: ['restore-status'],
@@ -117,10 +155,7 @@ export const RestoreWizard = () => {
       setCurrentStep(3);
     },
     onError: (error) => {
-      const message = error.response?.data?.error;
-      toast.error(message === 'Manifest database.backup_file must be inside a configured backup location'
-        ? t('backup.restore.errors.dbBackupOutsideConfiguredPath')
-        : message || t('backup.restore.validationFailed'));
+      toast.error(restoreErrorMessage(error, 'backup.restore.validationFailed'));
     }
   });
 
@@ -143,10 +178,7 @@ export const RestoreWizard = () => {
       toast.success(t('backup.restore.started'));
     },
     onError: (error) => {
-      const message = error.response?.data?.error;
-      toast.error(message === 'Manifest database.backup_file must be inside a configured backup location'
-        ? t('backup.restore.errors.dbBackupOutsideConfiguredPath')
-        : message || t('backup.restore.startFailed'));
+      toast.error(restoreErrorMessage(error, 'backup.restore.startFailed'));
     }
   });
 
@@ -310,7 +342,7 @@ export const RestoreWizard = () => {
         <div className="space-y-3">
           {availableBackups?.map((backup) => (
             <Card
-              key={backup.id}
+              key={backup.id || backup.manifest_path || backup.path}
               className={`p-4 cursor-pointer transition-all ${
                 restoreData.selectedBackup?.id === backup.id
                   ? 'ring-2 ring-primary bg-accent-dark/15'
@@ -331,10 +363,20 @@ export const RestoreWizard = () => {
                   </div>
                   <div>
                     <p className="font-medium text-neutral-900 dark:text-neutral-100">
-                      {fmtDate(backup.created_at)} {t('backup.restore.backup.at')} {fmtTime(backup.created_at)}
+                      {(backup.created_at && fmtDateTime(backup.created_at))
+                        || t('backup.restore.backup.unknownDate')}
                     </p>
                     <p className="text-sm text-neutral-500 dark:text-neutral-400">
-                      {t('backup.dashboard.backupType', { type: t(`backup.history.types.${String(backup.backup_type).toLowerCase()}`, { defaultValue: backup.backup_type }) })} • {formatBytes(backup.total_size || 0)}
+                      {t('backup.dashboard.backupType', {
+                        type: t(`backup.dashboard.backupTypeNames.${String(backup.backup_type).toLowerCase()}`, {
+                          defaultValue: t(`backup.history.types.${String(backup.backup_type).toLowerCase()}`, {
+                            defaultValue: backup.backup_type,
+                          }),
+                        }),
+                      })} • {formatBytes(backup.total_size || 0)}
+                      {' · '}{backup.filesCount != null
+                        ? t('backup.restore.backup.fileCount', { count: backup.filesCount })
+                        : t('backup.restore.backup.fileCountUnknown')}
                     </p>
                   </div>
                 </div>
@@ -536,9 +578,9 @@ export const RestoreWizard = () => {
                     ? t('backup.restore.confirmation.validation.passed') 
                     : t('backup.restore.confirmation.validation.failed')}
                 </p>
-                {validationResult.validation?.errors?.length > 0 && (
+                {restoreValidationMessages(validationResult.validation).length > 0 && (
                   <ul className="mt-2 text-sm text-red-700 dark:text-red-300 list-disc list-inside">
-                    {validationResult.validation.errors.map((error, idx) => (
+                    {restoreValidationMessages(validationResult.validation).map((error, idx) => (
                       <li key={idx}>{error}</li>
                     ))}
                   </ul>

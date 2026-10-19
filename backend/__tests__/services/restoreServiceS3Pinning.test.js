@@ -35,6 +35,7 @@ jest.mock('dns', () => {
 });
 
 let capturedConfig;
+let mockCapturedDownloadKeys = [];
 // Restore downloads go through getMetadata() (HeadObject size check) and
 // downloadStream() (bounded body); download() is no longer called.
 jest.mock('../../src/services/storage/s3Storage', () =>
@@ -43,7 +44,10 @@ jest.mock('../../src/services/storage/s3Storage', () =>
     const { Readable } = require('stream');
     return {
       getMetadata: jest.fn().mockResolvedValue({ ContentLength: 2 }),
-      downloadStream: jest.fn().mockImplementation(async () => Readable.from([Buffer.from('{}')])),
+      downloadStream: jest.fn().mockImplementation(async (key) => {
+        mockCapturedDownloadKeys.push(key);
+        return Readable.from([Buffer.from('{}')]);
+      }),
       testConnection: jest.fn().mockResolvedValue(true),
     };
   })
@@ -156,7 +160,12 @@ describe('downloadFileFromS3 DNS-rebinding pinning', () => {
 describe('downloadFromS3 pins the client used for the restore downloads', () => {
   let restoreService;
   let originalNodeEnv;
-  const manifest = { database: { backup_file: 'picpeak.sqlite.gz' }, files: { manifest: [] } };
+  const manifest = {
+    backup: { path: 's3://backups/backups/runs/test-run' },
+    database: { backup_file: 'picpeak.sqlite.gz' },
+    files: { manifest: [] },
+    metadata: { backup_settings: { backup_s3_prefix: 'backups' } },
+  };
   const options = (endpoint) => ({
     restoreType: 'database',
     s3Config: { endpoint, accessKeyId: 'k', secretAccessKey: 's' },
@@ -166,6 +175,7 @@ describe('downloadFromS3 pins the client used for the restore downloads', () => 
     restoreService = new RestoreService();
     restoreService.tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'picpeak-restores3pin-dl-'));
     capturedConfig = undefined;
+    mockCapturedDownloadKeys = [];
     promiseLookup.mockReset();
     dns.lookup.mockReset();
     S3StorageAdapter.mockClear();
@@ -190,6 +200,7 @@ describe('downloadFromS3 pins the client used for the restore downloads', () => 
     await restoreService.downloadFromS3('s3://backups/2026-09-15', manifest, options('rebind.example.com'));
 
     expect(S3StorageAdapter).toHaveBeenCalledTimes(1);
+    expect(mockCapturedDownloadKeys).toEqual(['backups/runs/test-run/database/picpeak.sqlite.gz']);
     expect(capturedConfig.httpsAgent).toBeInstanceOf(require('https').Agent);
     const pinnedLookup = capturedConfig.httpsAgent.options.lookup;
     const result = await new Promise((resolve, reject) => {

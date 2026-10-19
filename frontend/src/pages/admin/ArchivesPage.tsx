@@ -22,6 +22,7 @@ import { archiveService, type ArchiveSortBy } from '../../services/archive.servi
 import { useTranslation } from 'react-i18next';
 import { useLocalizedDate } from '../../hooks/useLocalizedDate';
 import { useMutationWithToast } from '../../hooks';
+import { STORAGE_INFO_QUERY_KEY } from '../../features/settings/hooks/useStorageInfo';
 // import { useNavigate } from 'react-router-dom';
 
 export const ArchivesPage: React.FC = () => {
@@ -83,7 +84,7 @@ export const ArchivesPage: React.FC = () => {
     mutationFn: (id: number) => archiveService.restoreArchive(id),
     successMessage: t('archives.restoreSuccess'),
     errorMessage: () => t('errors.somethingWentWrong'),
-    invalidateKeys: [['admin-archives'], ['admin-events'], ['storage-info'], ['admin-storage-info']],
+    invalidateKeys: [['admin-archives'], ['admin-events'], STORAGE_INFO_QUERY_KEY],
   });
 
   const deleteMutation = useMutationWithToast({
@@ -92,7 +93,7 @@ export const ArchivesPage: React.FC = () => {
       ? t('archives.deleteSuccessCleanupPending')
       : t('archives.deleteSuccess'),
     errorMessage: () => t('errors.somethingWentWrong'),
-    invalidateKeys: [['admin-archives'], ['admin-events'], ['storage-info'], ['admin-storage-info']],
+    invalidateKeys: [['admin-archives'], ['admin-events'], STORAGE_INFO_QUERY_KEY],
   });
 
   const handleDownload = async (archive: typeof archives[0]) => {

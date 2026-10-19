@@ -49,12 +49,14 @@ const insertResult = (value) => {
 // DB dump on disk and refuses to continue without it — seed it into every
 // mock-fs tree.
 const DB_DUMP_PATH = '/backup/db-dump.sql';
+const DB_DUMP_CHECKSUM = crypto.createHash('sha256').update('database dump').digest('hex');
 const mockStorage = (tree) => mockFs({ [DB_DUMP_PATH]: Buffer.from('database dump'), ...tree });
 
 describe('Enhanced Backup Service Tests', () => {
   let mockDb;
   let mockS3Client;
   let mockCronJob;
+  let mockS3Objects;
 
   beforeEach(() => {
     // Reset all mocks
@@ -64,6 +66,8 @@ describe('Enhanced Backup Service Tests', () => {
     mockDb = {
       select: jest.fn().mockReturnThis(),
       where: jest.fn().mockReturnThis(),
+      whereNot: jest.fn().mockReturnThis(),
+      whereNotNull: jest.fn().mockReturnThis(),
       orderBy: jest.fn().mockReturnThis(),
       limit: jest.fn().mockReturnThis(),
       first: jest.fn(),
@@ -71,6 +75,9 @@ describe('Enhanced Backup Service Tests', () => {
       update: jest.fn(),
       delete: jest.fn()
     };
+    // Knex query builders are thenable. Queries that are not explicitly
+    // configured by a test resolve to an empty result set.
+    mockDb.then = (resolve, reject) => Promise.resolve([]).then(resolve, reject);
     db.mockReturnValue(mockDb);
 
     // Mock cron job
@@ -80,12 +87,20 @@ describe('Enhanced Backup Service Tests', () => {
     cron.schedule.mockReturnValue(mockCronJob);
 
     // Mock S3 client
+    mockS3Objects = new Map();
     mockS3Client = {
       testConnection: jest.fn().mockResolvedValue(true),
-      upload: jest.fn().mockResolvedValue({ Location: 's3://bucket/key' }),
+      upload: jest.fn().mockImplementation(async (filePath, key, options = {}) => {
+        const stat = require('fs').statSync(filePath);
+        mockS3Objects.set(key, {
+          ContentLength: stat.size,
+          Metadata: options.metadata || {},
+        });
+        return { Location: `s3://bucket/${key}` };
+      }),
       uploadStream: jest.fn().mockResolvedValue({ Location: 's3://bucket/key' }),
       download: jest.fn().mockResolvedValue(),
-      getMetadata: jest.fn().mockResolvedValue({ ContentLength: 2 }),
+      getMetadata: jest.fn().mockImplementation(async (key) => mockS3Objects.get(key) || { ContentLength: 2 }),
       downloadStream: jest.fn().mockImplementation(async () => require('stream').Readable.from([Buffer.from('{}')])),
       exists: jest.fn().mockResolvedValue(false),
       delete: jest.fn().mockResolvedValue(),
@@ -98,7 +113,10 @@ describe('Enhanced Backup Service Tests', () => {
       backup: { id: 'test-backup-123' },
       version: '2.0'
     });
-    backupManifest.saveManifest = jest.fn().mockResolvedValue('/path/to/manifest.json');
+    backupManifest.saveManifest = jest.fn().mockImplementation(async (manifest, filePath) => {
+      await require('fs/promises').writeFile(filePath, JSON.stringify(manifest));
+      return filePath;
+    });
     backupManifest.loadManifest = jest.fn().mockResolvedValue({});
     backupManifest.validateManifest = jest.fn();
     backupManifest.generateSummaryReport = jest.fn().mockReturnValue('Summary report');
@@ -118,7 +136,7 @@ describe('Enhanced Backup Service Tests', () => {
       type: 'sqlite',
       backupFile: DB_DUMP_PATH,
       size: 13,
-      checksum: 'abc123',
+      checksum: DB_DUMP_CHECKSUM,
       hasChanged: false
     });
   });
@@ -266,7 +284,7 @@ describe('Enhanced Backup Service Tests', () => {
       }));
     });
 
-    it('should skip unchanged files in incremental backup', async () => {
+    it('should keep every S3 snapshot independently restorable while using content-addressed payload keys', async () => {
       const config = {
         backup_enabled: true,
         backup_destination_type: 's3',
@@ -294,12 +312,17 @@ describe('Enhanced Backup Service Tests', () => {
 
       await backupService.runBackup();
 
-      // Should skip unchanged file
+      // Every run stores a complete manifest. Payload keys are content
+      // addressed, so a repeated file can be shared without a parent chain.
       const uploadCalls = mockS3Client.upload.mock.calls;
       const photo1Uploaded = uploadCalls.some(call =>
-        call[1].includes('photo1.jpg')
+        call[2]?.metadata?.['original-path'] === 'events/active/event1/photo1.jpg'
       );
-      expect(photo1Uploaded).toBe(false);
+      expect(photo1Uploaded).toBe(true);
+      expect(backupManifest.generateManifest).toHaveBeenCalledWith(expect.objectContaining({
+        backupType: 'full',
+        parentBackupId: null,
+      }));
     });
 
     it('should include database backup when configured', async () => {
@@ -320,7 +343,7 @@ describe('Enhanced Backup Service Tests', () => {
         type: 'sqlite',
         backupFile: '/backup/db-backup.sql',
         size: 1024000,
-        checksum: 'abc123',
+        checksum: crypto.createHash('sha256').update('database backup content').digest('hex'),
         hasChanged: false
       });
 
@@ -335,7 +358,7 @@ describe('Enhanced Backup Service Tests', () => {
       // Verify database backup was uploaded
       const uploadCalls = mockS3Client.upload.mock.calls;
       const dbBackupUploaded = uploadCalls.some(call =>
-        call[1].includes('database/db-backup.sql')
+        call[2]?.metadata?.['original-path'] === 'database/db-backup.sql'
       );
       expect(dbBackupUploaded).toBe(true);
     });
@@ -391,7 +414,7 @@ describe('Enhanced Backup Service Tests', () => {
       expect(backupManifest.generateManifest).toHaveBeenCalledWith(
         expect.objectContaining({
           backupType: 'full',
-          backupPath: '/backup',
+          backupPath: 'backup-1',
           format: 'json'
         })
       );
@@ -399,25 +422,18 @@ describe('Enhanced Backup Service Tests', () => {
       expect(backupManifest.saveManifest).toHaveBeenCalled();
     });
 
-    it('should generate incremental manifest when parent exists', async () => {
+    it('should generate a standalone full manifest even when older runs exist', async () => {
       const config = {
         backup_enabled: true,
         backup_destination_type: 'local',
         backup_destination_path: '/backup'
       };
 
-      const lastBackup = {
-        id: 1,
-        manifest_path: '/backup/manifests/previous.json',
-        manifest_id: 'previous-backup-123'
-      };
-
       mockDb.select.mockResolvedValue([]);
       mockDb.insert.mockReturnValue(insertResult([2]));
-      mockDb.first.mockImplementation(() => Promise.resolve(lastBackup));
+      mockDb.first.mockResolvedValue(null);
       mockDb.orderBy.mockReturnThis();
       mockDb.where.mockReturnThis();
-      mockDb.whereNot = jest.fn().mockReturnThis();
 
       jest.spyOn(backupService, 'getBackupConfig').mockResolvedValue(config);
 
@@ -428,8 +444,12 @@ describe('Enhanced Backup Service Tests', () => {
 
       await backupService.runBackup();
 
-      expect(backupManifest.loadManifest).toHaveBeenCalledWith('/backup/manifests/previous.json');
-      expect(backupManifest.generateIncrementalManifest).toHaveBeenCalled();
+      expect(backupManifest.loadManifest).not.toHaveBeenCalled();
+      expect(backupManifest.generateManifest).toHaveBeenCalledWith(expect.objectContaining({
+        backupType: 'full',
+        backupPath: 'backup-2',
+        parentBackupId: null,
+      }));
     });
 
     it('should upload manifest to S3 for S3 backups', async () => {
@@ -495,7 +515,7 @@ describe('Enhanced Backup Service Tests', () => {
 
       // Verify files were copied to local destination
       const fs = require('fs');
-      const destPath = '/backup/local/events/active/event1/photo1.jpg';
+      const destPath = '/backup/local/backup-1/events/active/event1/photo1.jpg';
       expect(fs.existsSync(destPath)).toBe(true);
     });
 
@@ -534,7 +554,7 @@ describe('Enhanced Backup Service Tests', () => {
   });
 
   describe('Error Handling and Recovery', () => {
-    it('should handle file read errors gracefully', async () => {
+    it('should fail the restore point instead of silently omitting an unreadable source file', async () => {
       const config = {
         backup_enabled: true,
         backup_destination_type: 's3',
@@ -570,11 +590,13 @@ describe('Enhanced Backup Service Tests', () => {
 
       await backupService.runBackup();
 
-      // Should continue with other files despite error
+      // A complete-looking restore point must never omit unreadable payloads.
       expect(logger.error).toHaveBeenCalledWith(
-        expect.stringContaining('Failed to backup file'),
+        'Backup failed:',
         expect.any(Error)
       );
+      expect(mockDb.update).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed' }));
+      expect(backupManifest.generateManifest).not.toHaveBeenCalled();
 
       fs.createReadStream = originalCreateReadStream;
     });
@@ -721,14 +743,9 @@ describe('Enhanced Backup Service Tests', () => {
       expect(status.isHealthy).toBe(false);
     });
 
-    it('should clean up old backup runs', async () => {
-      mockDb.delete.mockResolvedValue(5);
-
-      await backupService.cleanupOldBackupRuns(30);
-
-      expect(mockDb.where).toHaveBeenCalledWith('started_at', '<', expect.any(Date));
-      expect(mockDb.delete).toHaveBeenCalled();
-      expect(logger.info).toHaveBeenCalledWith('Cleaned up 5 old backup runs');
+    it('does not delete restore points when the history query returns no rows', async () => {
+      await expect(backupService.cleanupOldBackupRuns(30)).resolves.toBe(0);
+      expect(mockDb.delete).not.toHaveBeenCalled();
     });
   });
 

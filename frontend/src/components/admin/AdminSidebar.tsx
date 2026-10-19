@@ -11,9 +11,9 @@ import {
   PanelLeftOpen,
   Send,
 } from 'lucide-react';
-import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { settingsService } from '../../services/settings.service';
+import { useStorageInfo } from '../../features/settings/hooks/useStorageInfo';
 import { VersionInfo } from './VersionInfo';
 import { usePermissions } from '../../contexts/PermissionsContext';
 import { useAdminDarkMode } from '../../contexts/AdminDarkModeContext';
@@ -281,11 +281,7 @@ export const AdminSidebar: React.FC<AdminSidebarProps> = ({ isOpen, onClose, col
 
 const StorageInfo: React.FC = () => {
   const { t } = useTranslation();
-  const { data: storageInfo } = useQuery({
-    queryKey: ['storage-info'],
-    queryFn: () => settingsService.getStorageInfo(),
-    refetchInterval: 60000 // Refresh every minute
-  });
+  const { data: storageInfo } = useStorageInfo(true, 60000);
 
   // Don't render anything while loading or if data failed to load
   if (!storageInfo) {

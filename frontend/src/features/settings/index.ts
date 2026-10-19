@@ -2,6 +2,7 @@
 export { useSettingsState, MAX_FILES_PER_UPLOAD_LIMIT } from './hooks/useSettingsState';
 export type { GeneralSettings, SecuritySettings, EventSettings, SeoSettings } from './hooks/useSettingsState';
 export { useStatusTab } from './hooks/useStatusTab';
+export { STORAGE_INFO_QUERY_KEY, useStorageInfo } from './hooks/useStorageInfo';
 
 // Tab components
 export { FeaturesTab } from './tabs/FeaturesTab';

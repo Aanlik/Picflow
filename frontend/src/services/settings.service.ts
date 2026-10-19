@@ -1,6 +1,10 @@
 import { api } from '../config/api';
 import type { SlideshowGlobalDefaults } from './slideshow.service';
 
+// Storage usage is shown in both the admin sidebar and system settings. Keep
+// both observers on one cache entry so a refresh in either view is visible in
+// the other instead of leaving two conflicting usage snapshots on screen.
+
 export interface BrandingSettings {
   company_name: string;
   company_tagline: string;

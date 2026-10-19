@@ -68,7 +68,6 @@ export const BrandingPage: React.FC = () => {
 
   const brandingMutation = useMutationWithToast({
     mutationFn: settingsService.updateBranding,
-    successMessage: t('toast.brandingUpdated'),
     errorMessage: () => t('toast.saveError'),
     // Invalidate all settings queries to refresh data
     invalidateKeys: [['admin-settings'], ['public-settings']],
@@ -77,7 +76,6 @@ export const BrandingPage: React.FC = () => {
   // Update theme mutation
   const themeMutation = useMutationWithToast({
     mutationFn: settingsService.updateTheme,
-    successMessage: t('toast.themeUpdated'),
     errorMessage: () => t('toast.saveError'),
     // Refresh both the admin settings cache (which the page reads from) and
     // the public-settings cache (which the gallery reads from) so the saved
@@ -143,7 +141,7 @@ export const BrandingPage: React.FC = () => {
   const handleForceColorModeChange = (value: 'dark' | 'light' | null) => {
     const next = { ...brandingSettings, force_color_mode: value };
     setBrandingSettings(next);
-    brandingMutation.mutate(next);
+    brandingMutation.mutate(next, { onSuccess: () => toast.success(t('toast.brandingUpdated')) });
   };
 
   const handleThemeChange = (newTheme: ThemeConfig) => {
@@ -310,6 +308,7 @@ export const BrandingPage: React.FC = () => {
 
       // Update local state to reflect saved values
       setBrandingSettings(updatedBrandingSettings);
+      toast.success(t('toast.brandingAndThemeUpdated'));
     } catch (error) {
       console.error('Failed to save settings:', error);
     }

@@ -22,6 +22,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 const { bootTestDb } = require('./helpers/sqliteTestDb');
 
@@ -40,6 +41,7 @@ describe('backupService — inline DB dump + fail-loud guard', () => {
   let db;
   let cleanup;
   let storagePath;
+  let backupDestination;
   let backupService;
   let dumpFileAbs;
 
@@ -51,6 +53,7 @@ describe('backupService — inline DB dump + fail-loud guard', () => {
     // Seed backup destination settings so the run can proceed past the
     // "destination not configured" guard.
     const dest = path.join(storagePath, 'backups');
+    backupDestination = dest;
     fs.mkdirSync(dest, { recursive: true });
     // getBackupConfigInternal filters by setting_type='backup', so the
     // tests have to seed with that type or the resolver returns
@@ -60,6 +63,7 @@ describe('backupService — inline DB dump + fail-loud guard', () => {
     await db('app_settings').insert([
       { setting_key: 'backup_destination_type',    setting_value: JSON.stringify('local'), setting_type: 'backup' },
       { setting_key: 'backup_destination_path',    setting_value: JSON.stringify(dest),    setting_type: 'backup' },
+      { setting_key: 'backup_manifest_path',       setting_value: JSON.stringify(path.join(dest, 'manifests')), setting_type: 'backup' },
       { setting_key: 'backup_enabled',             setting_value: JSON.stringify(true),    setting_type: 'backup' },
       { setting_key: 'backup_email_on_failure',    setting_value: JSON.stringify(false),   setting_type: 'backup' },
     ]).onConflict('setting_key').merge();
@@ -87,7 +91,7 @@ describe('backupService — inline DB dump + fail-loud guard', () => {
       path: dumpFileAbs,
       size: fs.statSync(dumpFileAbs).size,
       duration: 1,
-      checksum: 'abc',
+      checksum: crypto.createHash('sha256').update(fs.readFileSync(dumpFileAbs)).digest('hex'),
     });
 
     // Re-seed the database_backup_runs row that getDatabaseBackupInfo
@@ -101,6 +105,7 @@ describe('backupService — inline DB dump + fail-loud guard', () => {
       file_path: dumpFileAbs,
       file_size_bytes: fs.statSync(dumpFileAbs).size,
       destination_path: dumpFileAbs,
+      checksum: crypto.createHash('sha256').update(fs.readFileSync(dumpFileAbs)).digest('hex'),
     });
   });
 
@@ -115,6 +120,58 @@ describe('backupService — inline DB dump + fail-loud guard', () => {
     const run = await db('backup_runs').orderBy('id', 'desc').first();
     expect(run.status).toBe('completed');
     expect(run.error_message).toBeNull();
+    const manifest = await require('../../src/services/backupManifest').loadManifest(run.manifest_path);
+    const snapshotPath = path.join(backupDestination, `backup-${run.id}`);
+    expect(manifest.backup).toMatchObject({ type: 'full', path: `backup-${run.id}`, parent_backup_id: null });
+    expect(manifest.metadata).toMatchObject({ destination_type: 'local', local_snapshot: true });
+    expect(manifest.files.manifest.map((entry) => entry.path)).toContain('database/fake-dump.sql.gz');
+    expect(fs.readFileSync(path.join(snapshotPath, 'database', 'fake-dump.sql.gz'), 'utf8'))
+      .toBe(fs.readFileSync(dumpFileAbs, 'utf8'));
+  });
+
+  it('writes each run as a full restore point without requiring a parent snapshot', async () => {
+    await db('app_settings').where('setting_key', 'backup_database_inline_dump').del();
+    await backupService.runBackup(true);
+    const first = await db('backup_runs').where('status', 'completed').orderBy('id', 'desc').first();
+    await backupService.runBackup(true);
+    const second = await db('backup_runs').where('status', 'completed').orderBy('id', 'desc').first();
+
+    expect(first.id).not.toBe(second.id);
+    const firstManifest = await require('../../src/services/backupManifest').loadManifest(first.manifest_path);
+    const secondManifest = await require('../../src/services/backupManifest').loadManifest(second.manifest_path);
+    expect(firstManifest.backup.type).toBe('full');
+    expect(secondManifest.backup.type).toBe('full');
+    expect(firstManifest.backup.parent_backup_id).toBeNull();
+    expect(secondManifest.backup.parent_backup_id).toBeNull();
+    expect(secondManifest.files.manifest.map((entry) => entry.path)).toContain('database/fake-dump.sql.gz');
+    expect(fs.readFileSync(path.join(backupDestination, secondManifest.backup.path, 'database', 'fake-dump.sql.gz'), 'utf8'))
+      .toBe(fs.readFileSync(dumpFileAbs, 'utf8'));
+  });
+
+  it('reuses unchanged payload bytes safely across independent local snapshots', async () => {
+    const relativePath = 'events/active/shared-payload.bin';
+    const source = path.join(storagePath, relativePath);
+    const content = Buffer.from('same verified bytes in both restore points');
+    fs.mkdirSync(path.dirname(source), { recursive: true });
+    fs.writeFileSync(source, content);
+    const sourceStat = fs.statSync(source);
+    const checksum = crypto.createHash('sha256').update(content).digest('hex');
+    const file = { path: source, relativePath, size: content.length, modified: sourceStat.mtime };
+    const backupConfig = { backup_destination_path: backupDestination };
+
+    const first = await backupService._internal.performLocalBackup(backupConfig, [file], 900001, null);
+    const second = await backupService._internal.performLocalBackup(backupConfig, [file], 900002, {
+      root: first.backupPath,
+      files: [{ path: relativePath, checksum }],
+    });
+
+    const firstPayload = path.join(first.backupPath, relativePath);
+    const secondPayload = path.join(second.backupPath, relativePath);
+    expect(fs.statSync(firstPayload).ino).toBe(fs.statSync(secondPayload).ino);
+    await fs.promises.rm(first.backupPath, { recursive: true, force: true });
+    expect(fs.readFileSync(secondPayload)).toEqual(content);
+    await fs.promises.rm(second.backupPath, { recursive: true, force: true });
+    fs.rmSync(path.dirname(source), { recursive: true, force: true });
   });
 
   it('aborts the run when the inline dump throws', async () => {
@@ -184,5 +241,30 @@ describe('backupService — inline DB dump + fail-loud guard', () => {
     const run = await db('backup_runs').orderBy('id', 'desc').first();
     expect(run.status).toBe('failed');
     expect(run.error_message).toMatch(/is empty/);
+  });
+
+  it('fails if the previously verified database dump changed before the run', async () => {
+    await db('app_settings').insert({
+      setting_key: 'backup_database_inline_dump',
+      setting_value: JSON.stringify(false),
+      setting_type: 'backup',
+    }).onConflict('setting_key').merge();
+    await db('database_backup_runs').update({ checksum: '0'.repeat(64) });
+
+    await backupService.runBackup(true);
+
+    const run = await db('backup_runs').orderBy('id', 'desc').first();
+    expect(run.status).toBe('failed');
+    expect(run.error_message).toMatch(/database dump changed after verification/i);
+    expect(run.manifest_path).toBeNull();
+  });
+
+  it('fails rather than silently treating a configured file as an empty backup directory', async () => {
+    const sourcePath = path.join(storagePath, 'not-a-directory');
+    fs.writeFileSync(sourcePath, 'not a directory');
+    await expect(backupService._internal.scanDirectory(sourcePath, [], storagePath))
+      .rejects.toThrow(/backup scan failed/i);
+    await expect(backupService._internal.scanDirectory(path.join(storagePath, 'optional-missing'), [], storagePath))
+      .resolves.toBeUndefined();
   });
 });

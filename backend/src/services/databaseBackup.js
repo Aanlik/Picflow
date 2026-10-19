@@ -479,13 +479,15 @@ class DatabaseBackupService {
         if (!result.stdout.includes('ok')) {
           throw new Error('Backup integrity check failed');
         }
+        return { valid: true, status: 'passed' };
       } else {
-        // For PostgreSQL, we'd need to restore to a temp database
-        // This is more complex and might not be feasible in production
-        logger.info('PostgreSQL backup validation would require restore test');
+        // A successful pg_dump proves that the export command completed, not
+        // that the dump can be restored. Do not label that as an integrity
+        // validation; a true PostgreSQL validation needs an isolated restore
+        // target, which this service does not provision.
+        logger.info('PostgreSQL backup integrity validation was not performed; it requires an isolated restore test');
+        return { valid: false, skipped: true, status: 'not_supported' };
       }
-
-      return { valid: true };
     } finally {
       // Cleanup
       try {
@@ -609,6 +611,17 @@ class DatabaseBackupService {
         await this.createPostgreSQLBackup(sqlFile, options);
       }
 
+      // Validate the uncompressed database artifact before any encoding layer
+      // is added. SQLite validation is an actual PRAGMA integrity_check;
+      // PostgreSQL reports not_supported until an isolated restore check is
+      // implemented. The previous `validateIntegrity && !compress` guard
+      // silently skipped compressed backups while recording them as validated.
+      let validation = { valid: false, status: 'not_requested' };
+      if (validateIntegrity) {
+        this.updateProgress('Validating backup integrity...');
+        validation = await this.validateBackup(sqlFile, tableChecksums);
+      }
+
       // Compress if requested
       let compressionStats = null;
       if (compress) {
@@ -620,12 +633,6 @@ class DatabaseBackupService {
       // Calculate checksum
       this.updateProgress('Calculating backup checksum...');
       const backupChecksum = await this.calculateChecksum(finalFile);
-
-      // Validate if requested
-      if (validateIntegrity && !compress) {
-        this.updateProgress('Validating backup integrity...');
-        await this.validateBackup(finalFile, tableChecksums);
-      }
 
       // Get final file size
       const finalStats = await fs.stat(finalFile);
@@ -650,7 +657,10 @@ class DatabaseBackupService {
           statistics: JSON.stringify({
             dbType: this.dbType,
             compressed: compress,
-            validated: validateIntegrity,
+            // This is true only when an integrity validator actually ran and
+            // passed; PostgreSQL currently records not_supported honestly.
+            validated: validation.valid === true,
+            validation_status: validation.status,
             compressionStats,
             tableCount: tableChecksums ? Object.keys(tableChecksums).length : null,
             app_version: packageJson.version,
@@ -736,41 +746,77 @@ class DatabaseBackupService {
    * Clean up old backups
    */
   async cleanupOldBackups(retentionDays = 30) {
-    // A zero/negative/non-finite value pushes the cutoff to today or the
-    // future, matching (and deleting) every completed backup — including
-    // the one a scheduled run just created. Defense in depth: PUT /config
-    // already rejects such values, but this is also reachable with
-    // whatever database_backup_retention_days happens to be persisted.
-    if (!Number.isFinite(retentionDays) || retentionDays < 1) {
-      logger.error(`Refusing to clean up backups with invalid retentionDays: ${retentionDays}`);
-      return;
+    const days = Number(retentionDays);
+    if (!Number.isInteger(days) || days < 1 || days > 3650) {
+      throw new Error('Retention days must be an integer from 1 to 3650');
     }
     try {
       const cutoffDate = new Date();
-      cutoffDate.setDate(cutoffDate.getDate() - retentionDays);
+      cutoffDate.setDate(cutoffDate.getDate() - days);
 
-      // Get old backup records
-      const oldBackups = await db('database_backup_runs')
-        .where('completed_at', '<', cutoffDate)
+      // Compare parsed timestamps in JS: SQLite stores ISO text while its
+      // driver may bind a Date using a different format, making SQL string
+      // comparison misclassify recent backups as expired.
+      const completedBackups = await db('database_backup_runs')
         .where('status', 'completed')
-        .select('id', 'file_path');
+        .select('id', 'file_path', 'completed_at');
+      const oldBackups = completedBackups.filter((backup) => {
+        const completedAt = new Date(backup.completed_at).getTime();
+        return Number.isFinite(completedAt) && completedAt < cutoffDate.getTime();
+      });
+
+      const config = await this.getBackupConfig();
+      const backupRoot = path.resolve(await resolveDatabaseBackupDestination(config));
+      const realBackupRoot = await fs.realpath(backupRoot).catch(() => backupRoot);
+      const isInsideRoot = (candidate, root) => candidate === root || candidate.startsWith(`${root}${path.sep}`);
 
       let deletedCount = 0;
 
       for (const backup of oldBackups) {
+        let backupPath = null;
+        let stagedPath = null;
+        let recordDeleted = false;
         try {
-          // Delete the file
           if (backup.file_path) {
-            await fs.unlink(backup.file_path);
+            if (!path.isAbsolute(backup.file_path)) {
+              logger.warn('Keeping expired database backup with a non-absolute file path', { backupId: backup.id });
+              continue;
+            }
+            backupPath = path.resolve(backup.file_path);
+            if (!isInsideRoot(backupPath, backupRoot) && !isInsideRoot(backupPath, realBackupRoot)) {
+              logger.warn('Keeping expired database backup outside the configured destination', { backupId: backup.id });
+              continue;
+            }
+            try {
+              const stats = await fs.lstat(backupPath);
+              const realPath = await fs.realpath(backupPath);
+              if (!stats.isFile() || stats.isSymbolicLink() || !isInsideRoot(realPath, realBackupRoot)) {
+                logger.warn('Keeping expired database backup with an unsafe file path', { backupId: backup.id });
+                continue;
+              }
+              stagedPath = path.join(path.dirname(backupPath), `.${path.basename(backupPath)}.cleanup-${backup.id}-${crypto.randomUUID()}`);
+              await fs.rename(backupPath, stagedPath);
+            } catch (error) {
+              if (error.code !== 'ENOENT') throw error;
+              // The file is already absent; an expired, broken history row
+              // can be removed without touching any other path.
+              backupPath = null;
+            }
           }
 
-          // Delete the record
-          await db('database_backup_runs')
-            .where('id', backup.id)
-            .delete();
+          await db.transaction(async (trx) => {
+            await trx('database_backup_runs').where('id', backup.id).delete();
+          });
+          recordDeleted = true;
+
+          if (stagedPath) await fs.unlink(stagedPath);
 
           deletedCount++;
         } catch (error) {
+          if (stagedPath) {
+            await fs.rename(stagedPath, backupPath).catch(() => {});
+            if (recordDeleted) await db('database_backup_runs').insert(backup).catch(() => {});
+          }
           logger.error(`Failed to delete old backup ${backup.file_path}:`, error);
         }
       }
@@ -780,13 +826,21 @@ class DatabaseBackupService {
       }
 
       // Also clean up old failed runs
-      await db('database_backup_runs')
-        .where('started_at', '<', cutoffDate)
+      const failedRuns = await db('database_backup_runs')
         .where('status', 'failed')
-        .delete();
+        .select('id', 'started_at');
+      const expiredFailedIds = failedRuns
+        .filter((run) => Number.isFinite(new Date(run.started_at).getTime())
+          && new Date(run.started_at).getTime() < cutoffDate.getTime())
+        .map((run) => run.id);
+      if (expiredFailedIds.length) {
+        await db('database_backup_runs').whereIn('id', expiredFailedIds).delete();
+      }
+      return deletedCount;
 
     } catch (error) {
       logger.error('Failed to cleanup old database backups:', error);
+      throw error;
     }
   }
 

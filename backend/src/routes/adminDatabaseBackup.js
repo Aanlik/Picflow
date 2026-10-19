@@ -89,9 +89,11 @@ router.put('/config', requirePermission('backup.create'), async (req, res) => {
     // — a backup.create holder achieving what backup.delete gates on /cleanup.
     if (
       req.body.database_backup_retention_days !== undefined
-      && (!Number.isFinite(req.body.database_backup_retention_days) || req.body.database_backup_retention_days < 1)
+      && (!Number.isInteger(req.body.database_backup_retention_days)
+        || req.body.database_backup_retention_days < 1
+        || req.body.database_backup_retention_days > 3650)
     ) {
-      return res.status(400).json({ error: 'database_backup_retention_days must be a positive number' });
+      return res.status(400).json({ error: 'database_backup_retention_days must be an integer from 1 to 3650' });
     }
 
     // Where the database dump lands decides who can read it. The file-backup
@@ -255,12 +257,16 @@ router.get('/history', requirePermission('backup.view'), async (req, res) => {
  */
 router.delete('/cleanup', requirePermission('backup.delete'), async (req, res) => {
   try {
-    const { retentionDays = 30 } = req.body;
+    const retentionDays = Number(req.body?.retentionDays ?? 30);
+    if (!Number.isInteger(retentionDays) || retentionDays < 1 || retentionDays > 3650) {
+      return res.status(400).json({ error: 'retentionDays must be an integer from 1 to 3650' });
+    }
 
-    await databaseBackupService.cleanupOldBackups(retentionDays);
+    const deletedCount = await databaseBackupService.cleanupOldBackups(retentionDays);
 
     res.json({
       success: true,
+      deletedCount,
       message: `Cleaned up backups older than ${retentionDays} days`
     });
   } catch (error) {

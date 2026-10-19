@@ -177,5 +177,20 @@ describe('restoreService — sqlite restore path safety (GHSA-xfvx)', () => {
       expect(candidates).toContain(path.join(backupPath, 'picpeak-db-flat.sql.gz'));
       expect(candidates.every((candidate) => _internal.isContainedInRoots(candidate, [path.resolve(backupPath)]))).toBe(true);
     });
+
+    it('refuses a database dump reached through a symlinked parent directory', async () => {
+      const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'picflow-db-symlink-outside-'));
+      try {
+        fs.writeFileSync(path.join(outside, 'dump.sql'), 'outside database dump');
+        fs.symlinkSync(outside, path.join(backupPath, 'linked-database'));
+        const resolved = await _internal.resolveExistingContainedDbBackupPath(
+          backupPath, 'linked-database/dump.sql', () => {},
+        );
+        expect(resolved).toBeNull();
+      } finally {
+        fs.unlinkSync(path.join(backupPath, 'linked-database'));
+        fs.rmSync(outside, { recursive: true, force: true });
+      }
+    });
   });
 });

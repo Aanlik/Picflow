@@ -278,11 +278,20 @@ describe('local backup destination', () => {
       fs.writeFileSync(path.join(uploads, 'logos', 'logo.png'), 'logo bytes');
       const target = path.join(uploads, 'own-backups');
 
-      expect((await runBackupTo(target)).status).toBe('completed');
-      expect(fs.existsSync(path.join(target, 'uploads', 'logos', 'logo.png'))).toBe(true);
-      expect((await runBackupTo(target)).status).toBe('completed');
+      const first = await runBackupTo(target);
+      expect(first.status).toBe('completed');
+      const firstPayload = path.join(target, `backup-${first.id}`, 'uploads', 'logos', 'logo.png');
+      expect(fs.existsSync(firstPayload)).toBe(true);
 
-      expect(fs.existsSync(path.join(target, 'uploads', 'own-backups'))).toBe(false);
+      const second = await runBackupTo(target);
+      expect(second.status).toBe('completed');
+      const secondPayload = path.join(target, `backup-${second.id}`, 'uploads', 'logos', 'logo.png');
+      expect(fs.existsSync(secondPayload)).toBe(true);
+
+      // The output folder itself is excluded from the source scan, so later
+      // complete snapshots do not recursively contain earlier snapshots.
+      expect(fs.existsSync(path.join(target, `backup-${first.id}`, 'uploads', 'own-backups'))).toBe(false);
+      expect(fs.existsSync(path.join(target, `backup-${second.id}`, 'uploads', 'own-backups'))).toBe(false);
     });
 
     it('refuses to run into a destination that is itself a backed-up folder', async () => {

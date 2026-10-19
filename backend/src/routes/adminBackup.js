@@ -101,6 +101,99 @@ const s3ErrorBody = (code, origin) => ({
   ...(code === 'S3_PRIVATE_ENDPOINT' && { requiresApproval: true }),
 });
 
+function parseS3ManifestUri(value) {
+  const match = String(value || '').match(/^s3:\/\/([^/]+)\/(.+)$/);
+  return match ? { bucket: match[1], key: match[2] } : null;
+}
+
+function s3RunPrefixFromManifestKey(key) {
+  const marker = '/manifests/';
+  const markerIndex = key.lastIndexOf(marker);
+  return markerIndex >= 0 ? key.slice(0, markerIndex) : path.posix.dirname(key);
+}
+
+function normalizeS3ObjectKey(value) {
+  const key = String(value || '').replace(/\\/g, '/');
+  if (!key || key.startsWith('/') || key.split('/').some((part) => !part || part === '.' || part === '..')) return null;
+  return path.posix.normalize(key);
+}
+
+function parseRetentionDays(value, defaultValue = 30) {
+  if (value === undefined || value === null || value === '') return defaultValue;
+  const days = Number(value);
+  return Number.isInteger(days) && days >= 1 && days <= 3650 ? days : null;
+}
+
+async function listAllS3Objects(adapter, prefix) {
+  const objects = [];
+  let continuationToken;
+  do {
+    const page = await adapter.list(prefix, { maxKeys: 1000, continuationToken });
+    objects.push(...(page.Contents || []));
+    continuationToken = page.IsTruncated ? page.NextContinuationToken : null;
+  } while (continuationToken);
+  return objects;
+}
+
+async function hasSurvivingS3Child(restorePoint, retainedRuns, loadManifest) {
+  for (const run of retainedRuns) {
+    // Some older schemas stored the parent database row id directly.
+    if (String(run.parent_backup_id || '') === String(restorePoint.run.id)) return true;
+    if (!parseS3ManifestUri(run.manifest_path)) continue;
+    const loaded = await loadManifest(run.id);
+    const parentId = loaded?.manifest?.incremental?.parent_backup_id
+      || loaded?.manifest?.backup?.parent_backup_id;
+    if (String(parentId || '') === String(restorePoint.manifest?.backup?.id || '')) return true;
+  }
+  return false;
+}
+
+/**
+ * Remove S3 restore-point indexes before their payloads. The object store and
+ * SQL database cannot share a transaction: removing payloads first can leave
+ * a visible, completed restore point whose contents are already gone. Hiding
+ * the row first and restoring it when manifest deletion is confirmed to have
+ * failed keeps the UI from advertising a half-deleted restore point.
+ */
+async function removeS3RestorePointManifests(items, adapter, { deleteRun, restoreRun }) {
+  const removed = [];
+  const failed = [];
+  for (const item of items) {
+    let rowRemoved = false;
+    try {
+      await deleteRun(item.run);
+      rowRemoved = true;
+      let result = null;
+      let deleteError = null;
+      try {
+        result = await adapter.deleteMany([item.manifestKey]);
+      } catch (error) {
+        deleteError = error;
+      }
+      const confirmed = (result?.Deleted || []).some((entry) => entry.Key === item.manifestKey);
+      if (deleteError || result?.Errors?.length || !confirmed) {
+        const exists = await adapter.exists(item.manifestKey).catch(() => null);
+        if (exists !== false) throw deleteError || new Error('S3 did not confirm removal of the restore-point manifest');
+      }
+      removed.push(item);
+    } catch (error) {
+      if (rowRemoved) {
+        try {
+          await restoreRun(item.run);
+        } catch (restoreError) {
+          logger.error('Could not restore S3 restore-point index after manifest cleanup failed', {
+            backupId: item.run.id, error: restoreError.message,
+          });
+          failed.push({ ...item, error: 'Restore-point index could not be restored after cleanup failed' });
+          continue;
+        }
+      }
+      failed.push({ ...item, error: error.message });
+    }
+  }
+  return { removed, failed };
+}
+
 const S3_STATUS_CODES = {
   approvable: 'S3_PRIVATE_ENDPOINT',
   forbidden: 'S3_ENDPOINT_FORBIDDEN',
@@ -460,9 +553,11 @@ router.delete('/runs/:id', adminAuth, requirePermission('backup.delete'), async 
       return res.status(409).json({ error: 'This restore point is required by a later incremental backup. Delete dependent backups first.' });
     }
     let targetManifestId = null;
+    let sourceManifest = null;
     if (run.manifest_path && !String(run.manifest_path).startsWith('s3://')) {
       try {
         const loaded = await getBackupManifest(run.id);
+        sourceManifest = loaded?.manifest || null;
         targetManifestId = loaded?.manifest?.backup?.id || null;
       } catch (_) { /* missing/corrupt manifests do not make a failed run undeletable */ }
     }
@@ -480,32 +575,83 @@ router.delete('/runs/:id', adminAuth, requirePermission('backup.delete'), async 
     }
 
     const config = await getBackupConfig();
-    const destinationType = String(config.backup_destination_type || 'local').toLowerCase();
+    const destinationType = String(run.manifest_path || '').startsWith('s3://') ? 's3' : 'local';
     if (destinationType !== 'local') {
       return res.status(409).json({ error: 'Individual restore-point cleanup is currently supported for local backups only.' });
     }
-    let manifestRemoved = false;
+    const backupRoot = path.resolve(config.backup_destination_path || path.join(require('../config/storage').getStoragePath(), 'backups'));
+    const roots = [config.backup_manifest_path, backupRoot]
+      .filter((value) => typeof value === 'string' && value.trim())
+      .map((value) => path.resolve(value));
+    let manifestPath = null;
     if (run.manifest_path && !String(run.manifest_path).startsWith('s3://')) {
-      const roots = [config.backup_manifest_path, config.backup_destination_path]
-        .filter((value) => typeof value === 'string' && value.trim())
-        .map((value) => path.resolve(value));
-      const manifestPath = path.resolve(run.manifest_path);
+      manifestPath = path.resolve(run.manifest_path);
       const contained = roots.some((root) => manifestPath === root || manifestPath.startsWith(`${root}${path.sep}`));
       if (!contained) return res.status(400).json({ error: 'Backup manifest is outside configured backup locations' });
     }
 
-    await db.transaction(async (trx) => {
-      await trx('backup_runs').where({ id: run.id }).delete();
-    });
-    if (run.manifest_path && !String(run.manifest_path).startsWith('s3://')) {
+    let snapshotPath = null;
+    if (sourceManifest?.metadata?.destination_type === 'local' && sourceManifest?.metadata?.local_snapshot === true) {
+      const manifestBackupPath = sourceManifest?.backup?.path;
+      snapshotPath = typeof manifestBackupPath === 'string' && manifestBackupPath.trim()
+        ? (path.isAbsolute(manifestBackupPath) ? path.resolve(manifestBackupPath) : path.resolve(backupRoot, manifestBackupPath))
+        : null;
+      if (!snapshotPath || (snapshotPath !== backupRoot && !snapshotPath.startsWith(`${backupRoot}${path.sep}`))
+        || path.basename(snapshotPath) !== `backup-${run.id}`) {
+        return res.status(409).json({ error: 'The immutable backup snapshot path is unsafe; its payload was retained.' });
+      }
       try {
-        await fs.unlink(run.manifest_path);
-        manifestRemoved = true;
+        const rootReal = await fs.realpath(backupRoot);
+        const snapshotStat = await fs.lstat(snapshotPath);
+        const snapshotReal = await fs.realpath(snapshotPath);
+        if (!snapshotStat.isDirectory() || snapshotStat.isSymbolicLink()
+          || snapshotReal === rootReal || !snapshotReal.startsWith(`${rootReal}${path.sep}`)) {
+          return res.status(409).json({ error: 'The immutable backup snapshot path is unsafe; its payload was retained.' });
+        }
       } catch (error) {
-        if (error.code !== 'ENOENT') logger.warn('Deleted backup record but could not remove its manifest', { backupId: id, error: error.message });
+        if (error.code !== 'ENOENT') throw error;
+        snapshotPath = null;
       }
     }
-    return res.json({ success: true, id: run.id, manifestRemoved, payloadRetained: true });
+
+    // Stage filesystem removals first. If the database transaction fails, put
+    // the manifest and immutable snapshot back so the restore point remains
+    // usable. Legacy rolling-tree payloads are never removed per run.
+    const stagedSnapshot = snapshotPath ? `${snapshotPath}.deleting-${run.id}` : null;
+    const stagedManifest = manifestPath ? `${manifestPath}.deleting-${run.id}` : null;
+    let snapshotStaged = false;
+    let manifestStaged = false;
+    try {
+      if (snapshotPath) {
+        await fs.rename(snapshotPath, stagedSnapshot);
+        snapshotStaged = true;
+      }
+      if (manifestPath) {
+        try {
+          await fs.rename(manifestPath, stagedManifest);
+          manifestStaged = true;
+        } catch (error) {
+          if (error.code !== 'ENOENT') throw error;
+        }
+      }
+      await db.transaction(async (trx) => {
+        await trx('backup_runs').where({ id: run.id }).delete();
+      });
+    } catch (error) {
+      if (manifestStaged) await fs.rename(stagedManifest, manifestPath).catch(() => {});
+      if (snapshotStaged) await fs.rename(stagedSnapshot, snapshotPath).catch(() => {});
+      throw error;
+    }
+    if (snapshotStaged) {
+      await fs.rm(stagedSnapshot, { recursive: true, force: true }).catch((cleanupError) => {
+        logger.warn('Could not remove staged backup snapshot after deleting its restore-point record', {
+          backupId: id, error: cleanupError.message,
+        });
+      });
+    }
+    if (manifestStaged) await fs.unlink(stagedManifest).catch((error) => logger.warn('Could not remove staged backup manifest after deleting restore point', { backupId: id, error: error.message }));
+    const manifestRemoved = manifestStaged || !manifestPath;
+    return res.json({ success: true, id: run.id, manifestRemoved, snapshotRemoved: snapshotStaged, payloadRetained: !snapshotStaged });
   } catch (error) {
     errorResponse(res, error, 500, 'Failed to delete backup restore point');
   }
@@ -576,11 +722,15 @@ router.get('/files', adminAuth, requirePermission('backup.view'), async (req, re
 // Clean up old backup runs
 router.delete('/cleanup', adminAuth, requirePermission('backup.delete'), async (req, res) => {
   try {
-    const { days = 30 } = req.body;
+    const requestedDays = Number(req.body.days ?? 30);
+    if (!Number.isInteger(requestedDays) || requestedDays < 1 || requestedDays > 3650) {
+      return res.status(400).json({ error: 'Retention days must be an integer from 1 to 3650' });
+    }
+    const days = requestedDays;
 
-    await cleanupOldBackupRuns(days);
+    const deletedCount = await cleanupOldBackupRuns(days);
 
-    res.json({ success: true, message: `Cleaned up backup runs older than ${days} days` });
+    res.json({ success: true, deletedCount, message: `Cleaned up ${deletedCount} local backup restore points older than ${days} days` });
   } catch (error) {
     errorResponse(res, error, 500, 'Failed to cleanup backup runs');
   }
@@ -1027,15 +1177,20 @@ router.get('/s3/files', adminAuth, requirePermission('backup.view'), async (req,
     });
 
     const result = await s3Adapter.list(prefix, {
-      maxKeys: parseInt(maxKeys),
+      maxKeys: Math.min(1000, Math.max(1, parseInt(maxKeys, 10) || 100)),
       continuationToken
     });
 
     res.json({
-      files: result.objects || [],
-      directories: result.directories || [],
-      isTruncated: result.isTruncated,
-      nextContinuationToken: result.nextContinuationToken,
+      files: (result.Contents || []).map((object) => ({
+        key: object.Key,
+        size: object.Size,
+        lastModified: object.LastModified,
+        etag: object.ETag,
+      })),
+      directories: result.CommonPrefixes || [],
+      isTruncated: Boolean(result.IsTruncated),
+      nextContinuationToken: result.NextContinuationToken,
       prefix: prefix
     });
   } catch (error) {
@@ -1046,7 +1201,11 @@ router.get('/s3/files', adminAuth, requirePermission('backup.view'), async (req,
 // Clean up old S3 backups
 router.delete('/s3/cleanup', adminAuth, requirePermission('backup.delete'), async (req, res) => {
   try {
-    const { retentionDays = 30, dryRun = false } = req.body;
+    const { retentionDays: requestedRetentionDays, dryRun = false } = req.body;
+    const retentionDays = parseRetentionDays(requestedRetentionDays);
+    if (retentionDays === null) {
+      return res.status(400).json({ error: 'Retention days must be an integer from 1 to 3650' });
+    }
     const config = await getBackupConfig();
 
     if (config.backup_destination_type !== 's3') {
@@ -1064,18 +1223,68 @@ router.delete('/s3/cleanup', adminAuth, requirePermission('backup.delete'), asyn
       ...backupS3Access(config)
     });
 
-    const cutoffDate = new Date();
-    cutoffDate.setDate(cutoffDate.getDate() - retentionDays);
+    const basePrefix = String(config.backup_s3_prefix || 'backups').replace(/^\/+|\/+$/g, '');
+    if (!basePrefix || basePrefix.split('/').some((part) => part === '..' || part === '.')) {
+      return res.status(400).json({ error: 'S3 backup prefix is invalid' });
+    }
+    const cutoffDate = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
+    const activeBucket = String(config.backup_s3_bucket || '');
+    const allRuns = await db('backup_runs').whereNot('status', 'running').whereNotNull('manifest_path');
+    const s3Runs = allRuns.filter((run) => {
+      const uri = parseS3ManifestUri(run.manifest_path);
+      return uri?.bucket === activeBucket && uri.key.startsWith(`${basePrefix}/`);
+    });
+    const expired = s3Runs.filter((run) => new Date(run.completed_at || run.started_at || 0) < cutoffDate);
+    const expiredIds = new Set(expired.map((run) => String(run.id)));
 
-    // List all backup files
-    const backupFiles = await s3Adapter.list('backups/', { maxKeys: 1000 });
-    const filesToDelete = [];
+    // A surviving incremental point must keep its parent and all referenced
+    // objects. Malformed retained manifests abort cleanup rather than risk
+    // deleting shared content-addressed payloads.
+    // A surviving child can live in another S3 bucket or prefix after an
+    // operator changes the destination. Search every retained S3 run, not
+    // only the currently selected prefix, before purging an old parent.
+    const retainedRuns = allRuns.filter((run) => {
+      const uri = parseS3ManifestUri(run.manifest_path);
+      return uri && !expiredIds.has(String(run.id));
+    });
+    const referencedObjects = new Set();
+    const expiredManifests = new Map();
+    for (const run of [...s3Runs].sort((a, b) => new Date(b.completed_at || b.started_at || 0) - new Date(a.completed_at || a.started_at || 0))) {
+      const uri = parseS3ManifestUri(run.manifest_path);
+      const { manifest } = await getBackupManifest(run.id);
+      const runPrefix = s3RunPrefixFromManifestKey(uri.key);
+      const keys = (manifest?.files?.manifest || []).map((file) => file.storage_key || path.posix.join(runPrefix, file.path));
+      if (manifest?.database?.backup_file) {
+        keys.push(manifest.database.storage_key || path.posix.join(runPrefix, 'database', path.posix.basename(manifest.database.backup_file)));
+      }
+      if (expiredIds.has(String(run.id))) {
+        expiredManifests.set(String(run.id), { run, runPrefix, manifestKey: uri.key, keys, manifest });
+      } else {
+        for (const key of keys) referencedObjects.add(key);
+      }
+    }
+
+    // If an expired parent has a child outside this cleanup set, retain it.
+    const eligible = new Map(expiredManifests);
+    for (const [id, item] of eligible) {
+      const hasDependency = await hasSurvivingS3Child(item, retainedRuns, getBackupManifest);
+      if (hasDependency) {
+        eligible.delete(id);
+        for (const key of item.keys) referencedObjects.add(key);
+      }
+    }
+
+    const objects = await listAllS3Objects(s3Adapter, `${basePrefix}/`);
+    let filesToDelete = [];
     let totalSize = 0;
-
-    for (const file of backupFiles.objects || []) {
-      if (file.lastModified && new Date(file.lastModified) < cutoffDate) {
-        filesToDelete.push(file.key);
-        totalSize += file.size || 0;
+    for (const object of objects) {
+      const key = object.Key;
+      const expiredRun = [...eligible.values()].some((item) => key === item.runPrefix || key.startsWith(`${item.runPrefix}/`));
+      const expiredUnreferencedObject = [...eligible.values()].some((item) => item.keys.includes(key))
+        && !referencedObjects.has(key);
+      if ((expiredRun || expiredUnreferencedObject) && !referencedObjects.has(key)) {
+        filesToDelete.push(key);
+        totalSize += Number(object.Size) || 0;
       }
     }
 
@@ -1088,16 +1297,51 @@ router.delete('/s3/cleanup', adminAuth, requirePermission('backup.delete'), asyn
       });
     }
 
-    // Delete files in batches
+    const committed = await removeS3RestorePointManifests([...eligible.values()], s3Adapter, {
+      deleteRun: async (run) => db.transaction(async (trx) => trx('backup_runs').where({ id: run.id }).delete()),
+      restoreRun: async (run) => db('backup_runs').insert(run),
+    });
+    const purgeRuns = committed.removed;
+    const retainedAfterFailure = committed.failed;
+    for (const item of retainedAfterFailure) {
+      for (const key of item.keys) referencedObjects.add(key);
+    }
+    const purgePrefixes = purgeRuns.map((item) => item.runPrefix);
+    const purgeObjectKeys = new Set(purgeRuns.flatMap((item) => item.keys));
+    const purgedManifestKeys = new Set(purgeRuns.map((item) => item.manifestKey));
+    filesToDelete = [];
+    totalSize = 0;
+    for (const object of objects) {
+      const key = object.Key;
+      const expiredRun = purgePrefixes.some((prefix) => key === prefix || key.startsWith(`${prefix}/`));
+      const expiredUnreferencedObject = purgeObjectKeys.has(key) && !referencedObjects.has(key);
+      if (!purgedManifestKeys.has(key) && (expiredRun || expiredUnreferencedObject) && !referencedObjects.has(key)) {
+        filesToDelete.push(key);
+        totalSize += Number(object.Size) || 0;
+      }
+    }
+
+    // Delete payload objects only after their restore-point rows and manifests
+    // are gone. A partial S3 delete can then leave harmless orphan objects,
+    // never a completed restore point with missing payloads.
     const deleteResult = await s3Adapter.deleteMany(filesToDelete);
     const deletedCount = deleteResult.Deleted ? deleteResult.Deleted.length : 0;
+    if (deleteResult.Errors?.length) {
+      return res.status(502).json({
+        error: 'Some expired S3 payload objects could not be deleted. Their restore-point records were already removed; orphaned objects may remain.',
+        deletedCount,
+        deletedRuns: purgeRuns.length,
+        failedCount: deleteResult.Errors.length,
+      });
+    }
 
-    // Also clean up database records
-    await cleanupOldBackupRuns(retentionDays);
+    const deletedRuns = purgeRuns.map((item) => item.run.id);
 
     res.json({
       success: true,
       deletedCount: deletedCount,
+      deletedRuns: deletedRuns.length,
+      retainedRuns: retainedAfterFailure.length,
       totalSize: totalSize,
       message: `Cleaned up ${deletedCount} S3 backup files older than ${retentionDays} days`
     });
@@ -1129,22 +1373,31 @@ router.post('/s3/test-upload', adminAuth, requirePermission('backup.create'), as
     // Create test content
     const testKey = `test/backup-test-${Date.now()}.txt`;
     const testContent = `Picflow S3 backup test\nTimestamp: ${new Date().toISOString()}\nEndpoint: ${config.backup_s3_endpoint || 'AWS'}\nBucket: ${config.backup_s3_bucket}`;
+    const tempDir = path.join(require('../config/storage').getStoragePath(), 'temp');
+    const uploadPath = path.join(tempDir, `s3-backup-test-${Date.now()}.txt`);
+    const downloadPath = `${uploadPath}.downloaded`;
 
-    // Test upload
-    const uploadStart = Date.now();
-    await s3Adapter.upload(testKey, Buffer.from(testContent));
-    const uploadTime = Date.now() - uploadStart;
+    let uploadTime = 0;
+    let downloadTime = 0;
+    let contentMatch = false;
+    await fs.mkdir(tempDir, { recursive: true });
+    try {
+      await fs.writeFile(uploadPath, testContent);
+      const uploadStart = Date.now();
+      await s3Adapter.upload(uploadPath, testKey);
+      uploadTime = Date.now() - uploadStart;
 
-    // Test download
-    const downloadStart = Date.now();
-    const downloadedContent = await s3Adapter.download(testKey);
-    const downloadTime = Date.now() - downloadStart;
+      const downloadStart = Date.now();
+      await s3Adapter.download(testKey, downloadPath);
+      downloadTime = Date.now() - downloadStart;
+      contentMatch = (await fs.readFile(downloadPath, 'utf8')) === testContent;
+    } finally {
+      await s3Adapter.delete(testKey).catch((error) => logger.warn('Could not remove temporary S3 backup test object', { error: error.message }));
+      await fs.unlink(uploadPath).catch(() => {});
+      await fs.unlink(downloadPath).catch(() => {});
+    }
 
-    // Verify content
-    const contentMatch = downloadedContent.toString() === testContent;
-
-    // Test deletion
-    await s3Adapter.delete(testKey);
+    if (!contentMatch) return res.status(502).json({ error: 'S3 test object did not match after upload and download', contentMatch: false });
 
 
     res.json({
@@ -1180,14 +1433,37 @@ router.get('/download/:backupId', adminAuth, requirePermission('backup.view'), a
 
     const config = await getBackupConfig();
 
+    // A stored run remains downloadable after the operator changes the active
+    // destination. Its manifest is the source of truth, not today's setting.
+    const runDestinationType = String(backupRun.manifest_path || '').startsWith('s3://')
+      ? 's3'
+      : (backupRun.manifest_path ? 'local' : String(config.backup_destination_type || 'local'));
+
     // Handle different backup types
-    switch (config.backup_destination_type) {
+    switch (runDestinationType) {
     case 'local': {
       if (!backupRun.manifest_path) {
         return res.status(409).json({ error: 'This backup has no manifest; a complete download cannot be assembled.' });
       }
       const { manifest: sourceManifest } = await getBackupManifest(backupRun.id);
-      const backupRoot = await fs.realpath(path.resolve(config.backup_destination_path || path.join(require('../config/storage').getStoragePath(), 'backups')));
+      const configuredBackupRoot = path.resolve(config.backup_destination_path || path.join(require('../config/storage').getStoragePath(), 'backups'));
+      const backupPathValue = sourceManifest?.backup?.path;
+      const backupRootCandidate = typeof backupPathValue === 'string' && backupPathValue.trim()
+        ? (path.isAbsolute(backupPathValue) ? path.resolve(backupPathValue) : path.resolve(configuredBackupRoot, backupPathValue))
+        : configuredBackupRoot;
+      const backupRootReal = await fs.realpath(configuredBackupRoot);
+      const backupRootResolved = path.resolve(backupRootCandidate);
+      const isConfiguredRoot = (candidate) => candidate === configuredBackupRoot
+        || candidate.startsWith(`${configuredBackupRoot}${path.sep}`)
+        || candidate === backupRootReal
+        || candidate.startsWith(`${backupRootReal}${path.sep}`);
+      if (!isConfiguredRoot(backupRootResolved)) {
+        return res.status(409).json({ error: 'The backup manifest points outside the configured backup location.' });
+      }
+      const backupRoot = await fs.realpath(backupRootResolved);
+      if (!isConfiguredRoot(backupRoot)) {
+        return res.status(409).json({ error: 'The backup snapshot resolves outside the configured backup location.' });
+      }
       let databaseRoot = config.database_backup_destination_path
         ? path.resolve(config.database_backup_destination_path)
         : null;
@@ -1239,9 +1515,11 @@ router.get('/download/:backupId', adminAuth, requirePermission('backup.view'), a
       };
       downloadManifest.metadata = { ...(downloadManifest.metadata || {}), materialized_download_bundle: true };
       const archiveEntries = [];
+      const archiveEntryNames = new Set();
       for (const entry of files) {
         const relative = String(entry?.path || '').replace(/\\/g, '/');
-        if (!relative || path.isAbsolute(relative) || relative.split('/').some((part) => part === '..')) {
+        if (!relative || path.isAbsolute(relative) || /^[a-zA-Z]:/.test(relative)
+          || relative.split('/').some((part) => part === '..' || part === '.' || part === '')) {
           return res.status(409).json({ error: 'The backup manifest contains an unsafe file path.' });
         }
         const filePath = path.resolve(backupRoot, relative);
@@ -1265,7 +1543,10 @@ router.get('/download/:backupId', adminAuth, requirePermission('backup.view'), a
             return res.status(409).json({ error: `A required backup file no longer matches its recorded checksum: ${relative}` });
           }
         }
-        archiveEntries.push({ path: realPath, name: relative });
+        if (!archiveEntryNames.has(relative)) {
+          archiveEntries.push({ path: realPath, name: relative });
+          archiveEntryNames.add(relative);
+        }
       }
 
       const databaseFile = downloadManifest?.database?.backup_file;
@@ -1290,7 +1571,10 @@ router.get('/download/:backupId', adminAuth, requirePermission('backup.view'), a
         }
         if (!resolvedDatabase) return res.status(409).json({ error: 'The database dump required by this backup is missing from configured backup locations.' });
         packagedDatabaseName = `database/${path.basename(resolvedDatabase)}`;
-        archiveEntries.push({ path: resolvedDatabase, name: packagedDatabaseName });
+        if (!archiveEntryNames.has(packagedDatabaseName)) {
+          archiveEntries.push({ path: resolvedDatabase, name: packagedDatabaseName });
+          archiveEntryNames.add(packagedDatabaseName);
+        }
         downloadManifest.database.backup_file = packagedDatabaseName;
       }
 
@@ -1336,27 +1620,48 @@ router.get('/download/:backupId', adminAuth, requirePermission('backup.view'), a
         ...backupS3Access(config)
       });
 
-      // List all files for this backup
-      const prefix = `backups/${backupRun.id}/`;
-      const files = await s3Adapter.list(prefix, { maxKeys: 1000 });
-
-      // Generate pre-signed URLs
-      const urls = [];
-      for (const file of files.objects || []) {
-        const url = await s3Adapter.getSignedUrl('getObject', file.key, { expiresIn: 3600 }); // 1 hour
-        urls.push({
-          key: file.key,
-          size: file.size,
-          url: url
-        });
+      const { manifest } = await getBackupManifest(backupRun.id);
+      const manifestUri = parseS3ManifestUri(backupRun.manifest_path);
+      const declaredPath = parseS3ManifestUri(manifest?.backup?.path);
+      const runPrefix = declaredPath?.bucket === manifestUri?.bucket
+        ? normalizeS3ObjectKey(declaredPath.key)
+        : s3RunPrefixFromManifestKey(manifestUri?.key || '');
+      const declaredPrefix = manifest?.metadata?.backup_settings?.backup_s3_prefix;
+      const configuredPrefix = String(declaredPrefix || config.backup_s3_prefix || 'backups').replace(/^\/+|\/+$/g, '');
+      const basePrefix = normalizeS3ObjectKey(configuredPrefix);
+      const runBasePrefix = runPrefix?.match(/^(.*)\/runs\/[^/]+$/)?.[1];
+      const allowedPrefix = normalizeS3ObjectKey(declaredPrefix ? configuredPrefix : (runBasePrefix || configuredPrefix));
+      const files = Array.isArray(manifest?.files?.manifest) ? manifest.files.manifest : [];
+      const manifestFiles = files.map((entry) => ({
+        key: normalizeS3ObjectKey(entry.storage_key || path.posix.join(runPrefix || '', String(entry.path || '').replace(/\\/g, '/'))),
+        size: Number(entry.size) || 0,
+      }));
+      if (manifest?.database?.backup_file) {
+        const databaseKey = normalizeS3ObjectKey(manifest.database.storage_key
+          || path.posix.join(runPrefix || '', 'database', path.posix.basename(manifest.database.backup_file)));
+        if (!databaseKey) return res.status(409).json({ error: 'The backup manifest contains an unsafe database object key.' });
+        if (!manifestFiles.some((entry) => entry.key === databaseKey)) {
+          manifestFiles.push({ key: databaseKey, size: Number(manifest.database.size) || 0 });
+        }
       }
+      if (!manifestUri || !runPrefix || !basePrefix || !allowedPrefix
+        || manifestFiles.some((file) => !file.key || !file.key.startsWith(`${allowedPrefix}/`))) {
+        return res.status(409).json({ error: 'The backup manifest points outside the configured object-storage prefix.' });
+      }
+
+      const urls = await Promise.all(manifestFiles.map(async (file) => ({
+        key: file.key,
+        size: file.size,
+        url: await s3Adapter.getSignedUrl('getObject', file.key, { expiresIn: 3600 }),
+      })));
 
       res.json({
         backupId: backupRun.id,
         type: 's3',
         files: urls,
+        manifestUrl: await s3Adapter.getSignedUrl('getObject', manifestUri.key, { expiresIn: 3600 }),
         expiresIn: 3600,
-        message: 'Use the provided URLs to download individual files'
+        message: 'Use the provided URLs to download the files in this complete restore point'
       });
       break;
     }
@@ -1641,3 +1946,11 @@ async function validateManifestData(manifestData) {
 }
 
 module.exports = router;
+module.exports._internal = {
+  hasSurvivingS3Child,
+  removeS3RestorePointManifests,
+  parseS3ManifestUri,
+  s3RunPrefixFromManifestKey,
+  normalizeS3ObjectKey,
+  parseRetentionDays,
+};

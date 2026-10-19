@@ -62,6 +62,29 @@ function isContainedInRoots(candidate, resolvedRoots) {
   );
 }
 
+async function getRealRoots(roots) {
+  const resolved = [];
+  for (const root of roots) {
+    try {
+      resolved.push(await fs.realpath(root));
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+  }
+  return resolved;
+}
+
+function isContainedInRealRoots(candidate, realRoots) {
+  const resolved = path.resolve(candidate);
+  return realRoots.some((root) => resolved === root || resolved.startsWith(`${root}${path.sep}`));
+}
+
+function localDataError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
 // sqlite3's `.restore`/`.backup` are dot-commands parsed by sqlite3's OWN
 // tokenizer, not the shell — spawn()'s argv separation (shell: false) does
 // NOT protect against a single quote embedded in the path breaking out of
@@ -246,6 +269,22 @@ async function resolveContainedDbBackupCandidates(backupPath, dbBackupFile, warn
     return contained;
   });
 }
+
+async function resolveExistingContainedDbBackupPath(backupPath, dbBackupFile, warn) {
+  const candidates = await resolveContainedDbBackupCandidates(backupPath, dbBackupFile, warn);
+  const realAllowedRoots = await getRealRoots(await getConfiguredBackupRoots(backupPath));
+  for (const candidate of candidates) {
+    try {
+      const stats = await fs.lstat(candidate);
+      if (!stats.isFile() || stats.isSymbolicLink()) continue;
+      const realCandidate = await fs.realpath(candidate);
+      if (isContainedInRealRoots(realCandidate, realAllowedRoots)) return candidate;
+    } catch (_) {
+      // Try the next legacy-compatible location; the final error stays path-free.
+    }
+  }
+  return null;
+}
 const { formatBytes } = require('../utils/formatBytes');
 const os = require('os');
 
@@ -348,7 +387,9 @@ class RestoreService {
       const validation = await this.performPreRestoreValidation(manifest, options);
 
       if (!validation.isValid && !options.force) {
-        throw new Error(`Pre-restore validation failed: ${validation.errors.join(', ')}`);
+        const error = new Error(`Pre-restore validation failed: ${validation.errors.join(', ')}`);
+        if (validation.errorCode) error.code = validation.errorCode;
+        throw error;
       }
 
       if (validation.warnings.length > 0) {
@@ -418,11 +459,8 @@ class RestoreService {
       // the manifest recorded the correct absolute path AND the file
       // existed at exactly that path on disk.
       //
-      // Resolve `'local'` to the configured backup destination root by
-      // reading `backup_destination_path` from app_settings. That's the
-      // same root the file-backup walker writes to, so every relative
-      // `file.path` in the manifest resolves correctly via
-      // `path.join(localBackupPath, file.path)` further down.
+      // Resolve a local run to its immutable snapshot directory when the
+      // manifest names one. Legacy manifests keep using the configured root.
       let localBackupPath = options.source;
       if (options.source === 'local') {
         try {
@@ -436,6 +474,29 @@ class RestoreService {
           }
         } catch (err) {
           this.log('warn', `Could not resolve backup_destination_path: ${err.message}`);
+        }
+        if (localBackupPath === 'local') {
+          localBackupPath = path.join(process.env.STORAGE_PATH || path.join(__dirname, '../../../storage'), 'backups');
+        }
+        const manifestPath = manifest?.backup?.path;
+        if (typeof manifestPath === 'string' && manifestPath.trim() && !manifestPath.startsWith('s3://')) {
+          const configuredRoot = path.resolve(localBackupPath);
+          let candidate;
+          if (path.isAbsolute(manifestPath)) {
+            candidate = path.resolve(manifestPath);
+            const allowedRoots = await getConfiguredBackupRoots(configuredRoot);
+            if (!isContainedInRoots(candidate, allowedRoots)) candidate = configuredRoot;
+          } else {
+            if (path.posix.isAbsolute(manifestPath) || manifestPath.split(/[\\/]/).some((part) => part === '..')) {
+              throw new Error('Backup manifest contains an unsafe snapshot path');
+            }
+            candidate = path.resolve(configuredRoot, manifestPath || '.');
+          }
+          const allowedRoots = await getConfiguredBackupRoots(configuredRoot);
+          if (!isContainedInRoots(candidate, allowedRoots)) {
+            throw new Error('Backup snapshot path is outside configured backup locations');
+          }
+          localBackupPath = candidate;
         }
       } else if (options.source.startsWith('s3://')) {
         this.updateProgress('Downloading backup from S3...');
@@ -779,21 +840,29 @@ class RestoreService {
    */
   async loadAndValidateManifest(manifestPath, s3Config) {
     let manifest;
+    try {
+      if (manifestPath.startsWith('s3://')) {
+        // Download manifest from S3
+        const tempManifestPath = path.join(this.tempDir, 'manifest.json');
+        await fs.mkdir(this.tempDir, { recursive: true });
+        await this.downloadFileFromS3(manifestPath, tempManifestPath, s3Config);
+        manifest = await backupManifest.loadManifest(tempManifestPath);
+      } else {
+        manifest = await backupManifest.loadManifest(manifestPath);
+      }
 
-    if (manifestPath.startsWith('s3://')) {
-      // Download manifest from S3
-      const tempManifestPath = path.join(this.tempDir, 'manifest.json');
-      await fs.mkdir(this.tempDir, { recursive: true });
-      await this.downloadFileFromS3(manifestPath, tempManifestPath, s3Config);
-      manifest = await backupManifest.loadManifest(tempManifestPath);
-    } else {
-      manifest = await backupManifest.loadManifest(manifestPath);
+      // Validate manifest
+      backupManifest.validateManifest(manifest);
+      return manifest;
+    } catch (error) {
+      this.log('error', 'Could not load the selected backup manifest', { error: error.message });
+      if (error.code === 'ENOENT' || /ENOENT|no such file or directory/i.test(error.message || '')) {
+        const missing = new Error('The selected backup manifest is missing. Choose another restore point or create a new backup.');
+        missing.code = 'BACKUP_MANIFEST_MISSING';
+        throw missing;
+      }
+      throw error;
     }
-
-    // Validate manifest
-    backupManifest.validateManifest(manifest);
-
-    return manifest;
   }
 
   /**
@@ -807,6 +876,19 @@ class RestoreService {
     };
 
     try {
+      if (['full', 'database'].includes(options.restoreType) && !manifest?.database?.backup_file) {
+        validation.errors.push('The selected restore point does not contain a database backup.');
+        validation.isValid = false;
+        validation.errorCode = 'BACKUP_DATA_MISSING';
+      }
+
+      const localPayloadError = await this.validateLocalRestorePayloads(manifest, options);
+      if (localPayloadError) {
+        validation.errors.push(localPayloadError.message);
+        validation.isValid = false;
+        validation.errorCode = localPayloadError.code;
+      }
+
       // Check backup integrity. MUST delegate to verifyManifestChecksum rather
       // than recomputing here — that helper owns the legacy-serialization and
       // keyed/unkeyed fallbacks (GHSA-hgp8). Recomputing with the default
@@ -884,6 +966,173 @@ class RestoreService {
     }
 
     return validation;
+  }
+
+  async validateLocalRestorePayloads(manifest, options) {
+    if (options.source !== 'local' || String(options.manifestPath || '').startsWith('s3://')) return null;
+    const storageRoot = require('../config/storage').getStoragePath();
+    let configuredRoot = path.join(storageRoot, 'backups');
+    try {
+      const row = await db('app_settings').where('setting_key', 'backup_destination_path').first();
+      if (row?.setting_value) {
+        try { configuredRoot = JSON.parse(row.setting_value); } catch (_) { configuredRoot = row.setting_value; }
+      }
+    } catch (_) { /* fresh DB: use the normal default backup root */ }
+    configuredRoot = path.resolve(configuredRoot);
+
+    let backupRoot = configuredRoot;
+    const manifestRoot = manifest?.backup?.path;
+    if (typeof manifestRoot === 'string' && manifestRoot.trim() && !manifestRoot.startsWith('s3://')) {
+      if (path.isAbsolute(manifestRoot)) {
+        const allowed = await getConfiguredBackupRoots(configuredRoot);
+        if (!isContainedInRoots(manifestRoot, allowed)) {
+          const error = new Error('The backup snapshot path is outside configured backup locations.');
+          error.code = 'BACKUP_UNSAFE_PATH';
+          return error;
+        }
+        backupRoot = path.resolve(manifestRoot);
+      } else {
+        if (path.posix.isAbsolute(manifestRoot) || manifestRoot.split(/[\\/]/).some((part) => part === '..')) {
+          const error = new Error('The backup manifest contains an unsafe snapshot path.');
+          error.code = 'BACKUP_UNSAFE_PATH';
+          return error;
+        }
+        backupRoot = path.resolve(configuredRoot, manifestRoot);
+      }
+    }
+
+    const allowedRoots = await getConfiguredBackupRoots(backupRoot);
+    if (!isContainedInRoots(backupRoot, allowedRoots)) {
+      const error = new Error('The backup snapshot path is outside configured backup locations.');
+      error.code = 'BACKUP_UNSAFE_PATH';
+      return error;
+    }
+    let rootStat;
+    let realBackupRoot;
+    try {
+      rootStat = await fs.stat(backupRoot);
+      realBackupRoot = await fs.realpath(backupRoot);
+    } catch (error) {
+      if (error.code === 'ENOENT') {
+        const missing = new Error('The files required by this backup are missing. Create a new backup or choose another restore point.');
+        missing.code = 'BACKUP_DATA_MISSING';
+        return missing;
+      }
+      const unavailable = new Error('Picflow cannot read the selected backup location. Check the NAS mount and folder permissions.');
+      unavailable.code = 'BACKUP_DATA_UNAVAILABLE';
+      return unavailable;
+    }
+    if (!rootStat.isDirectory()) {
+      const missing = new Error('The files required by this backup are missing. Create a new backup or choose another restore point.');
+      missing.code = 'BACKUP_DATA_MISSING';
+      return missing;
+    }
+
+    // Lexical containment alone is insufficient: a directory inside the
+    // configured backup root may be a symlink to an arbitrary NAS path.
+    // Compare resolved locations before accepting any payload beneath it.
+    let realAllowedRoots;
+    try {
+      realAllowedRoots = await getRealRoots(allowedRoots);
+    } catch (_) {
+      return localDataError('BACKUP_DATA_UNAVAILABLE', 'Picflow cannot read the selected backup location. Check the NAS mount and folder permissions.');
+    }
+    if (!isContainedInRealRoots(realBackupRoot, realAllowedRoots)) {
+      return localDataError('BACKUP_UNSAFE_PATH', 'The selected backup location resolves outside configured backup locations.');
+    }
+    if (manifest?.metadata?.local_snapshot === true) {
+      let snapshotStat;
+      try { snapshotStat = await fs.lstat(backupRoot); } catch (_) {
+        return localDataError('BACKUP_DATA_UNAVAILABLE', 'Picflow cannot read the selected backup location. Check the NAS mount and folder permissions.');
+      }
+      if (snapshotStat?.isSymbolicLink()) {
+        return localDataError('BACKUP_UNSAFE_PATH', 'The selected backup snapshot is a symbolic link and cannot be restored.');
+      }
+    }
+
+    if (['full', 'database'].includes(options.restoreType) && manifest?.database?.backup_file) {
+      const candidates = await resolveContainedDbBackupCandidates(backupRoot, manifest.database.backup_file);
+      let foundDatabase = false;
+      let unsafeDatabaseCandidate = false;
+      let databaseSizeMismatch = false;
+      for (const candidate of candidates) {
+        try {
+          const stats = await fs.lstat(candidate);
+          if (!stats.isFile() || stats.isSymbolicLink()) {
+            unsafeDatabaseCandidate = true;
+            continue;
+          }
+          if (manifest.database.size !== undefined && manifest.database.size !== null
+            && Number.isFinite(Number(manifest.database.size))
+            && Number(manifest.database.size) >= 0
+            && stats.size !== Number(manifest.database.size)) {
+            databaseSizeMismatch = true;
+            continue;
+          }
+          const realCandidate = await fs.realpath(candidate);
+          if (isContainedInRealRoots(realCandidate, realAllowedRoots)) {
+            foundDatabase = true;
+            break;
+          }
+          unsafeDatabaseCandidate = true;
+        } catch (error) {
+          if (error.code === 'EACCES' || error.code === 'EPERM' || error.code === 'EIO') {
+            return localDataError('BACKUP_DATA_UNAVAILABLE', 'Picflow cannot read the selected backup location. Check the NAS mount and folder permissions.');
+          }
+        }
+      }
+      if (!foundDatabase) {
+        return databaseSizeMismatch
+          ? localDataError('BACKUP_DATA_CORRUPT', 'The database backup file does not match the size recorded in its manifest.')
+          : unsafeDatabaseCandidate
+            ? localDataError('BACKUP_UNSAFE_PATH', 'The database backup file resolves outside configured backup locations.')
+            : localDataError('BACKUP_DATA_MISSING', 'The database backup file is missing. Choose another restore point or create a new backup.');
+      }
+    }
+
+    if (['full', 'files'].includes(options.restoreType)) {
+      const entries = Array.isArray(manifest?.files?.manifest) ? manifest.files.manifest : [];
+      for (const entry of entries) {
+        const rel = String(entry?.path || '').replace(/\\/g, '/');
+        if (!rel || path.posix.isAbsolute(rel) || /^[a-zA-Z]:/.test(rel) || rel.split('/').some((part) => part === '..' || part === '')) {
+          const unsafe = new Error('The backup manifest contains an unsafe file path.');
+          unsafe.code = 'BACKUP_UNSAFE_PATH';
+          return unsafe;
+        }
+        const candidate = path.resolve(backupRoot, ...rel.split('/'));
+        if (pathEscapes(backupRoot, candidate)) {
+          const unsafe = new Error('The backup manifest contains an unsafe file path.');
+          unsafe.code = 'BACKUP_UNSAFE_PATH';
+          return unsafe;
+        }
+        let stats;
+        try { stats = await fs.lstat(candidate); } catch (error) {
+          if (error.code === 'EACCES' || error.code === 'EPERM' || error.code === 'EIO') {
+            return localDataError('BACKUP_DATA_UNAVAILABLE', 'Picflow cannot read the selected backup location. Check the NAS mount and folder permissions.');
+          }
+          return localDataError('BACKUP_DATA_MISSING', 'One or more files required by this backup are missing. Create a new backup or choose another restore point.');
+        }
+        if (!stats.isFile() || stats.isSymbolicLink()) {
+          return localDataError('BACKUP_UNSAFE_PATH', 'A backup file is not a regular file inside the selected backup location.');
+        }
+        if (entry.size !== undefined && entry.size !== null
+          && Number.isFinite(Number(entry.size)) && Number(entry.size) >= 0
+          && stats.size !== Number(entry.size)) {
+          return localDataError('BACKUP_DATA_CORRUPT', 'A backup file does not match the size recorded in its manifest. Choose another restore point or create a new backup.');
+        }
+        let realCandidate;
+        try { realCandidate = await fs.realpath(candidate); } catch (error) {
+          if (error.code === 'EACCES' || error.code === 'EPERM' || error.code === 'EIO') {
+            return localDataError('BACKUP_DATA_UNAVAILABLE', 'Picflow cannot read the selected backup location. Check the NAS mount and folder permissions.');
+          }
+          return localDataError('BACKUP_DATA_MISSING', 'One or more files required by this backup are missing. Create a new backup or choose another restore point.');
+        }
+        if (!isContainedInRealRoots(realCandidate, [realBackupRoot])) {
+          return localDataError('BACKUP_UNSAFE_PATH', 'A backup file resolves outside the selected backup location.');
+        }
+      }
+    }
+    return null;
   }
 
   /**
@@ -1046,6 +1295,28 @@ class RestoreService {
     }
 
     const [, bucket, prefix] = s3PathMatch;
+    const configuredObjectPrefix = String(manifest?.metadata?.backup_settings?.backup_s3_prefix || 'backups')
+      .replace(/^\/+|\/+$/g, '');
+    const normalizeS3Prefix = (value) => {
+      const raw = String(value || '').replace(/^\/+|\/+$/g, '');
+      if (!raw || raw.split('/').some((part) => part === '.' || part === '..' || !part)) return null;
+      return path.posix.normalize(raw);
+    };
+    const backupPathUri = String(manifest?.backup?.path || '').match(/^s3:\/\/([^/]+)\/(.+)$/);
+    const manifestKey = normalizeS3Prefix(prefix);
+    const declaredBackupPrefix = backupPathUri && backupPathUri[1] === bucket
+      ? normalizeS3Prefix(backupPathUri[2])
+      : null;
+    const keyPrefix = manifestKey?.match(/^(.*)\/manifests\/[^/]+$/)?.[1] || manifestKey;
+    const backupObjectPrefix = declaredBackupPrefix || keyPrefix;
+    if (!backupObjectPrefix || !configuredObjectPrefix
+      || (backupObjectPrefix !== configuredObjectPrefix && !backupObjectPrefix.startsWith(`${configuredObjectPrefix}/`))) {
+      throw new Error('Backup manifest contains an unsafe S3 object prefix');
+    }
+    const isAllowedS3Key = (key) => {
+      const normalized = normalizeS3Prefix(key);
+      return Boolean(normalized && (normalized === configuredObjectPrefix || normalized.startsWith(`${configuredObjectPrefix}/`)));
+    };
     // testConnection() only vets the endpoint hostname once; the SDK would
     // resolve it again for every download below. Pin the client to the
     // validated address, as downloadFileFromS3 does.
@@ -1067,7 +1338,11 @@ class RestoreService {
       // Download database backup if needed
       if (options.restoreType === 'full' || options.restoreType === 'database') {
         if (manifest.database.backup_file) {
-          const dbS3Key = path.posix.join(prefix, 'database', path.basename(manifest.database.backup_file));
+          const dbS3Key = manifest.database.storage_key
+            || path.posix.join(backupObjectPrefix, 'database', path.basename(manifest.database.backup_file));
+          if (!isAllowedS3Key(dbS3Key)) {
+            throw new Error('Database backup object is outside the configured S3 prefix');
+          }
           const localDbPath = path.join(localPath, 'database', path.basename(manifest.database.backup_file));
 
           await fs.mkdir(path.dirname(localDbPath), { recursive: true });
@@ -1090,7 +1365,15 @@ class RestoreService {
 
         let downloaded = 0;
         for (const file of filesToDownload) {
-          const s3Key = path.posix.join(prefix, file.path);
+          const normalizedRelativePath = String(file.path || '').replace(/\\/g, '/');
+          if (!normalizedRelativePath || path.posix.isAbsolute(normalizedRelativePath)
+            || normalizedRelativePath.split('/').some((part) => !part || part === '.' || part === '..')) {
+            throw new Error(`Backup manifest contains an unsafe file path: ${file.path}`);
+          }
+          const s3Key = file.storage_key || path.posix.join(backupObjectPrefix, normalizedRelativePath);
+          if (!isAllowedS3Key(s3Key)) {
+            throw new Error(`Backup object is outside the configured S3 prefix: ${file.path}`);
+          }
           const localFilePath = path.join(localPath, file.path);
 
           // Containment guard (GHSA-fm58): reject a manifest path that would
@@ -1207,35 +1490,13 @@ class RestoreService {
     // inherently safe (path.basename() strips any directory component) and
     // is always inside `backupPath`, which is itself always one of the
     // allowed roots below.
-    const candidates = await resolveContainedDbBackupCandidates(
+    const dbBackupPath = await resolveExistingContainedDbBackupPath(
       backupPath, dbBackupFile, (msg, meta) => this.log('warn', msg, meta)
     );
 
-    if (candidates.length === 0) {
-      throw new Error(
-        'Database backup file path is not inside a configured backup location. ' +
-        `Manifest recorded path: ${dbBackupFile}.`
-      );
-    }
-
-    let dbBackupPath = null;
-    for (const candidate of candidates) {
-      try {
-        await fs.access(candidate);
-        dbBackupPath = candidate;
-        break;
-      } catch (_) {
-        // try next candidate
-      }
-    }
-
     if (!dbBackupPath) {
       throw new Error(
-        `Database backup file not found. Tried: ${candidates.join(', ')}. ` +
-        `Manifest recorded path: ${dbBackupFile}. ` +
-        'Hint: this usually means the manifest\'s database.backup_file path no longer ' +
-        'exists on disk (deleted? moved? volume not mounted?). Check ' +
-        '~/<your-compose-dir>/backup/database/ on the host.'
+        'The database backup file is missing or resolves outside configured backup locations.'
       );
     }
 
@@ -2121,6 +2382,9 @@ module.exports = {
     assertSafeSqlitePath,
     pathEscapes,
     resolveContainedDbBackupCandidates,
+    resolveExistingContainedDbBackupPath,
+    getRealRoots,
+    isContainedInRealRoots,
     verifyDatabaseDumpChecksum,
     getRestoreMaxFileBytes,
     nextSessionCutoff,

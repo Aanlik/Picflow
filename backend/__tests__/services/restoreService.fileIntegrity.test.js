@@ -45,6 +45,11 @@ describe('restoreService — file restore integrity', () => {
     fs.writeFileSync(path.join(outsideDir, 'secret.txt'), 'JWT_SECRET=super-secret\n');
     fs.mkdirSync(path.join(outsideDir, 'tree'));
     fs.writeFileSync(path.join(outsideDir, 'tree', 'x.jpg'), 'outside-tree-bytes');
+    await db('app_settings').insert({
+      setting_key: 'backup_destination_path',
+      setting_value: JSON.stringify(backupRoot),
+      setting_type: 'backup',
+    }).onConflict('setting_key').merge();
   }, 120000);
 
   afterAll(async () => {
@@ -61,6 +66,44 @@ describe('restoreService — file restore integrity', () => {
   });
 
   describe('symlinks in the backup tree (1283fcde)', () => {
+    it('reports a path-free error code when a selected restore point is missing a payload', async () => {
+      const error = await restoreService.validateLocalRestorePayloads({
+        backup: { path: backupRoot },
+        files: { manifest: [{ path: 'missing/photo.jpg', size: 10 }] },
+      }, { source: 'local', restoreType: 'files' });
+
+      expect(error).toMatchObject({ code: 'BACKUP_DATA_MISSING' });
+      expect(error.message).toMatch(/required by this backup are missing/i);
+      expect(error.message).not.toContain(backupRoot);
+    });
+
+    it('rejects a payload whose stored size differs from the manifest before restore starts', async () => {
+      const payload = writeFixture('size-check/photo.jpg', Buffer.from('actual payload'));
+      payload.size += 1;
+      const error = await restoreService.validateLocalRestorePayloads({
+        backup: { path: backupRoot },
+        files: { manifest: [payload] },
+      }, { source: 'local', restoreType: 'files' });
+
+      expect(error).toMatchObject({ code: 'BACKUP_DATA_CORRUPT' });
+      expect(error.message).not.toContain(backupRoot);
+    });
+
+    it('requires a database dump for a full restore during preflight', async () => {
+      const result = await restoreService.performPreRestoreValidation({
+        manifest: { version: '2.0' },
+        backup: { timestamp: new Date().toISOString() },
+        application: { version: require('../../package.json').version },
+        database: { type: 'sqlite', backup_file: null },
+        files: { count: 0, total_size: 0, manifest: [] },
+        verification: {},
+      }, { source: 'local', restoreType: 'full' });
+
+      expect(result.isValid).toBe(false);
+      expect(result.errorCode).toBe('BACKUP_DATA_MISSING');
+      expect(result.errors).toContain('The selected restore point does not contain a database backup.');
+    });
+
     it('refuses a symlink leaf and a symlinked parent directory, and copies neither', async () => {
       const ok = writeFixture('sym/uploads/ok.jpg', Buffer.from('real-photo-bytes'));
       fs.symlinkSync(path.join(outsideDir, 'secret.txt'), path.join(backupRoot, 'sym/uploads/leak.png'));
@@ -79,6 +122,17 @@ describe('restoreService — file restore integrity', () => {
       expect(fs.existsSync(path.join(storageRoot, 'sym/uploads/linked/x.jpg'))).toBe(false);
       // The genuine entry is still copied; the run fails as a whole.
       expect(fs.readFileSync(path.join(storageRoot, 'sym/uploads/ok.jpg'), 'utf8')).toBe('real-photo-bytes');
+    });
+
+    it('preflight rejects file entries whose parent symlink leaves the selected backup root', async () => {
+      fs.symlinkSync(path.join(outsideDir, 'tree'), path.join(backupRoot, 'preflight-linked'));
+      const error = await restoreService.validateLocalRestorePayloads({
+        backup: { path: backupRoot },
+        files: { manifest: [{ path: 'preflight-linked/x.jpg', size: 18 }] },
+      }, { source: 'local', restoreType: 'files' });
+
+      expect(error).toMatchObject({ code: 'BACKUP_UNSAFE_PATH' });
+      expect(error.message).not.toContain(outsideDir);
     });
 
     it('openRestoreSource rejects a non-regular file', async () => {

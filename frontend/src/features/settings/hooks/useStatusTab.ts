@@ -1,13 +1,10 @@
 import { useQuery } from '@tanstack/react-query';
 import { settingsService } from '../../../services/settings.service';
+import { useStorageInfo } from './useStorageInfo';
 
 export function useStatusTab(isActive: boolean) {
   // Fetch storage info
-  const { data: storageInfo } = useQuery({
-    queryKey: ['admin-storage-info'],
-    queryFn: () => settingsService.getStorageInfo(),
-    enabled: isActive
-  });
+  const { data: storageInfo } = useStorageInfo(isActive);
 
   // Fetch system status
   const { data: systemStatus } = useQuery({
