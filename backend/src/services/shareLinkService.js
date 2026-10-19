@@ -165,12 +165,11 @@ const ACTIVE_EVENT_FILTER = {
   is_draft: formatBoolean(false)
 };
 
-// Same filter minus the draft gate, for admin preview only (#1386). Callers
-// MUST authorize before returning anything it matched — see the /resolve
-// route, which only reaches for it after a verified admin preview.
+// Include inactive drafts for admin preview only (#1386); published inactive
+// galleries remain unavailable. Callers MUST authorize any draft matched —
+// see /resolve, which only reaches for this filter after the preview flag.
 const UNPUBLISHED_EVENT_FILTER = {
-  is_active: formatBoolean(true),
-  is_archived: formatBoolean(false)
+  is_archived: formatBoolean(false),
 };
 
 const resolveShareIdentifier = async (identifier, { includeDrafts = false } = {}) => {
@@ -198,6 +197,11 @@ const resolveShareIdentifier = async (identifier, { includeDrafts = false } = {}
       'is_draft'
     )
     .where(includeDrafts ? UNPUBLISHED_EVENT_FILTER : ACTIVE_EVENT_FILTER);
+  if (includeDrafts) {
+    baseQuery.where((query) => query
+      .where({ is_active: formatBoolean(true) })
+      .orWhere({ is_draft: formatBoolean(true) }));
+  }
 
   let event = await baseQuery.clone().where({ slug: trimmed }).first();
   if (event) {

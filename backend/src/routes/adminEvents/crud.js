@@ -360,6 +360,7 @@ module.exports = (router) => {
       }
       await db('events').where('id', req.params.id).update({
         is_draft: formatBoolean(false),
+        is_active: formatBoolean(true),
         updated_at: new Date().toISOString(),
       });
       await logActivity('event_published', { event_name: event.event_name }, req.params.id,

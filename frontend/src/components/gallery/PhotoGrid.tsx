@@ -9,7 +9,7 @@ import { useDownloadPhoto } from '../../hooks/useGallery';
 import { PhotoLightbox } from './PhotoLightbox';
 import { Button, AuthenticatedImage } from '../common';
 import { galleryService } from '../../services/gallery.service';
-import { getPhotoDownloadFilenames } from './downloadSelection';
+import { getDownloadableSelectedPhotoIds, getPhotoDownloadFilenames } from './downloadSelection';
 
 interface PhotoGridProps {
   photos: Photo[];
@@ -41,6 +41,7 @@ export const PhotoGrid: React.FC<PhotoGridProps> = ({
   const [selectedPhotos, setSelectedPhotos] = useState<Set<number>>(new Set());
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const downloadPhotoMutation = useDownloadPhoto();
+  const downloadableSelectedPhotoIds = getDownloadableSelectedPhotoIds(photos, selectedPhotos);
 
   // Clear selection when category changes
   useEffect(() => {
@@ -99,8 +100,8 @@ export const PhotoGrid: React.FC<PhotoGridProps> = ({
   };
 
   const handleDownloadSelected = async () => {
-    if (selectedPhotos.size === 0) return;
-    const ids = Array.from(selectedPhotos);
+    const ids = downloadableSelectedPhotoIds;
+    if (!allowDownloads || ids.length === 0) return;
     toastify.info(t('gallery.downloadStarted', { photoCount: ids.length }));
 
     try {
@@ -163,7 +164,7 @@ export const PhotoGrid: React.FC<PhotoGridProps> = ({
                 <Button variant="ghost" size="sm" onClick={deselectAll} className="text-xs sm:text-sm">
                   {t('gallery.deselectAll')}
                 </Button>
-                {selectedPhotos.size > 0 && (
+                {allowDownloads && downloadableSelectedPhotoIds.length > 0 && (
                   <Button
                     variant="primary"
                     size="sm"
@@ -171,8 +172,8 @@ export const PhotoGrid: React.FC<PhotoGridProps> = ({
                     onClick={handleDownloadSelected}
                     className="text-xs sm:text-sm"
                   >
-                  <span className="gallery-numeric hidden sm:inline">{t('gallery.downloadSelected', { count: selectedPhotos.size })}</span>
-                    <span className="sm:hidden">{t('common.download')} ({selectedPhotos.size})</span>
+                  <span className="gallery-numeric hidden sm:inline">{t('gallery.downloadSelected', { count: downloadableSelectedPhotoIds.length })}</span>
+                    <span className="sm:hidden">{t('common.download')} ({downloadableSelectedPhotoIds.length})</span>
                   </Button>
                 )}
               </div>

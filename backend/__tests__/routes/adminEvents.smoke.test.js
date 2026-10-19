@@ -78,6 +78,16 @@ describe('admin events CRUD endpoints (smoke)', () => {
     expect(res.status).toBe(401);
   });
 
+  it('activates an unpublished draft when it is published', async () => {
+    const eventId = await insertEvent(db, adminId, { is_active: 0, is_draft: 1 });
+    const res = await auth(request(app).post(`/api/admin/events/${eventId}/publish`)).send({});
+
+    expect(res.status).toBe(200);
+    const row = await db('events').where({ id: eventId }).first();
+    expect(Boolean(row.is_draft)).toBe(false);
+    expect(Boolean(row.is_active)).toBe(true);
+  });
+
   describe('POST /', () => {
     it('creates an event, mints slug + share link and persists the row', async () => {
       const res = await auth(request(app).post('/api/admin/events')).send({

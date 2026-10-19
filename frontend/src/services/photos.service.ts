@@ -1,5 +1,6 @@
 import { api } from '../config/api';
 import { parseContentDispositionFilename } from '../utils/contentDisposition';
+import { downloadBlob } from '../utils/downloadBlob';
 
 export interface AdminPhoto {
   id: number;
@@ -143,14 +144,7 @@ class PhotosService {
       response.headers['content-disposition'] || response.headers['Content-Disposition'];
     const serverFilename = parseContentDispositionFilename(headerName);
 
-    const url = window.URL.createObjectURL(new Blob([response.data]));
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = serverFilename || filename;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    window.URL.revokeObjectURL(url);
+    downloadBlob(new Blob([response.data]), serverFilename || filename);
   }
 
   formatBytes(bytes: number): string {
@@ -333,14 +327,7 @@ class PhotosService {
     }
 
     // Download the file
-    const url = window.URL.createObjectURL(new Blob([response.data]));
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = filename;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    window.URL.revokeObjectURL(url);
+    downloadBlob(new Blob([response.data]), filename);
   }
 
   // Same endpoint as `exportPhotos` but returns the text content + filename

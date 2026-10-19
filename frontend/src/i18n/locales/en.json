@@ -528,6 +528,8 @@
     "slugAlreadyExists": "This category identifier is already in use. Choose another one.",
     "noCategoriesYet": "No categories yet. Create your first category to organize photos.",
     "deleteConfirm": "Are you sure you want to delete \"{{name}}\"?",
+    "deleteGlobalConfirm": "Delete the shared category \"{{name}}\"? It will no longer be available in any project.",
+    "deleteEventConfirm": "Delete this project-only category \"{{name}}\"?",
     "setCoverPhoto": "Set Cover Photo",
     "removeCoverPhoto": "Remove Cover Photo",
     "coverPhotoSet": "Cover photo set successfully",

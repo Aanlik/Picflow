@@ -13,6 +13,7 @@ const { getEventShareToken, resolveShareIdentifier, buildShareLinkVariants } = r
 const { handleAsync, errorResponse } = require('../../utils/routeHelpers');
 const { isGalleryHidden } = require('../../utils/revealMode');
 const { NotFoundError } = require('../../utils/errors');
+const isTrue = (value) => value === true || value === 1 || value === '1';
 async function checkSlugRedirect(slug) {
   try {
     const hasTable = await db.schema.hasTable('slug_redirects');
@@ -122,8 +123,8 @@ router.get('/:slug/verify-token/:token', noStoreCache, handleAsync(async (req, r
   const { slug, token } = req.params;
 
   const event = await db('events')
-    .where({ slug, is_active: formatBoolean(true), is_archived: formatBoolean(false) })
-    .select('id', 'share_link', 'share_token', 'is_draft')
+    .where({ slug, is_archived: formatBoolean(false) })
+    .select('id', 'slug', 'share_link', 'share_token', 'is_active', 'is_draft', 'is_archived')
     .first();
 
   if (!event) {
@@ -132,12 +133,15 @@ router.get('/:slug/verify-token/:token', noStoreCache, handleAsync(async (req, r
 
   // Drafts are visible to a verified admin preview only (#1386). Without this
   // the preview clears /resolve and then 404s one step later, here.
-  if (event.is_draft) {
+  const isDraft = event.is_draft === true || event.is_draft === 1 || event.is_draft === '1';
+  if (isDraft) {
     req.requestedSlug = slug;
     if (!await verifyAdminPreview(req)) {
       throwIfPasswordChangeRequired(req);
       throw new NotFoundError('Gallery');
     }
+  } else if (!(event.is_active === true || event.is_active === 1 || event.is_active === '1')) {
+    throw new NotFoundError('Gallery');
   }
 
   const expectedToken = getEventShareToken(event);
@@ -226,7 +230,8 @@ router.get('/:slug/info', async (req, res) => {
         .json({ error: req.adminPreviewDenied.message, code: req.adminPreviewDenied.code });
     }
     // Check if event is a draft (allow admin preview)
-    if (event.is_draft && !adminPreview) {
+    const isDraft = isTrue(event.is_draft);
+    if (isDraft && !adminPreview) {
       return res.status(404).json({ error: 'Gallery is not yet published' });
     }
     
@@ -250,8 +255,8 @@ router.get('/:slug/info', async (req, res) => {
       event_name: event.event_name,
       event_date: event.event_date,
       expires_at: event.expires_at,
-      is_active: event.is_active,
-      is_expired: !event.is_active || isGalleryExpired(event),
+      is_active: isTrue(event.is_active),
+      is_expired: isDraft && adminPreview ? false : !isTrue(event.is_active) || isGalleryExpired(event),
       requires_password: requiresPassword,
       color_theme: event.color_theme,
       allow_downloads: !(event.allow_downloads === false || event.allow_downloads === 0 || event.allow_downloads === '0'),

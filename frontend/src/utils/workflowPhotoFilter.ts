@@ -39,8 +39,7 @@ export function matchesWorkflowPhotoFilter(
   const isSelected = photo.selected
     && !isEditing
     && !isDelivered
-    && !isCancelled
-    && !hasError;
+    && !isCancelled;
 
   switch (filter) {
     case 'all': return !remoteMissing;

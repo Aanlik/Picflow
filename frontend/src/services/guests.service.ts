@@ -79,6 +79,16 @@ class GuestsService {
     return response.data;
   }
 
+  async listGuestRoles(slug: string): Promise<{ guests: Array<Pick<GuestIdentity, 'id' | 'name'>> }> {
+    const response = await api.get(`/gallery/${slug}/guest/roles`);
+    return response.data;
+  }
+
+  async selectGuestRole(slug: string, guestId: number): Promise<GuestRegisterResponse> {
+    const response = await api.post(`/gallery/${slug}/guest/select`, { guestId });
+    return response.data;
+  }
+
   async getGuestMe(slug: string): Promise<{ guest: GuestIdentity }> {
     const response = await api.get(`/gallery/${slug}/guest/me`);
     return response.data;

@@ -36,7 +36,7 @@ import { lightboxImageUrl } from '../imageTiers';
 import { renderPremiumLightboxImage } from './PremiumLightboxImage';
 import { useViewerLikeIds } from '../../../hooks/useViewerLikeIds';
 import { photoDisplayFilename } from '../../../utils/photoFilename';
-import { getPhotoDownloadFilenames } from '../downloadSelection';
+import { getDownloadableSelectedPhotoIds, getPhotoDownloadFilenames } from '../downloadSelection';
 
 interface PhotoCardProps {
   photo: Photo;
@@ -320,6 +320,10 @@ export const GalleryPremiumLayout: React.FC<GalleryPremiumLayoutProps> = ({
     if (!activeCategory) return photos;
     return photos.filter(photo => photo.category_name === activeCategory);
   }, [photos, activeCategory]);
+  const downloadableSelectedPhotoIds = useMemo(
+    () => getDownloadableSelectedPhotoIds(filteredPhotos, selectedPhotos),
+    [filteredPhotos, selectedPhotos],
+  );
 
   const currentLightboxPhoto = lightboxIndex >= 0 ? filteredPhotos[lightboxIndex] : null;
   const currentLightboxPhotoId = currentLightboxPhoto?.id;
@@ -418,8 +422,8 @@ export const GalleryPremiumLayout: React.FC<GalleryPremiumLayoutProps> = ({
   }, [selectedPhotos, filteredPhotos, onSelectAll, onDeselectAll]);
 
   const handleDownloadSelected = useCallback(async () => {
-    if (selectedPhotos.size === 0) return;
-    const ids = Array.from(selectedPhotos);
+    const ids = downloadableSelectedPhotoIds;
+    if (!allowDownloads || ids.length === 0) return;
     // #858: hand off to the resolution picker when the gallery offers a choice.
     if (downloadChoices && downloadChoices.length > 1 && onPickResolution) {
       onPickResolution(ids);
@@ -432,7 +436,7 @@ export const GalleryPremiumLayout: React.FC<GalleryPremiumLayoutProps> = ({
     } catch {
       toast.error(t('gallery.downloadError'));
     }
-  }, [selectedPhotos, slug, t, downloadChoices, onPickResolution, filteredPhotos]);
+  }, [allowDownloads, downloadableSelectedPhotoIds, slug, t, downloadChoices, onPickResolution, filteredPhotos]);
 
   const handleDownloadFromLightbox = useCallback((slide: { src?: string; photoId?: number }) => {
     if (!allowDownloads || !slide.src) return;
@@ -541,13 +545,13 @@ export const GalleryPremiumLayout: React.FC<GalleryPremiumLayoutProps> = ({
                   >
                     {selectedPhotos.size === filteredPhotos.length ? t('gallery.deselectAll') : t('gallery.selectAll')}
                   </button>
-                  <button
+                  {allowDownloads && downloadableSelectedPhotoIds.length > 0 && <button
                     className="gallery-premium-download-btn"
                     onClick={handleDownloadSelected}
                   >
                     <Package className="w-3 h-3 mr-1 inline" />
-                    {t('common.download')} ({selectedPhotos.size})
-                  </button>
+                    {t('common.download')} ({downloadableSelectedPhotoIds.length})
+                  </button>}
                 </motion.div>
               )}
             </AnimatePresence>

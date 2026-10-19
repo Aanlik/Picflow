@@ -178,6 +178,17 @@ describe('Premium lightbox canvas rendering (#1325)', () => {
     expect(within(screen.getByTestId('photo-card-2')).getByRole('button', { name: 'ui.downloadPhoto' })).toBeInTheDocument();
   });
 
+  it('does not offer a batch download for selected restricted-category photos', () => {
+    mount({
+      allowDownloads: true,
+      isSelectionMode: true,
+      selectedPhotos: new Set([1]),
+      photos: photos.map((photo) => ({ ...photo, category_allow_downloads: false })),
+    });
+
+    expect(document.querySelector('.gallery-premium-download-btn')).toBeNull();
+  });
+
   it.each([
     { useCanvasRendering: true, protectionLevel: 'standard' as const },
     { useCanvasRendering: false, protectionLevel: 'maximum' as const },

@@ -4,6 +4,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { GuestIdentityProvider, useGuestIdentity } from '../GuestIdentityContext';
 import { GuestNamePromptModal } from '../../components/gallery/GuestNamePromptModal';
+import { guestsService } from '../../services/guests.service';
 import {
   __resetStorageResolutionForTests,
   clearGuestIdentity,
@@ -11,6 +12,14 @@ import {
   getGuestToken,
   storeGuestIdentity,
 } from '../../utils/guestIdentityStorage';
+
+vi.mock('../../services/guests.service', () => ({
+  guestsService: {
+    registerGuest: vi.fn(),
+    listGuestRoles: vi.fn().mockResolvedValue({ guests: [] }),
+    selectGuestRole: vi.fn(),
+  },
+}));
 
 const SLUG = 'acceptance-saved-picker';
 
@@ -43,6 +52,8 @@ function PendingAction() {
 
 describe('saved guest picker selection', () => {
   beforeEach(() => {
+    vi.mocked(guestsService.selectGuestRole).mockReset();
+    vi.mocked(guestsService.listGuestRoles).mockResolvedValue({ guests: [] });
     window.localStorage.clear();
     window.sessionStorage.clear();
     __resetStorageResolutionForTests();
@@ -70,5 +81,35 @@ describe('saved guest picker selection', () => {
     expect(await screen.findByText('Active picker: 验收客户B')).toBeInTheDocument();
     await waitFor(() => expect(getGuestIdentity(SLUG)).toMatchObject({ id: 12, name: '验收客户B' }));
     expect(tokenSubject(getGuestToken(SLUG))).toBe('guest-b');
+  });
+
+  it('lets a private browser choose an existing gallery picker by name', async () => {
+    window.localStorage.clear();
+    window.sessionStorage.clear();
+    __resetStorageResolutionForTests();
+    vi.mocked(guestsService.selectGuestRole).mockResolvedValue({
+      guest: { id: 31, name: '验收客户A', identifier: 'server-role-a' },
+      token: token('server-role-a'),
+    });
+    vi.mocked(guestsService.listGuestRoles).mockResolvedValue({
+      guests: [{ id: 31, name: '验收客户A' }],
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GuestIdentityProvider slug={SLUG} identityMode="guest">
+          <PendingAction />
+          <GuestNamePromptModal />
+        </GuestIdentityProvider>
+      </QueryClientProvider>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Start retouch selection' }));
+    fireEvent.click(await screen.findByRole('button', { name: '验收客户A' }));
+
+    expect(guestsService.selectGuestRole).toHaveBeenCalledWith(SLUG, 31);
+    expect(await screen.findByText('Active picker: 验收客户A')).toBeInTheDocument();
+    expect(getGuestIdentity(SLUG)).toMatchObject({ id: 31, name: '验收客户A' });
+    expect(tokenSubject(getGuestToken(SLUG))).toBe('server-role-a');
   });
 });

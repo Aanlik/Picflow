@@ -528,6 +528,8 @@
     "slugAlreadyExists": "这个分类标识已被使用，请换一个。",
     "noCategoriesYet": "尚未设置分类，可添加分类整理照片。",
     "deleteConfirm": "确定删除“{{name}}”吗？",
+    "deleteGlobalConfirm": "确定删除全局分类“{{name}}”吗？所有项目都将无法再使用它。",
+    "deleteEventConfirm": "确定删除本项目分类“{{name}}”吗？",
     "setCoverPhoto": "设置封面照片",
     "removeCoverPhoto": "移除封面照片",
     "coverPhotoSet": "封面照片已设置",

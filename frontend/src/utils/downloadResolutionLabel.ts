@@ -1,6 +1,7 @@
 type Translate = (key: string) => string;
 
 const BUILT_IN_SIZE_KEYS: Record<string, string> = {
+  original: 'settings.downloads.original',
   large: 'settings.downloads.size.large',
   medium: 'settings.downloads.size.medium',
   small: 'settings.downloads.size.small',

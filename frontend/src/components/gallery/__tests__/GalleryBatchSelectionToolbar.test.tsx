@@ -45,4 +45,11 @@ describe('full-bleed gallery batch actions', () => {
     expect(screen.getByRole('button', { name: 'gallery.cancelSelection' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'gallery.downloadSelected' })).toBeNull();
   });
+
+  it('omits the download action when every selected photo belongs to a restricted category', () => {
+    render(<GalleryBatchSelectionToolbar {...props({ downloadableCount: 0 })} />);
+
+    expect(screen.getByRole('button', { name: 'gallery.cancelSelection' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'gallery.downloadSelected' })).toBeNull();
+  });
 });

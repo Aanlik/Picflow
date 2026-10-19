@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { categoriesService, type PhotoCategory } from '../../services/categories.service';
 import { Button } from '../common';
 import { useMutationWithToast, useModal } from '../../hooks';
-import { categoryLabel } from '../../utils/categoryLabel';
+import { categoryDeleteConfirmation, categoryLabel } from '../../utils/categoryLabel';
 
 export const CategoryManager: React.FC = () => {
   const { t } = useTranslation();
@@ -95,7 +95,7 @@ export const CategoryManager: React.FC = () => {
   };
 
   const handleDelete = (category: PhotoCategory) => {
-    if (window.confirm(t('categories.deleteConfirm', { name: categoryLabel(category, t) }))) {
+    if (window.confirm(categoryDeleteConfirmation(category, t))) {
       deleteMutation.mutate(category.id);
     }
   };

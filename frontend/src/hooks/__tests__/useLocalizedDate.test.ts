@@ -45,6 +45,16 @@ describe('useLocalizedDate locale resolution', () => {
     expect(result.current.format(date)).toBe('2026-03-04');
   });
 
+  it('renders invalid or missing timestamps safely instead of crashing a page', () => {
+    language = 'zh-CN';
+    const { result } = renderHook(() => useLocalizedDate());
+    expect(result.current.formatDateTime('not-a-date')).toBe('');
+    expect(result.current.formatDateTime(new Date(Number.NaN))).toBe('');
+    expect(result.current.formatTime('not-a-time')).toBe('');
+    expect(result.current.formatTime('25:00')).toBe('');
+    expect(result.current.formatTime('12:30:90')).toBe('');
+  });
+
   it('interprets timezone-less database timestamps as UTC but keeps date-only values as calendar dates', () => {
     expect(parseLocalizedDate('2026-10-15 19:31:00').toISOString()).toBe('2026-10-15T19:31:00.000Z');
     expect(parseLocalizedDate('2026-10-15').getHours()).toBe(0);

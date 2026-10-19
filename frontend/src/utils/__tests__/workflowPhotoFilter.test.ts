@@ -40,4 +40,13 @@ describe('workflow photo filters', () => {
     expect(counts.delivered).toBe(0);
     expect(counts.errors).toBe(1);
   });
+
+  it('keeps a customer-selected photo in the selected queue when its RAW mapping is an error', () => {
+    const unmatched = photo({ photo_id: 4, ready_for_editing: false, error: true });
+    expect(matchesWorkflowPhotoFilter(unmatched, 'selected', 'SELECTING')).toBe(true);
+    expect(matchesWorkflowPhotoFilter(unmatched, 'errors', 'SELECTING')).toBe(true);
+    const counts = countWorkflowPhotos([unmatched], 'SELECTING', new Set());
+    expect(counts.selected).toBe(1);
+    expect(counts.errors).toBe(1);
+  });
 });

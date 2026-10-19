@@ -25,8 +25,11 @@ function requiresGalleryPassword(event) {
 }
 
 function isGalleryAvailable(event, { adminPreview = false } = {}) {
-  return !!event && isTrue(event.is_active) && !isTrue(event.is_archived)
-    && (adminPreview || (!isTrue(event.is_draft) && !isGalleryExpired(event)));
+  if (!event || isTrue(event.is_archived)) return false;
+  const isDraft = isTrue(event.is_draft);
+  const isActive = isTrue(event.is_active);
+  if (adminPreview && (isDraft || isActive)) return true;
+  return isActive && !isDraft && !isGalleryExpired(event);
 }
 
 function assertGalleryAvailable(event, { adminPreview = false } = {}) {

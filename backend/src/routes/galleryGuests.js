@@ -6,6 +6,7 @@ const logger = require('../utils/logger');
 const { verifyGalleryAccess } = require('../middleware/gallery');
 const { resolveGuest, requireGuest, signGuestToken } = require('../middleware/guestAuth');
 const feedbackService = require('../services/feedbackService');
+const { noStoreCache } = require('../middleware/noStoreCache');
 
 const MAX_NAME_LEN = 100;
 
@@ -105,6 +106,68 @@ router.post('/:slug/guest', verifyGalleryAccess, async (req, res) => {
   } catch (error) {
     logger.error('Guest registration failed', { error: error.message });
     return res.status(500).json({ error: 'Failed to register guest' });
+  }
+});
+
+/**
+ * GET /gallery/:slug/guest/roles
+ * Lists active nicknames so a customer on a new/private browser can resume
+ * the right picker identity. Guest mode is intentionally name-based, not an
+ * authentication boundary; the gallery's share/password remains the access
+ * control. Never cache this list because identities can be removed.
+ */
+router.get('/:slug/guest/roles', noStoreCache, verifyGalleryAccess, async (req, res) => {
+  try {
+    const settings = await feedbackService.getEventFeedbackSettings(req.event.id);
+    if (!settings.feedback_enabled || settings.identity_mode !== 'guest') {
+      return res.status(403).json({ error: 'Guest roles are not enabled for this gallery' });
+    }
+    const guests = await db('gallery_guests')
+      .where({ event_id: req.event.id, is_deleted: false })
+      .select('id', 'name')
+      .orderBy('created_at', 'asc');
+    return res.json({ guests: guests.map(({ id, name }) => ({ id, name })) });
+  } catch (error) {
+    logger.error('Guest role list failed', { error: error.message });
+    return res.status(500).json({ error: 'Failed to list guest roles' });
+  }
+});
+
+/**
+ * POST /gallery/:slug/guest/select
+ * Body: { guestId }
+ * Mints a fresh event-scoped guest token for the selected nickname.
+ */
+router.post('/:slug/guest/select', verifyGalleryAccess, async (req, res) => {
+  try {
+    const settings = await feedbackService.getEventFeedbackSettings(req.event.id);
+    if (!settings.feedback_enabled || settings.identity_mode !== 'guest') {
+      return res.status(403).json({ error: 'Guest roles are not enabled for this gallery' });
+    }
+    const guestId = Number(req.body?.guestId);
+    if (!Number.isSafeInteger(guestId) || guestId < 1) {
+      return res.status(400).json({ error: 'A valid guestId is required' });
+    }
+    const guest = await db('gallery_guests')
+      .where({ id: guestId, event_id: req.event.id, is_deleted: false })
+      .first('id', 'name', 'identifier');
+    if (!guest) return res.status(404).json({ error: 'Guest role not found' });
+
+    await db('gallery_guests').where({ id: guest.id }).update({
+      last_seen_at: db.fn.now(),
+      ip_address_last: (req.ip || '').substring(0, 45),
+      user_agent_last: (req.headers['user-agent'] || '').substring(0, 500),
+    });
+    const identity = { id: guest.id, name: guest.name, identifier: guest.identifier };
+    return res.json({ guest: identity, token: signGuestToken({
+      guestId: guest.id,
+      eventId: req.event.id,
+      identifier: guest.identifier,
+      name: guest.name,
+    }) });
+  } catch (error) {
+    logger.error('Guest role selection failed', { error: error.message });
+    return res.status(500).json({ error: 'Failed to select guest role' });
   }
 });
 

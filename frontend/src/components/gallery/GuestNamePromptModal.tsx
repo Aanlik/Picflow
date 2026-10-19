@@ -1,8 +1,10 @@
 import React, { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button, Input } from '../common';
 import { useGuestIdentity } from '../../contexts/GuestIdentityContext';
+import { guestsService } from '../../services/guests.service';
 
 interface GuestNamePromptModalProps {
   allowCancel?: boolean;
@@ -22,11 +24,22 @@ export const GuestNamePromptModal: React.FC<GuestNamePromptModalProps> = ({
   onCancel,
 }) => {
   const { t } = useTranslation();
-  const { promptOpen, closePrompt, register, savedRoles, identity, switchRole } = useGuestIdentity();
+  const { slug, identityMode, promptOpen, closePrompt, register, savedRoles, identity, switchRole } = useGuestIdentity();
   const [name, setName] = useState('');
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const { data: remoteRoles } = useQuery({
+    queryKey: ['guest-roles', slug],
+    queryFn: () => guestsService.listGuestRoles(slug),
+    enabled: promptOpen && identityMode === 'guest',
+    staleTime: 0,
+  });
+
+  const roleMap = new Map<number, { guest: { id: number; name: string } }>();
+  savedRoles.forEach((role) => roleMap.set(role.guest.id, role));
+  (remoteRoles?.guests || []).forEach((guest) => roleMap.set(guest.id, { guest }));
+  const availableRoles = [...roleMap.values()];
 
   if (!promptOpen) return null;
 
@@ -98,11 +111,11 @@ export const GuestNamePromptModal: React.FC<GuestNamePromptModalProps> = ({
           />
 
 
-          {savedRoles.length > 0 && (
+          {availableRoles.length > 0 && (
             <div className="space-y-2 rounded-lg border border-surface p-3">
               <p className="text-sm font-medium text-theme">{t('gallery.guestPrompt.savedRoles', '已有选片人')}</p>
               <div className="flex flex-wrap gap-2">
-                {savedRoles.map(({ guest }) => (
+                {availableRoles.map(({ guest }) => (
                   <Button
                     key={guest.id}
                     type="button"

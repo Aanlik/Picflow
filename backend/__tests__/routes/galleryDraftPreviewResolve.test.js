@@ -60,7 +60,8 @@ describe('draft preview through the short share URL (#1386)', () => {
       share_token: token,
       require_password: 0,
       expires_at: new Date(Date.now() + 7 * 864e5).toISOString(),
-      is_active: 1,
+      // Drafts are intentionally inactive until the publish action.
+      is_active: isDraft ? 0 : 1,
       is_archived: 0,
       is_draft: isDraft ? 1 : 0,
       created_by: adminId,
@@ -115,6 +116,15 @@ describe('draft preview through the short share URL (#1386)', () => {
       expect(res.status).toBe(200);
       expect(res.body.valid).toBe(true);
     });
+
+    it('returns draft metadata as available to the verified admin preview', async () => {
+      const res = await asAdmin(
+        request(app).get(`/api/gallery/${DRAFT_SLUG}/info?token=${DRAFT_TOKEN}&admin_preview=1`),
+      );
+      expect(res.status).toBe(200);
+      expect(res.body.is_expired).toBe(false);
+      expect(res.body.requires_password).toBe(false);
+    });
   });
 
   describe('what must not move', () => {
@@ -139,6 +149,11 @@ describe('draft preview through the short share URL (#1386)', () => {
     it('404s an anonymous verify-token for the draft', async () => {
       const res = await request(app)
         .get(`/api/gallery/${DRAFT_SLUG}/verify-token/${DRAFT_TOKEN}`);
+      expect(res.status).toBe(404);
+    });
+
+    it('404s anonymous info for the inactive draft', async () => {
+      const res = await request(app).get(`/api/gallery/${DRAFT_SLUG}/info?token=${DRAFT_TOKEN}`);
       expect(res.status).toBe(404);
     });
 

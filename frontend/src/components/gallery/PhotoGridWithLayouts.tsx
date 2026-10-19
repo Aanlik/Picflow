@@ -10,7 +10,7 @@ import { DownloadResolutionModal } from './DownloadResolutionModal';
 import { Button } from '../common';
 import { galleryService } from '../../services/gallery.service';
 import { useTheme } from '../../contexts/ThemeContext';
-import { getPhotoDownloadFilenames } from './downloadSelection';
+import { getDownloadableSelectedPhotoIds, getPhotoDownloadFilenames } from './downloadSelection';
 
 // Import all layouts
 import {
@@ -144,6 +144,7 @@ export const PhotoGridWithLayouts: React.FC<PhotoGridWithLayoutsProps> = ({
 
   // Use parent state if provided, otherwise use local state
   const selectedPhotos = parentSelectedPhotos ?? localSelectedPhotos;
+  const downloadableSelectedPhotoIds = getDownloadableSelectedPhotoIds(photos, selectedPhotos);
   const isSelectionMode = parentSelectionMode ?? localSelectionMode;
   const setSelectedPhotos = onSelectionChange ?? setLocalSelectedPhotos;
   const toggleSelectionMode = parentToggleSelectionMode ?? (() => setLocalSelectionMode(!localSelectionMode));
@@ -203,8 +204,8 @@ export const PhotoGridWithLayouts: React.FC<PhotoGridWithLayoutsProps> = ({
   };
 
   const handleDownloadSelected = async () => {
-    if (selectedPhotos.size === 0) return;
-    const ids = Array.from(selectedPhotos);
+    const ids = downloadableSelectedPhotoIds;
+    if (!allowDownloads || ids.length === 0) return;
 
     // Resolution picker: the modal chooses a rendition, then starts one
     // native download per selected photo.
@@ -382,7 +383,7 @@ export const PhotoGridWithLayouts: React.FC<PhotoGridWithLayoutsProps> = ({
                 <Button variant="ghost" size="sm" onClick={deselectAll} className="text-xs sm:text-sm">
                   {t('gallery.deselectAll')}
                 </Button>
-                {selectedPhotos.size > 0 && (
+                {allowDownloads && downloadableSelectedPhotoIds.length > 0 && (
                   <Button
                     variant="primary"
                     size="sm"
@@ -390,8 +391,8 @@ export const PhotoGridWithLayouts: React.FC<PhotoGridWithLayoutsProps> = ({
                     onClick={handleDownloadSelected}
                     className="text-xs sm:text-sm"
                   >
-                    <span className="gallery-numeric hidden sm:inline">{t('gallery.downloadSelected', { count: selectedPhotos.size })}</span>
-                    <span className="sm:hidden">{t('common.download')} ({selectedPhotos.size})</span>
+                    <span className="gallery-numeric hidden sm:inline">{t('gallery.downloadSelected', { count: downloadableSelectedPhotoIds.length })}</span>
+                    <span className="sm:hidden">{t('common.download')} ({downloadableSelectedPhotoIds.length})</span>
                   </Button>
                 )}
               </div>

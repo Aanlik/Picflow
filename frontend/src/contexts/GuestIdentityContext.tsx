@@ -263,8 +263,12 @@ export const GuestIdentityProvider: React.FC<GuestIdentityProviderProps> = ({
   }, [slug]);
 
   const switchRole = useCallback(async (guestId: number): Promise<GuestIdentity> => {
-    const next = activateGuestRole(slug, guestId);
-    if (!next) throw new Error('GUEST_ROLE_SWITCH_FAILED');
+    let next = activateGuestRole(slug, guestId);
+    if (!next) {
+      const response = await guestsService.selectGuestRole(slug, guestId);
+      next = response.guest;
+      storeGuestIdentity(slug, next, response.token);
+    }
     setIdentity(next);
     setSavedRoles(getGuestRoles(slug));
     setPromptOpen(false);

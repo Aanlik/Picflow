@@ -6,7 +6,7 @@ import { photosService } from '../../services/photos.service';
 import { Button, Card, AuthenticatedImage } from '../common';
 import { useTranslation } from 'react-i18next';
 import { useMutationWithToast, useModal } from '../../hooks';
-import { categoryLabel } from '../../utils/categoryLabel';
+import { categoryDeleteConfirmation, categoryLabel } from '../../utils/categoryLabel';
 
 interface EventCategoryManagerProps {
   eventId: number;
@@ -144,7 +144,7 @@ export const EventCategoryManager: React.FC<EventCategoryManagerProps> = ({ even
   };
 
   const handleDelete = (category: PhotoCategory) => {
-    if (window.confirm(t('categories.deleteConfirm', { name: categoryLabel(category, t) }))) {
+    if (window.confirm(categoryDeleteConfirmation(category, t))) {
       deleteMutation.mutate(category.id);
     }
   };

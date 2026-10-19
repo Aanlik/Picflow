@@ -17,6 +17,7 @@ export const resolveDateLocale = (language: string | undefined): Locale =>
  * values are calendar dates and must stay local rather than shift a day. */
 export function parseLocalizedDate(value: Date | string): Date {
   if (value instanceof Date) return value;
+  if (typeof value !== 'string' || !value.trim()) return new Date(Number.NaN);
   const text = String(value);
   if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return new Date(`${text}T00:00:00`);
   if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/.test(text)
@@ -87,11 +88,13 @@ export const useLocalizedDate = () => {
    */
   const formatTime = (date: Date | string) => {
     if (typeof date === 'string' && /^\d{2}:\d{2}(:\d{2})?$/.test(date)) {
-      const [h, m] = date.split(':');
-      const d = new Date(2000, 0, 1, parseInt(h, 10), parseInt(m, 10));
+      const [hour, minute, second = 0] = date.split(':').map(Number);
+      const d = new Date(2000, 0, 1, hour, minute, second);
+      if (!isValid(d) || d.getHours() !== hour || d.getMinutes() !== minute || d.getSeconds() !== second) return '';
       return dateFnsFormat(d, timeFormatToken, { locale: getLocale() });
     }
     const dateObj = parseLocalizedDate(date);
+    if (!isValid(dateObj)) return '';
     return dateFnsFormat(dateObj, timeFormatToken, { locale: getLocale() });
   };
 
@@ -108,6 +111,7 @@ export const useLocalizedDate = () => {
    */
   const formatDateTime = (date: Date | string, formatStr?: string) => {
     const dateObj = parseLocalizedDate(date);
+    if (!isValid(dateObj)) return '';
     let dateFormat = formatStr;
     if (!dateFormat && settings?.general_date_format) {
       dateFormat = typeof settings.general_date_format === 'string'
