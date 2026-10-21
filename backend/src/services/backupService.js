@@ -23,6 +23,7 @@ const packageJson = require('../../package.json');
 const service = {};
 let backupJob = null;
 let isRunning = false;
+let activeRunId = null;
 
 function ensureMockableExec() {
   const current = childProcess.exec;
@@ -567,6 +568,7 @@ const LEGACY_BACKUP_PATHS = [
   { path: 'previews',         feature_flag: null },
   { path: 'heroes',           feature_flag: null },
   { path: 'uploads',          feature_flag: null },
+  { path: 'transfers',        feature_flag: null },
 ];
 
 // "What to Backup" opt-OUT toggles written by BackupConfiguration.tsx.
@@ -1344,6 +1346,7 @@ async function runBackupInternal(isManual = false) {
       db_schema_version: schemaVersion
     }).returning('id');
     runId = insertResult[0]?.id || insertResult[0];
+    activeRunId = runId;
 
     // A destination that is itself a backed-up folder nests one more copy
     // of the tree per run (issue 1780). Before the dump, which is written
@@ -1548,6 +1551,7 @@ async function runBackupInternal(isManual = false) {
 
   } finally {
     await workflowBackup.release(workflowCheckpoint).catch(error => logger.error(error.message));
+    activeRunId = null;
     isRunning = false;
   }
 }
@@ -1598,6 +1602,14 @@ function resolveScheduleCron(config) {
 
 async function startBackupService() {
   try {
+    // A new process cannot own runs left by its predecessor. Do not expire
+    // live long-running backups when the scheduler is reconfigured.
+    if (!isRunning) {
+      await db('backup_runs').where({ status: 'running' }).update({
+        status: 'failed', completed_at: new Date().toISOString(),
+        error_message: '备份进程已中断，请重新运行备份',
+      });
+    }
     const config = await resolveConfigWithFallback();
     if (!config || !normalizeBoolean(config.backup_enabled)) {
       if (backupJob) {
@@ -1807,6 +1819,7 @@ async function getBackupStatus(limit = 10, history = {}) {
     const ZOMBIE_THRESHOLD_MS = 30 * 60 * 1000;
     const zombieRuns = runs.filter(r =>
       r.status === 'running'
+      && !(isRunning && String(r.id) === String(activeRunId))
       && r.started_at
       && (Date.now() - new Date(r.started_at).getTime()) > ZOMBIE_THRESHOLD_MS
     );

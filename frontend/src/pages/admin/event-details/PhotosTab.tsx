@@ -69,6 +69,7 @@ export const PhotosTab: React.FC<PhotosTabProps> = ({
           // over the top of the rejection warning (QA P4-B.05 / 7.05). The
           // outcome toast belongs to PhotoUpload, which knows the counts.
           queryClient.invalidateQueries({ queryKey: ['admin-event', id] });
+            queryClient.invalidateQueries({ queryKey: ['admin-event-filter-summary', id] });
           queryClient.invalidateQueries({ queryKey: ['admin-event-photos', id] });
           queryClient.invalidateQueries({ queryKey: ['admin-event-filter-summary', id] });
           refetchPhotos();
@@ -163,6 +164,7 @@ export const PhotosTab: React.FC<PhotosTabProps> = ({
           onPhotosDeleted={() => {
             refetchPhotos();
             queryClient.invalidateQueries({ queryKey: ['admin-event', id] });
+            queryClient.invalidateQueries({ queryKey: ['admin-event-filter-summary', id] });
           }}
           onSelectionChange={setSelectedPhotoIds}
           categories={categories}
@@ -180,6 +182,7 @@ export const PhotosTab: React.FC<PhotosTabProps> = ({
           onPhotoDeleted={() => {
             refetchPhotos();
             queryClient.invalidateQueries({ queryKey: ['admin-event', id] });
+            queryClient.invalidateQueries({ queryKey: ['admin-event-filter-summary', id] });
             setSelectedPhoto(null);
           }}
           categories={categories}
@@ -228,6 +231,7 @@ export const PhotosTab: React.FC<PhotosTabProps> = ({
                     if (PHOTO_WORKFLOW_MODE) toast.success(t('nasFolder.linkedSuccess', { imported: result.imported, skipped: result.skipped }));
                     else toast.success(t('toast.saveSuccess'));
                     queryClient.invalidateQueries({ queryKey: ['admin-event', id] });
+            queryClient.invalidateQueries({ queryKey: ['admin-event-filter-summary', id] });
                     queryClient.invalidateQueries({ queryKey: ['admin-event-photos', id] });
                     setShowExternalImport(false);
                   } catch {

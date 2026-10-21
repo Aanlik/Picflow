@@ -102,10 +102,8 @@ export const BrandingPage: React.FC = () => {
         setCurrentTheme(formatted);
         setTheme(formatted);
 
-        // Only sync logo URL from theme if it exists there (logo is stored in branding settings)
-        if (formatted.logoUrl) {
-          setBrandingSettings(prev => ({ ...prev, logo_url: formatted.logoUrl }));
-        }
+        // Branding owns the logo; a stale theme fetch must not resurrect a
+        // removed logo while independent asset updates invalidate settings.
 
         // Try to identify which preset this matches. Compare only on the
         // fields the preset itself defines so saved themes carrying extras
@@ -294,17 +292,19 @@ export const BrandingPage: React.FC = () => {
       // branding settings (#317 — preset selection does not imply logo removal).
       const updatedBrandingSettings = {
         ...brandingSettings,
-        logo_url: currentTheme.logoUrl || brandingSettings.logo_url || ''
+        logo_url: brandingSettings.logo_url || ''
       };
 
       // Save branding settings to database
       await brandingMutation.mutateAsync(updatedBrandingSettings);
 
       // Save theme settings to database
-      await themeMutation.mutateAsync(currentTheme);
+      const savedTheme = { ...currentTheme, logoUrl: brandingSettings.logo_url || '' };
+      await themeMutation.mutateAsync(savedTheme);
 
       // Apply theme globally
-      setTheme(currentTheme);
+      setTheme(savedTheme);
+      setCurrentTheme(savedTheme);
 
       // Update local state to reflect saved values
       setBrandingSettings(updatedBrandingSettings);

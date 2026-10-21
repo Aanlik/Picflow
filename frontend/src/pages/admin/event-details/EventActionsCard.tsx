@@ -1,4 +1,7 @@
 import React from 'react';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { api } from '../../../config/api';
+import { toast } from 'react-toastify';
 import { useTranslation } from 'react-i18next';
 import { Archive, Send, Copy } from 'lucide-react';
 import type { Event } from '../../../types';
@@ -25,12 +28,28 @@ export const EventActionsCard: React.FC<EventActionsCardProps> = ({
   isDuplicating,
 }) => {
   const { t } = useTranslation();
+  const queryClient = useQueryClient();
+  const reactivate = useMutation({
+    mutationFn: () => api.post(`/admin/events/${event.id}/toggle-status`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['admin-event', String(event.id)] });
+      queryClient.invalidateQueries({ queryKey: ['admin-events'] });
+      toast.success(t('events.reactivated'));
+    },
+    onError: () => toast.error(t('toast.saveError')),
+  });
 
   return (
     <Card padding="md">
       <h2 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100 mb-4">{t('events.actions')}</h2>
 
       <div className="space-y-3">
+        {!event.is_draft && !event.is_active && !event.is_archived && (
+          <PermissionGate permission="events.edit">
+            <Button className="w-full justify-center" isLoading={reactivate.isPending}
+              onClick={() => reactivate.mutate()}>{t('events.reactivate')}</Button>
+          </PermissionGate>
+        )}
         {event.is_draft ? (
           <PermissionGate permission="events.edit">
             <Button

@@ -6,7 +6,7 @@ const mockStorage = { delete: jest.fn(async key => mockEvents.push(`delete:${key
 const mockUpdate = jest.fn(async () => { mockEvents.push('commit'); return 1; });
 jest.mock('../../src/database/db', () => ({ db: jest.fn(() => ({ where: jest.fn().mockReturnThis(), update: mockUpdate, first: jest.fn(async () => ({ id: 7 })) })) }));
 jest.mock('../../src/services/storage', () => ({ getStorage: () => mockStorage }));
-jest.mock('sharp', () => () => ({ metadata: async () => ({ width: 10, height: 10 }) }));
+jest.mock('sharp', () => jest.fn(() => ({ metadata: async () => ({ width: 10, height: 10 }), stats: async () => ({}) })));
 jest.mock('../../src/services/imageProcessor', () => ({
   generateThumbnail: jest.fn(async () => 'new-thumb'), extractCaptureDate: jest.fn(async () => null),
   withProcessableImage: jest.fn(async p => ({ path: p, cleanup: async () => {} })),
@@ -45,4 +45,12 @@ test('a concurrent photo change preserves old bytes', async () => {
   mockUpdate.mockResolvedValueOnce(0);
   expect((await run()).success).toBe(false);
   expect(mockStorage.delete).not.toHaveBeenCalledWith('old-original');
+});
+
+test('corrupt replacement is rejected before storing or changing the proof', async () => {
+  require('sharp').mockImplementationOnce(jest.requireActual('sharp'));
+  expect((await run()).success).toBe(false);
+  expect(mockStorage.putFromFile).not.toHaveBeenCalled();
+  expect(mockUpdate).not.toHaveBeenCalled();
+  expect(mockStorage.delete).not.toHaveBeenCalled();
 });

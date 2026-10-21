@@ -358,11 +358,11 @@ function renderBrandHeader(branding) {
       </div>
     </div>
     <nav class="site-nav">
-      <a href="#features">${'Features'}</a>
-      <a href="#workflow">${'Workflow'}</a>
-      <a href="#collections">${'Collections'}</a>
-      <a href="#stories">${'Stories'}</a>
-      <a href="#contact">${'Contact'}</a>
+      <a href="#features">功能介绍</a>
+      <a href="#workflow">使用流程</a>
+      <a href="#collections">作品集</a>
+      <a href="#stories">客户故事</a>
+      <a href="#contact">联系工作室</a>
     </nav>
   </div>
 </header>`;
@@ -372,11 +372,11 @@ function renderBrandFooter(branding) {
   const displayName = escapeHtml(branding.companyName || 'Picflow');
   const footerNote = branding.footerText
     ? `<p>${escapeHtml(branding.footerText)}</p>`
-    : '<p>Powered by Picflow to keep every celebration beautifully organised.</p>';
+    : '<p>使用 Picflow 管理选片与精修交付。</p>';
 
   const legalLinks = `
-    <a href="/datenschutz">Privacy Policy</a>
-    <a href="/impressum">Impressum</a>
+    <a href="/datenschutz">隐私政策</a>
+    <a href="/impressum">法律声明</a>
   `;
 
   return `<footer class="site-footer" id="contact">

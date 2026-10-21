@@ -123,3 +123,19 @@ describe('POST /auth/gallery/share-login password enforcement', () => {
     expect(mockSetGalleryAuthCookies).not.toHaveBeenCalled();
   });
 });
+
+describe('client PIN login is bound to the current pre-review token', () => {
+  it.each([undefined, 'old-token'])('rejects a missing or rotated token (%s) even with a valid PIN', async token => {
+    events.push({ id: 8, slug: 'review', is_active: 1, is_archived: 0, client_access_enabled: 1,
+      client_share_token: 'current-token', client_password_hash: await require('bcrypt').hash('ValidPin42', 4) });
+    const res = await request(makeApp()).post('/auth/gallery/review/client-login').send({ password: 'ValidPin42', token });
+    expect(res.status).toBe(401);
+    expect(mockSetGalleryAuthCookies).not.toHaveBeenCalled();
+  });
+  it('accepts the current token with the valid PIN', async () => {
+    events.push({ id: 8, slug: 'review', is_active: 1, is_archived: 0, client_access_enabled: 1,
+      client_share_token: 'current-token', client_password_hash: await require('bcrypt').hash('ValidPin42', 4) });
+    const res = await request(makeApp()).post('/auth/gallery/review/client-login').send({ password: 'ValidPin42', token: 'current-token' });
+    expect(res.status).toBe(200);
+  });
+});

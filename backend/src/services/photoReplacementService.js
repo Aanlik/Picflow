@@ -165,13 +165,14 @@ async function replacePhoto(existingPhoto, newFileTempPath, { originalFilename, 
     // client-supplied original, so RAW derivative keys can't collide.
     const proc = await withProcessableImage(newFileTempPath, newFilename);
     try {
-      try {
-        const metadata = await sharp(proc.path).metadata();
-        // Oriented, not raw — see imageProcessor.orientedDimensions (#1185).
-        ({ width, height } = require('./imageProcessor').orientedDimensions(metadata));
-      } catch {
-        // Non-image or corrupt
-      }
+      // Validate the complete pixel stream before touching storage or the row.
+      // metadata alone accepts truncated images; derivative errors must not turn
+      // an unreadable replacement into a successful delivery.
+      const image = sharp(proc.path, { failOn: 'warning' });
+      const metadata = await image.metadata();
+      await image.stats();
+      ({ width, height } = require('./imageProcessor').orientedDimensions(metadata));
+      if (!width || !height) throw new Error('精修文件不是有效图片');
       try {
         thumbnailPath = await generateThumbnail(proc.path, { outputBasename: proc.outputBasename });
       } catch {

@@ -349,7 +349,9 @@ router.post('/gallery/:slug/client-login', [
       .where({ slug, is_active: formatBoolean(true), is_archived: formatBoolean(false) })
       .first();
 
-    if (!isGalleryAvailable(event) || !event.client_access_enabled || !event.client_password_hash) {
+    if (!isGalleryAvailable(event) || !event.client_access_enabled || !event.client_password_hash
+      || !event.client_share_token || typeof req.body.token !== 'string'
+      || !timingSafeEqualStr(req.body.token, event.client_share_token)) {
       await trackFailedAttempt(`client:${slug}`, ipAddress, userAgent);
       return res.status(401).json({ error: 'Invalid credentials' });
     }

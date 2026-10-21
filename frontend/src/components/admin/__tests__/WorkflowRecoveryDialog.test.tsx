@@ -1,0 +1,32 @@
+import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react';
+import { afterEach, it, expect, vi } from 'vitest';
+import { WorkflowRecoveryDialog } from '../WorkflowRecoveryDialog';
+import { api } from '../../../config/api';
+vi.mock('../../../config/api', () => ({ api: { get: vi.fn(), post: vi.fn() } }));
+vi.mock('react-toastify', () => ({ toast: { success: vi.fn() } }));
+afterEach(() => { cleanup(); vi.clearAllMocks(); });
+it('requires explicit confirmation before cleaning an absent photo index', async () => {
+  vi.mocked(api.get).mockResolvedValue({ data: { remote_present:false, previous_source:'a.JPG', source_filename:'a.JPG', raw_candidates:[], final_candidates:[], next_version:1 } } as any);
+  vi.mocked(api.post).mockResolvedValue({data:{success:true}} as any);
+  const onSaved = vi.fn(async () => {}); const onClose = vi.fn();
+  render(<WorkflowRecoveryDialog eventId={7} photoId={11} onSaved={onSaved} onClose={onClose} />);
+  const save = await screen.findByRole('button', { name:'Remove stale index' });
+  expect(save).toBeDisabled();
+  fireEvent.click(screen.getByRole('checkbox'));
+  fireEvent.click(save);
+  await waitFor(() => expect(onClose).toHaveBeenCalled());
+  expect(api.post).toHaveBeenCalledWith('/admin/photography-workflow/7/photos/11/recovery', expect.objectContaining({action:'forget_missing',confirm:true}));
+  expect(onSaved).toHaveBeenCalled();
+});
+it('allows an uploaded-source final mapping without a RAW and clears an override when automatic matching is chosen', async () => {
+  vi.mocked(api.get).mockResolvedValue({ data: { remote_present:true, requires_raw:false, previous_source:'phone.JPG', source_filename:'phone.JPG', raw_candidates:[], final_candidates:['V1/phone.JPG'], final_override:'V1/phone.JPG', next_version:1 } } as any);
+  vi.mocked(api.post).mockResolvedValue({data:{success:true}} as any);
+  render(<WorkflowRecoveryDialog eventId={7} photoId={11} onSaved={async () => {}} onClose={vi.fn()} />);
+  const select = await screen.findByRole('combobox');
+  expect(select).toHaveValue('V1/phone.JPG');
+  expect(screen.queryByPlaceholderText('For example: folder/DSC00001.ARW')).toBeNull();
+  fireEvent.change(select, {target:{value:''}});
+  fireEvent.click(screen.getByRole('checkbox'));
+  fireEvent.click(screen.getByRole('button', {name:'Save mapping'}));
+  await waitFor(() => expect(api.post).toHaveBeenCalledWith('/admin/photography-workflow/7/photos/11/recovery', expect.objectContaining({action:'rebind',confirm:true,final_relative:null,raw_relative:undefined})));
+});

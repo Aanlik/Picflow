@@ -126,6 +126,24 @@ describe('restoreService — joint workflow recovery', () => {
     } finally { await db.raw('DROP TRIGGER audit_late_failure'); }
   });
 
+  it('restores after acknowledging the exact preflight warnings and creating safety backup', async () => {
+    const { svc, options } = stubbedService('database');
+    const warnings = ['Database contains 10 existing events that will be overwritten'];
+    svc.performPreRestoreValidation = async () => ({ isValid: true, errors: [], warnings });
+    svc.createPreRestoreBackup = jest.fn().mockResolvedValue('/audit/safety');
+    options.skipPreBackup = false;
+    options.acknowledgedWarnings = warnings;
+    await expect(svc.restore(options)).resolves.toMatchObject({ success: true });
+    expect(svc.createPreRestoreBackup).toHaveBeenCalled();
+  });
+
+  it('still blocks new warnings not acknowledged in preflight', async () => {
+    const { svc, options } = stubbedService('files');
+    svc.performPreRestoreValidation = async () => ({ isValid: true, errors: [], warnings: ['changed warning'] });
+    options.acknowledgedWarnings = ['old warning'];
+    await expect(svc.restore(options)).rejects.toThrow('Restore blocked due to warnings');
+  });
+
   it('releases the checkpoint after a complete joint restore', async () => {
     const workflow = require('../../src/services/workflowBackup');
     jest.clearAllMocks();

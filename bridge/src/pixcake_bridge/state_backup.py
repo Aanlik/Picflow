@@ -79,6 +79,21 @@ def restore_state(payload, config, sessions, *, journal=True):
                 raise ValueError('备份照片路径越界')
         if photo.get('upload_snapshot_path') and not Path(photo['upload_snapshot_path']).resolve().is_relative_to(cfg.history.resolve()):
             raise ValueError('备份用户上传原图路径越界')
+        raw_override = photo.get('raw_override')
+        if raw_override:
+            relative = Path(raw_override)
+            if relative.is_absolute() or '..' in relative.parts or '\\' in raw_override or not (cfg.raw / relative).resolve().is_relative_to(cfg.raw.resolve()):
+                raise ValueError('备份RAW人工映射路径越界')
+        if photo.get('final_overrides'):
+            overrides = json.loads(photo['final_overrides'])
+            if not isinstance(overrides, dict):
+                raise ValueError('备份成片人工映射无效')
+            for version, value in overrides.items():
+                if not str(version).isdigit() or not isinstance(value, str):
+                    raise ValueError('备份成片人工映射无效')
+                relative = Path(value)
+                if relative.is_absolute() or '..' in relative.parts or '\\' in value or not (cfg.final / relative).resolve().is_relative_to(cfg.final.resolve()):
+                    raise ValueError('备份成片人工映射路径越界')
         key = photo.get('upload_source_key')
         if key:
             source_key = Path(key)
@@ -99,7 +114,7 @@ def restore_state(payload, config, sessions, *, journal=True):
             if name == 'photos':
                 # These fields were added after checkpoint version 1 shipped;
                 # older backups remain restorable with empty upload metadata.
-                for optional in ('upload_source_key', 'upload_snapshot_path', 'upload_snapshot_hash', 'work_filename', 'source_kind'):
+                for optional in ('upload_source_key', 'upload_snapshot_path', 'upload_snapshot_hash', 'work_filename', 'source_kind', 'raw_override', 'mapped_source', 'final_overrides'):
                     if optional not in values and optional in expected:
                         values[optional] = None
             if set(values) != expected:

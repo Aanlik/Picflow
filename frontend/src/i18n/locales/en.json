@@ -554,7 +554,8 @@
     "folderDisabled": "This category filters the gallery again",
     "failedToToggleFolder": "Failed to update folder setting",
     "disableFolderTitle": "Folder: these photos are hidden from the main grid and shown only inside the folder. Click to make it a filter again.",
-    "enableFolderTitle": "Filter: these photos stay in the main grid. Click to turn it into a folder — hides them from the grid, does NOT restrict access."
+    "enableFolderTitle": "Filter: these photos stay in the main grid. Click to turn it into a folder — hides them from the grid, does NOT restrict access.",
+    "hasPhotos": "Move the photos to another category before deleting this category."
   },
   "events": {
     "revealMode": "Reveal mode (hide gallery until reveal)",
@@ -696,7 +697,17 @@
       "errorMinLength": "Password must be at least 6 characters",
       "errorMismatch": "Passwords do not match",
       "hide": "Hide",
-      "show": "Show"
+      "show": "Show",
+      "policy": {
+        "general": "Password does not meet the current security policy. Use a longer combination of upper/lowercase letters, numbers and symbols.",
+        "length": "Password must be at least {{count}} characters.",
+        "uppercase": "Include an uppercase letter.",
+        "lowercase": "Include a lowercase letter.",
+        "number": "Include a number.",
+        "special": "Include a special character.",
+        "common": "Choose a less common password.",
+        "weak": "Use a longer, less predictable password."
+      }
     },
     "themeAndStyle": "Theme & Style",
     "galleryExpiration": "Gallery Expiration",
@@ -995,7 +1006,9 @@
       "darkModern": "A dark theme with blue accents",
       "galleryPremium": "An elegant light theme with serif typography and masonry layout",
       "galleryStory": "A cinematic dark theme with gold accents and scene-based sections"
-    }
+    },
+    "reactivate": "Reopen customer access",
+    "reactivated": "Customer access reopened"
   },
   "settings": {
     "title": "System Settings",
@@ -2063,8 +2076,8 @@
       "inviteStatus": {
         "pending": "Pending",
         "redeemed": "Redeemed",
-      "revoked": "Revoked",
-      "removed": "Removed"
+        "revoked": "Revoked",
+        "removed": "Removed"
       },
       "reviewDuplicates": "Review",
       "duplicateBadge": "duplicate?",
@@ -2817,7 +2830,8 @@
         "warning": {
           "title": "Important Notice",
           "message": "This restore operation will replace existing data. Make sure you have a current backup before proceeding. This action cannot be undone."
-        }
+        },
+        "acknowledgeWarnings": "Starting restore confirms the following warnings. New warnings will block execution; safety backup remains required."
       },
       "progress": {
         "title": "Restore Progress",
@@ -2832,7 +2846,7 @@
           "message": "Your data has been restored. Please verify everything is working correctly.",
           "verifyIntegrity": "Verify document integrity now"
         },
-        "failedSubtitle": "Restore failed — see error below. Destination has been rolled back to its pre-restore state.",
+        "failedSubtitle": "Restore failed. See the error and actual rollback result below.",
         "idle": "No restore in progress.",
         "errorTitle": "Restore did not complete",
         "errorUnknown": "No error message recorded.",
@@ -3303,10 +3317,22 @@
     "markSourceClient": "Client selections",
     "markSourceMine": "Your marks",
     "formats": {
-      "txt": { "label": "Filename list (TXT)", "description": "Find photos by filename in Lightroom." },
-      "csv": { "label": "Filename list (CSV)", "description": "A spreadsheet with photo information." },
-      "xmp": { "label": "XMP ratings and color labels (ZIP)", "description": "Import into Lightroom or Bridge." },
-      "json": { "label": "Photo metadata (JSON)", "description": "For scripts and other tools." }
+      "txt": {
+        "label": "Filename list (TXT)",
+        "description": "Find photos by filename in Lightroom."
+      },
+      "csv": {
+        "label": "Filename list (CSV)",
+        "description": "A spreadsheet with photo information."
+      },
+      "xmp": {
+        "label": "XMP ratings and color labels (ZIP)",
+        "description": "Import into Lightroom or Bridge."
+      },
+      "json": {
+        "label": "Photo metadata (JSON)",
+        "description": "For scripts and other tools."
+      }
     }
   },
   "photoSort": {
@@ -3352,8 +3378,8 @@
     "superAdminLocked": "Super Admin always holds every permission and cannot be edited. It automatically gains new permissions as features are added.",
     "displayName": "Display name",
     "displayNamePlaceholder": "e.g. Photographer",
-      "displayNameRequired": "Enter a role name.",
-      "viewTitle": "Role permissions: {{name}}",
+    "displayNameRequired": "Enter a role name.",
+    "viewTitle": "Role permissions: {{name}}",
     "key": "Key (identifier)",
     "systemRoleIdentifier": "Built-in system identifier (fixed)",
     "keyLocked": "The key is fixed once a role is created.",
@@ -3510,7 +3536,8 @@
       "viewer": "Read-only access to the dashboard, projects, photos, archives, branding, and CMS pages.",
       "solo_photographer": "Full operator role for a one-person photography studio.",
       "team_photographer": "Collaborating photographer role for viewing projects, uploading and managing photos, and viewing customer context."
-    }
+    },
+    "noRoleDescription": "No description"
   },
   "ui": {
     "loadFailed": "Failed to load",
@@ -3800,7 +3827,23 @@
       "errors": "Errors"
     },
     "withdrawProcessing": "Withdrawal accepted. Processing will continue automatically.",
-    "requestsLoadError": "The progress summary loaded, but customer requests could not be loaded."
+    "requestsLoadError": "The progress summary loaded, but customer requests could not be loaded.",
+    "recovery": {
+      "title": "Repair file mapping",
+      "loadError": "Could not load mapping",
+      "saveError": "Mapping was not saved",
+      "saved": "Saved; existing files are unchanged",
+      "rebindHelp": "Verify the photo and select its RAW. Previous work copies and history remain; the next sync creates a new work copy when the source changes.",
+      "missingHelp": "This photo no longer exists in Picflow. Cleanup removes only its Bridge index and task records, not RAW, work copies or history files.",
+      "raw": "RAW path relative to this project source folder",
+      "rawPlaceholder": "For example: folder/DSC00001.ARW",
+      "final": "Next final version (V{{version}}, optional)",
+      "automaticFinal": "Match automatically by filename",
+      "confirm": "I verified this photo and its files and confirm this operation",
+      "save": "Save mapping",
+      "cleanup": "Remove stale index",
+      "uploadHelp": "This photo uses a customer-uploaded original, not a RAW file. Select the final export to resolve the conflict; the uploaded original remains unchanged."
+    }
   },
   "retouchRequest": {
     "title": "Retouch request",

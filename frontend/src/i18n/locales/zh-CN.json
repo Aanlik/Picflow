@@ -554,7 +554,8 @@
     "folderDisabled": "此分类已恢复为相册筛选项",
     "failedToToggleFolder": "更新文件夹设置失败",
     "disableFolderTitle": "此分类以文件夹显示，照片不出现在主列表中；点击恢复为筛选项。",
-    "enableFolderTitle": "此分类为筛选项，照片仍显示在主列表中；点击改为文件夹展示，不影响访问权限。"
+    "enableFolderTitle": "此分类为筛选项，照片仍显示在主列表中；点击改为文件夹展示，不影响访问权限。",
+    "hasPhotos": "该分类仍有照片，请先将照片移到其他分类。"
   },
   "events": {
     "revealMode": "暂不向客户展示照片",
@@ -696,7 +697,17 @@
       "errorMinLength": "密码至少需要 6 个字符",
       "errorMismatch": "两次密码不一致",
       "hide": "隐藏",
-      "show": "显示"
+      "show": "显示",
+      "policy": {
+        "general": "密码不符合当前安全策略，请增加长度并混合使用大小写字母、数字和符号。",
+        "length": "密码至少需要 {{count}} 个字符。",
+        "uppercase": "需要至少一个大写字母。",
+        "lowercase": "需要至少一个小写字母。",
+        "number": "需要至少一个数字。",
+        "special": "需要至少一个特殊符号。",
+        "common": "密码过于常见，请更换。",
+        "weak": "密码强度不足，请使用更长且不易猜测的密码。"
+      }
     },
     "themeAndStyle": "主题与样式",
     "galleryExpiration": "相册到期设置",
@@ -995,7 +1006,9 @@
       "darkModern": "深色背景，搭配蓝色点缀",
       "galleryPremium": "浅色典雅风格，采用衬线字体和瀑布流布局",
       "galleryStory": "带金色点缀和场景分区的电影感深色风格"
-    }
+    },
+    "reactivate": "重新开放客户访问",
+    "reactivated": "客户访问已重新开放"
   },
   "settings": {
     "title": "系统设置",
@@ -2063,8 +2076,8 @@
       "inviteStatus": {
         "pending": "待处理",
         "redeemed": "已使用",
-      "revoked": "已撤销",
-      "removed": "已移除"
+        "revoked": "已撤销",
+        "removed": "已移除"
       },
       "reviewDuplicates": "检查重复记录",
       "duplicateBadge": "重复吗?",
@@ -2255,7 +2268,7 @@
     "externalUrlInvalid": "必须是有效的 https:// URL",
     "externalUrlActive": "外部网址已启用；站内内容会保留，但不会向访客显示。",
     "logoUploaded": "上传标志",
-    "logoCleared": "标记已清除",
+    "logoCleared": "标志已清除",
     "pageLogo": "页面标志",
     "pageLogoHelp": "可选。设置后，此页面会使用这里的标志，而不是全局品牌标志。",
     "noLogo": "无覆盖",
@@ -2817,7 +2830,8 @@
         "warning": {
           "title": "重要通知",
           "message": "此还原操作将替换已有的数据。 在进行前请确定您有当前备份。 此操作无法撤销。"
-        }
+        },
+        "acknowledgeWarnings": "点击开始恢复即确认以下警告。执行时若出现新警告仍会停止，恢复前备份要求保持不变。"
       },
       "progress": {
         "title": "恢复进度",
@@ -2832,7 +2846,7 @@
           "message": "您的数据已经恢复。 请确认所有数据都正常运行。",
           "verifyIntegrity": "正在验证文档完整性"
         },
-        "failedSubtitle": "恢复失败 —— 见下文错误。 目标已回滚到恢复前状态。",
+        "failedSubtitle": "恢复失败，请查看下方错误及实际回滚结果。",
         "idle": "未在恢复中。",
         "errorTitle": "恢复未完成",
         "errorUnknown": "没有记录错误消息。",
@@ -2880,7 +2894,7 @@
     "cssContent": "CSS 内容",
     "cssHint": "使用 .gallery-page 限定样式作用范围。可用变量：--gallery-bg、--gallery-text、--gallery-accent。",
     "securityNotice": "安全通知",
-    "securityText": "CSS被消毒以防止恶意代码. 外部 URL, @import, 和 JavaScript 表达式被屏蔽。",
+    "securityText": "CSS 会经过安全过滤；外部 URL、@import 和 JavaScript 表达式会被拦截。",
     "resetToDefault": "重置为默认值",
     "resetConfirm": "确定将此模板恢复为默认值吗？现有更改将丢失。",
     "unsavedChanges": "未保存的更改",
@@ -3303,10 +3317,22 @@
     "markSourceClient": "客户选择",
     "markSourceMine": "摄影师标记",
     "formats": {
-      "txt": { "label": "文件名列表（TXT）", "description": "用于在 Lightroom 中按文件名查找照片。" },
-      "csv": { "label": "文件名列表（CSV）", "description": "包含照片信息的表格文件。" },
-      "xmp": { "label": "XMP 星级与颜色标记（ZIP）", "description": "导入 Lightroom 或 Bridge。" },
-      "json": { "label": "照片信息（JSON）", "description": "适用于脚本和其他工具。" }
+      "txt": {
+        "label": "文件名列表（TXT）",
+        "description": "用于在 Lightroom 中按文件名查找照片。"
+      },
+      "csv": {
+        "label": "文件名列表（CSV）",
+        "description": "包含照片信息的表格文件。"
+      },
+      "xmp": {
+        "label": "XMP 星级与颜色标记（ZIP）",
+        "description": "导入 Lightroom 或 Bridge。"
+      },
+      "json": {
+        "label": "照片信息（JSON）",
+        "description": "适用于脚本和其他工具。"
+      }
     }
   },
   "photoSort": {
@@ -3352,8 +3378,8 @@
     "superAdminLocked": "超级管理员拥有全部权限，且不可修改。新增功能权限也会自动授予超级管理员。",
     "displayName": "角色名称",
     "displayNamePlaceholder": "例如：摄影师",
-      "displayNameRequired": "请输入角色名称。",
-      "viewTitle": "角色权限：{{name}}",
+    "displayNameRequired": "请输入角色名称。",
+    "viewTitle": "角色权限：{{name}}",
     "key": "角色标识",
     "systemRoleIdentifier": "系统内置标识（不可修改）",
     "keyLocked": "角色创建后，标识不可修改。",
@@ -3510,7 +3536,8 @@
       "viewer": "只读查看概览、项目、照片、归档项目、品牌设置和内容页面。",
       "solo_photographer": "适用于单人摄影工作室的完整管理角色，可管理项目、照片、客户、设置和团队。",
       "team_photographer": "协作摄影师角色，可查看项目、上传和管理照片并查看客户信息；不能管理系统设置或用户账号。"
-    }
+    },
+    "noRoleDescription": "暂无说明"
   },
   "ui": {
     "loadFailed": "加载失败",
@@ -3800,7 +3827,23 @@
       "errors": "异常"
     },
     "withdrawProcessing": "撤回申请已保存，系统正在处理；连接恢复后会自动继续。",
-    "requestsLoadError": "已读取项目进度，但暂时无法读取客户返修与新增需求。"
+    "requestsLoadError": "已读取项目进度，但暂时无法读取客户返修与新增需求。",
+    "recovery": {
+      "title": "处理文件关联",
+      "loadError": "无法读取文件关联信息",
+      "saveError": "文件关联未保存",
+      "saved": "处理已保存，原文件保持不变",
+      "rebindHelp": "请核对照片并选择RAW。更换来源时旧工作副本和历史成片保留；下一次同步生成新的工作副本。",
+      "missingHelp": "该照片已不在Picflow中。清理只删除Bridge失效索引及对应任务记录，不删除RAW、工作副本或历史文件。",
+      "raw": "RAW路径（相对本项目原片目录）",
+      "rawPlaceholder": "例如：子目录/DSC00001.ARW",
+      "final": "指定下一版成片（V{{version}}，可选）",
+      "automaticFinal": "仍按文件名自动匹配",
+      "confirm": "我已核对照片与文件，确认执行此操作",
+      "save": "保存关联",
+      "cleanup": "清理失效索引",
+      "uploadHelp": "这张照片使用客户上传的原图，不需要RAW。请选择对应成片处理冲突；上传原图保持不变。"
+    }
   },
   "retouchRequest": {
     "title": "精修需求",

@@ -134,7 +134,12 @@ function sanitizeCss(css) {
   });
 
   // eslint-disable-next-line no-control-regex -- intentional: strips control chars from untrusted CSS
-  sanitized = sanitized.replace(/[\u0000-\u001F\u007F]/g, '');
+  sanitized = sanitized.replace(/[\u0000-\u001F\u007F]/g, (character, offset, input) => {
+    // Keep formatting only at a declaration/rule boundary. Controls inside
+    // tokens still disappear before the security scan (u\nrl must not bypass it).
+    if ((character === '\n' || character === '\r') && /[;{}]$/.test(input.slice(0, offset).trimEnd())) return '\n';
+    return '';
+  });
 
   // After the control-character strip, so `<\u0000/style` cannot re-form a
   // `</style` once the NUL is gone. This value is served inside the public
@@ -386,7 +391,12 @@ function sanitizeCSS(cssContent) {
   // reported the input clean. Newlines are control characters too, which
   // made `u\nrl(...)` the same bypass in ordinary-looking CSS.
   // eslint-disable-next-line no-control-regex -- intentional: strips control chars from untrusted CSS
-  sanitized = sanitized.replace(/[\u0000-\u001F\u007F]/g, '');
+  sanitized = sanitized.replace(/[\u0000-\u001F\u007F]/g, (character, offset, input) => {
+    // Keep formatting only at a declaration/rule boundary. Controls inside
+    // tokens still disappear before the security scan (u\nrl must not bypass it).
+    if ((character === '\n' || character === '\r') && /[;{}]$/.test(input.slice(0, offset).trimEnd())) return '\n';
+    return '';
+  });
 
   // URLs are scanned AFTER the comment and control-character strips, not
   // before. Removing `<!--x-->` from `u<!--x-->rl(https://evil.example/p.gif)`

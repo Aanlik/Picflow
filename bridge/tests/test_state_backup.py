@@ -95,3 +95,16 @@ async def test_detachment_sqlite_commit_failure_rolls_back_then_recovers(tmp_pat
     assert export_state(cfg, engine.sessions)['tables']['projects'] == []
     assert (tmp_path / '01_RAW' / 'DSC00001.ARW').exists()
     db.dispose()
+
+async def test_legacy_checkpoint_without_mapping_fields_remains_restorable(tmp_path):
+    engine, remote, cfg, db = setup(tmp_path)
+    cfg.projects_file = tmp_path / 'projects.json'
+    await engine.sync()
+    saved = export_state(cfg, engine.sessions)
+    for row in saved['tables']['photos']:
+        for key in ('raw_override','mapped_source','final_overrides'):
+            row.pop(key)
+    restore_state(saved, cfg, engine.sessions)
+    with engine.sessions() as s:
+        assert s.scalar(select(Photo)).raw_override is None
+    db.dispose()

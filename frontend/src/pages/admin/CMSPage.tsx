@@ -130,6 +130,12 @@ export const CMSPage: React.FC = () => {
   const autoSave = useMemo(
     () => debounce(() => {
       if (hasUnsavedChanges && !isUpdatingPublicSite) {
+        if (editForm.use_external_url) {
+          try {
+            const url = new URL(editForm.external_url || '');
+            if (url.protocol !== 'https:') return;
+          } catch { return; }
+        }
         setIsAutoSaving(true);
         updatePublicSite({
           slug: selectedPage,

@@ -395,7 +395,8 @@ class RestoreService {
       if (validation.warnings.length > 0) {
         this.log('warn', 'Pre-restore validation warnings', { warnings: validation.warnings });
         // Only block actual restores (not dry runs/validations) on warnings
-        if (!options.force && !options.dryRun) {
+        if (!options.force && !options.dryRun && !validation.warnings.every(warning =>
+          Array.isArray(options.acknowledgedWarnings) && options.acknowledgedWarnings.includes(warning))) {
           throw new Error(`Restore blocked due to warnings (use force to override): ${validation.warnings.join(', ')}`);
         }
       }
@@ -950,7 +951,8 @@ class RestoreService {
         }
       }
 
-      // Check for active users (same coercion contract as above).
+      // File-only restores do not replace administrator identities.
+      if (options.restoreType === 'full' || options.restoreType === 'database') {
       const activeUsers = await db('admin_users')
         .where('is_active', formatBoolean(true))
         .count('* as count')
@@ -958,6 +960,7 @@ class RestoreService {
       const activeUsersN = Number(activeUsers?.count || 0);
       if (activeUsersN > 0) {
         validation.warnings.push(`There are ${activeUsersN} active admin users`);
+      }
       }
 
     } catch (error) {

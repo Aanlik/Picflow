@@ -144,7 +144,7 @@ export const GuestInviteDialog: React.FC<GuestInviteDialogProps> = ({ eventId, o
                         </div>
                       </div>
                       <div className="flex gap-1">
-                        {invite.status === 'pending' && (
+                        {invite.status !== 'revoked' && (
                           <>
                             <button
                               type="button"

@@ -93,7 +93,7 @@ describe('useAdminNotificationToasts', () => {
       notifications: [
         ...initial,
         { id: 2, type: 'branding_updated', actorType: 'admin', actorId: 7, isRead: false },
-        { id: 3, type: 'branding_updated', actorType: 'admin', actorId: 8, isRead: false },
+        { id: 3, type: 'admin_project_updated', actorType: 'admin', actorId: 8, isRead: false },
       ],
       currentAdminId: 7,
     });

@@ -7,6 +7,7 @@ from pathlib import Path
 
 from sqlalchemy import func, select
 
+from .filenames import normalize_filename
 from .client import ApiError
 from .files import FINAL_EXTENSIONS, RAW_EXTENSIONS, Stability, index_files, match_raw, materialize, resolve_uploaded_source, safe_file, safe_name, sha256, snapshot, stem_key
 from .models import Delivery, Error, Photo, Project, SyncRun, Withdrawal, now
@@ -204,15 +205,20 @@ class Engine:
                                 pending = s.scalar(select(Withdrawal).where(Withdrawal.photo_pk == photo.id, Withdrawal.state != "SUCCESS"))
                                 if pending:
                                     continue
-                                source = item.get("source_filename")
+                                source = normalize_filename(item.get("source_filename") or "")
                                 if not source:
                                     raise ValueError("Picflow 缺少 source_filename，拒绝使用可变文件名")
                                 safe_name(source)
-                                if photo.source_filename and photo.source_filename != source:
-                                    raise ValueError("source_filename 发生变化，请人工检查映射")
+                                if photo.source_filename and normalize_filename(photo.source_filename) != source:
+                                    # Before any materialization, there is no local mapping to
+                                    # protect. Adopt the authoritative immutable source name.
+                                    # Never rebind an edited/delivered source implicitly.
+                                    if photo.selected_path or photo.raw_path or photo.delivery_hash or photo.upload_snapshot_path:
+                                        raise ValueError("source_filename 发生变化，请人工检查映射")
                                 photo.source_filename = source
                                 if not photo.upload_source_key and item.get("upload_source_key"):
                                     photo.upload_source_key = item["upload_source_key"]
+                                photo._fallback_source_key = item.get("fallback_source_key")
                                 photo.remote_filename = item.get("original_filename")
                                 # Picflow's internal Bridge route always merges
                                 # client marks, so photographer triage cannot
@@ -234,7 +240,7 @@ class Engine:
                                     # completed delivery, not another active task.
                                     photo.added_during_editing = False
                                 photo.cancelled = not photo.selected and (was_selected or photo.cancelled or bool(photo.selected_path))
-                                if not photo.upload_source_key and counts[stem_key(source)] != 1:
+                                if not photo.upload_source_key and not photo.raw_override and counts[stem_key(source)] != 1:
                                     raise ValueError("Proof stem 冲突，无法唯一映射 RAW/FINAL")
                                 await self.selection(cfg, project, photo, raw_index, session=s)
                                 photo.error = None
@@ -326,12 +332,23 @@ class Engine:
 
     async def selection(self, cfg, project, photo, raw_index, session=None):
         if photo.selected:
+            # Managed photographer uploads may have no RAW partner. Prefer a
+            # real RAW when one exists; never use a fallback to hide conflicts.
+            if (not photo.upload_source_key and not photo.upload_snapshot_path and not photo.raw_override
+                    and not photo.delivery_hash and not raw_index.get(stem_key(photo.source_filename))
+                    and getattr(photo, '_fallback_source_key', None)):
+                photo.upload_source_key = photo._fallback_source_key
             is_upload = bool(photo.upload_source_key or photo.upload_snapshot_path)
             if is_upload:
                 source = self._uploaded_source_snapshot(cfg, photo)
                 photo.source_kind = "UPLOAD"
             else:
-                source = match_raw(photo.source_filename, raw_index, cfg.raw)
+                if photo.raw_override:
+                    if photo.mapped_source != photo.source_filename:
+                        raise ValueError("来源已变化，请重新核对人工映射")
+                    source = safe_file(cfg.raw / photo.raw_override, cfg.raw)
+                else:
+                    source = match_raw(photo.source_filename, raw_index, cfg.raw)
                 photo.source_kind = "RAW"
             digest = await asyncio.to_thread(sha256, source)
             if not is_upload and photo.raw_hash and photo.raw_hash != digest:
@@ -599,9 +616,12 @@ class Engine:
                         legacy_index = await asyncio.to_thread(index_files, cfg.final, FINAL_EXTENSIONS)
                     legacy = [p for p in legacy_index.get(key, []) if p.parent == cfg.final]
                     candidates.extend(legacy)
+                override = json.loads(photo.final_overrides or "{}").get(str(version))
+                if override:
+                    candidates = [safe_file(cfg.final / override, cfg.final)]
                 if not candidates:
                     continue
-                if len(candidates) != 1 or (photo.source_kind != "UPLOAD" and counts[stem_key(photo.source_filename)] != 1):
+                if len(candidates) != 1 or (photo.source_kind != "UPLOAD" and not photo.raw_override and counts[stem_key(photo.source_filename)] != 1):
                     raise ValueError("FINAL 或 Proof 同 stem 冲突")
                 source = candidates[0]
                 safe_file(source, cfg.final)

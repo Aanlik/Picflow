@@ -161,6 +161,8 @@ router.post('/start', requireSuperAdmin(), [
   body('restoreType').isIn(['full', 'database', 'files']).withMessage('Invalid restore type'),
   body('skipPreBackup').optional().isBoolean(),
   body('force').optional().isBoolean(),
+  body('acknowledgedWarnings').optional().isArray({ max: 100 }),
+  body('acknowledgedWarnings.*').optional().isString().isLength({ max: 2000 }),
   body('s3Config').optional().isObject()
 ], async (req, res) => {
   const errors = validationResult(req);
@@ -220,6 +222,7 @@ router.post('/start', requireSuperAdmin(), [
       restoreType: req.body.restoreType,
       skipPreBackup: req.body.skipPreBackup,
       force: req.body.force,
+      acknowledgedWarnings: req.body.acknowledgedWarnings,
       s3Config,
       dryRun: false,
       operator: {

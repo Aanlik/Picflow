@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'react-toastify';
 import { RefreshCw, Save } from 'lucide-react';
+import { PermissionGate } from './PermissionGate';
+import { WorkflowRecoveryDialog } from './WorkflowRecoveryDialog';
 import { api } from '../../config/api';
 import { Card, Button } from '../common';
 import { countWorkflowPhotos, matchesWorkflowPhotoFilter, type WorkflowPhotoFilter } from '../../utils/workflowPhotoFilter';
@@ -84,6 +86,7 @@ export function PhotographyWorkflowCard({ eventId, isArchived = false }: { event
   const [requests, setRequests] = useState<RequestItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [repairPhoto, setRepairPhoto] = useState<number | null>(null);
   const [error, setError] = useState('');
   const [replies, setReplies] = useState<Record<number, string>>({});
   const [photoFilter, setPhotoFilter] = useState<PhotoFilter>('all');
@@ -282,7 +285,7 @@ export function PhotographyWorkflowCard({ eventId, isArchived = false }: { event
           <table className="w-full min-w-[900px] table-fixed text-left text-sm">
             <thead className="sticky top-0 bg-neutral-50 dark:bg-neutral-900"><tr><th className="p-2">{t('photographyWorkflow.filename')}</th><th className="p-2">{t('photographyWorkflow.photoStatus')}</th><th className="p-2">{t('photographyWorkflow.version')}</th><th className="p-2">{t('photographyWorkflow.nextExportFolder')}</th></tr></thead>
             <tbody>{filteredPhotos.map((photo) => <tr key={photo.photo_id} className="border-t border-neutral-200 dark:border-neutral-700">
-              <td className="w-[28%] truncate p-2" title={photo.error_message || photo.source_filename}>{photo.source_filename}{photo.source_kind === 'UPLOAD' && photo.source_referenced && <span className="ml-2 inline-block rounded bg-indigo-100 px-1.5 py-0.5 text-xs text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-200">{t('photographyWorkflow.uploadedSource')}</span>}{photo.error_message && <span className="block truncate text-xs text-red-600" title={photo.error_message}>{photo.error_message}</span>}</td>
+              <td className="w-[28%] truncate p-2" title={photo.error_message || photo.source_filename}>{photo.source_filename}{photo.source_kind === 'UPLOAD' && photo.source_referenced && <span className="ml-2 inline-block rounded bg-indigo-100 px-1.5 py-0.5 text-xs text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-200">{t('photographyWorkflow.uploadedSource')}</span>}{photo.error && !syncBlocked && <PermissionGate permission="events.edit"><button type="button" onClick={() => setRepairPhoto(photo.photo_id)} className="ml-2 text-blue-600 underline">{t('photographyWorkflow.recovery.title')}</button></PermissionGate>}{photo.error_message && <span className="block truncate text-xs text-red-600" title={photo.error_message}>{photo.error_message}</span>}</td>
               <td className="p-2"><span>{photo.error ? t('photographyWorkflow.status.error') : photo.withdraw_pending ? t('photographyWorkflow.withdrawProcessing') : photo.cancelled ? t('photographyWorkflow.status.cancelled') : photo.delivered ? t('photographyWorkflow.status.delivered') : photo.ready_for_editing && ['EDITING', 'DELIVERED'].includes(workflow?.stage || '') ? t('photographyWorkflow.status.editing') : photo.selected ? t('photographyWorkflow.status.selected') : t('photographyWorkflow.status.proof')}</span>{photo.added_during_editing && <span className="ml-2 inline-block rounded bg-sky-100 px-1.5 py-0.5 text-xs text-sky-800 dark:bg-sky-900/40 dark:text-sky-200">{t('photographyWorkflow.status.additionalSelection')}</span>}</td>
               <td className="p-2">{photo.current_version ? `V${photo.current_version}` : '—'}</td>
               <td className="w-[34%] truncate p-2 text-xs text-neutral-500" title={photo.next_version_folder}>{photo.next_version_folder || '—'}</td>
@@ -321,5 +324,6 @@ export function PhotographyWorkflowCard({ eventId, isArchived = false }: { event
         }) : <p className="text-sm text-neutral-500">{t('photographyWorkflow.noRequests')}</p>}
       </section>
     </>}
+    {repairPhoto !== null && <WorkflowRecoveryDialog eventId={eventId} photoId={repairPhoto} onClose={() => setRepairPhoto(null)} onSaved={refresh} />}
   </div></Card>;
 }

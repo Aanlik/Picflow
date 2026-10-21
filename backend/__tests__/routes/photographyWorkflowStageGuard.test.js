@@ -42,4 +42,23 @@ describe('photography workflow stage guard', () => {
     expect(response.status).toBe(409);
     expect(mockSetWorkflowStage).not.toHaveBeenCalled();
   });
+  it('proxies confirmed repairs and preserves actionable conflict errors', async () => {
+    const { bridgeRequest } = require('../../src/services/photographyWorkflowBridge');
+    mockDb.mockReturnValue({ where: () => ({ first: async () => ({ id:42, is_archived:0, is_archiving:0 }) }) });
+    bridgeRequest.mockResolvedValueOnce({status:409, data:{detail:'照片仍存在于Picflow，不能清理其索引'}});
+    const response = await request(app).post('/api/admin/photography-workflow/42/photos/9/recovery')
+      .send({action:'forget_missing',confirm:true});
+    expect(response.status).toBe(409);
+    expect(response.body.error).toContain('不能清理');
+    expect(bridgeRequest).toHaveBeenCalledWith('/api/projects/42/photos/9/recovery', {
+      method:'POST',body:{action:'forget_missing',confirm:true},
+    });
+  });
+  it('rejects repair on archived projects before contacting Bridge', async () => {
+    const { bridgeRequest } = require('../../src/services/photographyWorkflowBridge');
+    mockDb.mockReturnValue({ where: () => ({ first: async () => ({id:42,is_archived:1}) }) });
+    const response = await request(app).get('/api/admin/photography-workflow/42/photos/9/recovery');
+    expect(response.status).toBe(409);
+    expect(bridgeRequest).not.toHaveBeenCalled();
+  });
 });

@@ -112,11 +112,13 @@ def test_workflow_counts_are_exclusive_for_delivered_new_and_cancelled_photos(tm
         summary = client.get("/api/projects").json()[0]["summary"]
         assert summary["客户已选"] == 1
         assert summary["已精修"] == 1
+        assert summary["已同步"] == 1
         detail = client.get("/api/projects/7/detail").json()
         by_id = {photo["photo_id"]: photo for photo in detail["photos"]}
         assert by_id[1]["selected"] is False
         assert by_id[2]["selected"] is True
         assert by_id[3]["selected"] is False
+        assert by_id[3]["delivered"] is False
     db.dispose()
 
 

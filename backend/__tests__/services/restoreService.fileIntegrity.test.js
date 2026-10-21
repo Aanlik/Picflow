@@ -142,6 +142,15 @@ describe('restoreService — file restore integrity', () => {
         .rejects.toThrow(/not a regular file/);
     });
 
+    it('restores transfer deliveries and customer return files', async () => {
+      const a = writeFixture('transfers/delivery/preview.png', Buffer.from('delivery-bytes'));
+      const b = writeFixture('transfers/uploads/return.png', Buffer.from('return-bytes'));
+      const result = await restoreService.performFilesRestore(backupRoot, { files: { manifest: [a, b] } }, { restoreType: 'files' });
+      expect(result.filesRestored).toBe(2);
+      expect(fs.readFileSync(path.join(storageRoot, a.path))).toEqual(Buffer.from('delivery-bytes'));
+      expect(fs.readFileSync(path.join(storageRoot, b.path))).toEqual(Buffer.from('return-bytes'));
+    });
+
     it('an ordinary application-generated tree restores', async () => {
       const a = writeFixture('plain/uploads/a.jpg', Buffer.from('aaa'));
       const b = writeFixture('plain/thumbnails/b.jpg', Buffer.from('bbb'));

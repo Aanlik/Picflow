@@ -16,6 +16,7 @@ from watchfiles import awatch
 
 from .client import Picflow
 from .config import Config, ProjectConfig
+from .filenames import normalize_filename
 from .engine import Engine, STAGES
 from .models import Delivery, Error, Photo, Project, SyncRun, Withdrawal, database
 from . import checkpoints
@@ -216,7 +217,7 @@ def create_app(config=None, client=None, start_workers=True):
                     "用户上传原图": sum(x.source_kind == "UPLOAD" and is_file_reference(x.selected_path) for x in active_selections),
                     "待精修": sum(is_file_reference(x.selected_path) and not x.delivery_hash for x in active_selections),
                     "已精修": len({x.photo_pk for x in active_deliveries if x.state == "SUCCESS"}),
-                    "已同步": sum(x.id in present_photo_ids and bool(x.delivery_hash) for x in photos),
+                    "已同步": sum(x.id in present_photo_ids and x.selected and not x.cancelled and not x.added_during_editing and bool(x.delivery_hash) for x in photos),
                     "返修": max(0, sum(x.state == "SUCCESS" for x in active_deliveries) - len({x.photo_pk for x in active_deliveries if x.state == "SUCCESS"})),
                     "取消待确认": sum(x.id in present_photo_ids and x.cancelled and is_file_reference(x.selected_path) for x in photos),
                     "异常": sum(bool(x.error) or not getattr(x, "remote_present", True) for x in photos) + sum(x.state in {"FAILED", "UNKNOWN"} for x in deliveries) + sum(bool(x.error) or x.state in {"UNKNOWN", "UPLOADING"} for x in withdrawals),
@@ -326,7 +327,7 @@ def create_app(config=None, client=None, start_workers=True):
             latest_delivery = max(photo_deliveries, key=lambda delivery: delivery.updated, default=None)
             photos.append({
                 "photo_id": photo.photo_id,
-                "source_filename": photo.source_filename,
+                "source_filename": normalize_filename(photo.source_filename),
                 "remote_present": bool(getattr(photo, "remote_present", True)),
                 "selected": bool(
                     getattr(photo, "remote_present", True)
@@ -354,8 +355,8 @@ def create_app(config=None, client=None, start_workers=True):
                     if delivery_host_root
                     else project_cfg.final / f"V{version + 1}"
                 ),
-                "delivered": version > 0,
-                "error": bool(photo.error or pending_withdrawals.get(photo.id) or not getattr(photo, "remote_present", True)),
+                "delivered": version > 0 and photo.selected and not photo.cancelled and not photo.added_during_editing,
+                "error": bool(photo.error or pending_withdrawals.get(photo.id) or not getattr(photo, "remote_present", True) or (latest_delivery and latest_delivery.state in {"FAILED", "UNKNOWN"})),
                 "error_message": photo.error or pending_withdrawals.get(photo.id) or ("Picflow 中的照片已不存在" if not getattr(photo, "remote_present", True) else None) or (latest_delivery.error if latest_delivery else None),
                 "delivery_state": latest_delivery.state if latest_delivery else None,
             })
@@ -443,6 +444,30 @@ def create_app(config=None, client=None, start_workers=True):
         if event_id not in {p.event_id for p in request.app.state.config.projects}:
             raise HTTPException(404, "项目不存在")
         return await request.app.state.engine.sync(event_id)
+
+    async def mapping_recovery(request, event_id, photo_id, payload=None):
+        from .recovery import recover
+        engine = request.app.state.engine
+        try:
+            async with engine.lock:
+                return await recover(engine, event_id, photo_id, payload)
+        except LookupError as exc:
+            raise HTTPException(404, str(exc))
+        except FileExistsError as exc:
+            raise HTTPException(409, str(exc))
+        except (ValueError, OSError) as exc:
+            raise HTTPException(400, str(exc))
+
+    @app.get("/api/projects/{event_id}/photos/{photo_id}/recovery", dependencies=[Depends(protect_request)])
+    async def mapping_candidates(request: Request, event_id: int, photo_id: int):
+        return await mapping_recovery(request, event_id, photo_id)
+
+    @app.post("/api/projects/{event_id}/photos/{photo_id}/recovery", dependencies=[Depends(protect_request)])
+    async def repair_mapping(request: Request, event_id: int, photo_id: int):
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            raise HTTPException(400, "修复请求必须是对象")
+        return await mapping_recovery(request, event_id, photo_id, payload)
 
     @app.post("/api/projects/{event_id}/rescan", dependencies=[Depends(protect_request)])
     async def rescan_project(request: Request, event_id: int):

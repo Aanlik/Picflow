@@ -492,3 +492,51 @@ async def test_withdraw_restores_immutable_proof_from_separate_standard_folder(t
     assert proof.read_bytes() == b'original proof'
     assert (cfg.projects[0].raw/'DSC00001.ARW').read_bytes() == b'RAW-1'
     db.dispose()
+
+async def test_unmaterialized_stale_source_can_recover_from_authoritative_name(tmp_path):
+    engine, client, cfg, db = setup(tmp_path)
+    with engine.sessions() as session:
+        project = session.scalar(select(Project).where(Project.event_id == 7))
+        session.add(Photo(project_id=project.id, photo_id=1, source_filename='obsolete.JPG'))
+        session.commit()
+    await engine.sync()
+    with engine.sessions() as session:
+        photo = session.scalar(select(Photo))
+        assert photo.source_filename == 'DSC00001.JPG'
+        assert photo.error is None
+        assert Path(photo.selected_path).exists()
+    db.dispose()
+
+async def test_materialized_source_change_never_silently_rebinds_raw(tmp_path):
+    engine, client, cfg, db = setup(tmp_path)
+    await engine.sync()
+    with engine.sessions() as session:
+        original = session.scalar(select(Photo)).selected_path
+    client.rows[0]['source_filename'] = 'different.JPG'
+    await engine.sync()
+    with engine.sessions() as session:
+        photo = session.scalar(select(Photo))
+        assert 'source_filename' in photo.error
+        assert photo.selected_path == original
+        assert Path(original).exists()
+    db.dispose()
+
+async def test_managed_upload_is_fallback_only_when_no_raw_matches(tmp_path):
+    engine, client, cfg, db = setup(tmp_path)
+    source = cfg.picpeak_storage_root / 'events/active/gallery/admin.JPG'
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b'uploaded-original')
+    client.rows[0]['fallback_source_key'] = 'events/active/gallery/admin.JPG'
+    await engine.sync()
+    with engine.sessions() as s:
+        photo = s.scalar(select(Photo))
+        assert photo.source_kind == 'RAW'
+    (cfg.projects[0].raw / 'NO_RAW.ARW').unlink(missing_ok=True)
+    client.rows.append({'id':2,'source_filename':'NO_RAW.JPG','original_filename':'NO_RAW.JPG','retouch_selected':True,'fallback_source_key':'events/active/gallery/admin.JPG'})
+    await engine.sync()
+    with engine.sessions() as s:
+        photo = s.scalar(select(Photo).where(Photo.photo_id == 2))
+        assert photo.error is None
+        assert photo.source_kind == 'UPLOAD'
+        assert Path(photo.selected_path).read_bytes() == b'uploaded-original'
+    db.dispose()

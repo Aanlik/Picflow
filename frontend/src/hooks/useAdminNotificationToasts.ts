@@ -15,6 +15,10 @@ const CUSTOMER_ACTIVITY_TYPES = new Set([
   // event as a second toast stacked a duplicate confirmation over the form;
   // the durable item remains in the notification feed.
   'cms_page_updated',
+  // These forms already own their save feedback; keep their durable audit
+  // notifications without replaying another popup after the polling cycle.
+  'branding_updated',
+  'theme_updated',
 ]);
 
 function isCustomerActivity(notification: Notification) {

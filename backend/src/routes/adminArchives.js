@@ -4,7 +4,7 @@ const fs = require('fs').promises;
 const { db } = require('../database/db');
 const { buildContentDisposition } = require('../utils/filenameSanitizer');
 const { deleteWithHistory } = require('../services/changeHistory');
-const { formatBoolean } = require('../utils/dbCompat');
+const { sqliteTimestampMs, formatBoolean } = require('../utils/dbCompat');
 const { parseBooleanInput } = require('../utils/parsers');
 const { slugify } = require('../utils/slug');
 const { adminAuth } = require('../middleware/auth');
@@ -123,7 +123,12 @@ router.get('/', adminAuth, requirePermission('archives.view'), async (req, res) 
       // i.e. last, which is also what it displays as.
       archivesQuery.orderByRaw('COALESCE(events.archive_size, 0) desc');
     } else {
-      archivesQuery.orderBy('events.archived_at', 'desc');
+      if (db.client.config.client === 'pg') archivesQuery.orderBy('events.archived_at', 'desc');
+      else {
+        const stamp = sqliteTimestampMs('events.archived_at');
+        archivesQuery.orderByRaw(`${stamp.sql} desc`, stamp.bindings);
+      }
+      archivesQuery.orderBy('events.id', 'desc');
     }
 
     const archives = await archivesQuery.limit(limit).offset(offset);

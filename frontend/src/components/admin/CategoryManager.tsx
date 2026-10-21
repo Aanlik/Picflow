@@ -79,7 +79,8 @@ export const CategoryManager: React.FC = () => {
     mutationFn: categoriesService.deleteCategory,
     invalidateKeys: [['global-categories']],
     successMessage: t('categories.categoryDeletedSuccess'),
-    errorMessage: t('categories.failedToDeleteCategory'),
+    errorMessage: (error: any) => error?.response?.data?.code === 'CATEGORY_HAS_PHOTOS'
+      ? t('categories.hasPhotos') : t('categories.failedToDeleteCategory'),
   });
 
   const handleCreate = () => {

@@ -117,6 +117,15 @@ describe('recoverable gallery passwords', () => {
       expect(String(log.event_id)).toBe(String(id));
     });
 
+    it('resetting the same password on a public project enables protection and invalidates old sessions', async () => {
+      await db('events').where({ id }).update({ require_password: false, gallery_password_changed_at: '2020-01-01T00:00:00.000Z' });
+      const res = await auth(request(app).post(`/api/admin/events/${id}/reset-password`)).send({ password: PASSWORD });
+      expect(res.status).toBe(200);
+      const row = await db('events').where({ id }).first();
+      expect(Boolean(row.require_password)).toBe(true);
+      expect(new Date(row.gallery_password_changed_at).getTime()).toBeGreaterThan(new Date('2020-01-01').getTime());
+    });
+
     it('a reset replaces the stored copy', async () => {
       const res = await auth(request(app).post(`/api/admin/events/${id}/reset-password`)).send({ password: 'Harbour-Light-91!' });
       expect(res.status).toBe(200);

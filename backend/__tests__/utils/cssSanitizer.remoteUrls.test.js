@@ -341,3 +341,11 @@ describe('sanitizeCss (lowercase) — public-site path, deliberately unchanged',
     expect(sanitizeCss('.a{background:url(\'javascript:alert(1)\')}')).not.toContain('javascript:');
   });
 });
+
+describe('editable CSS formatting', () => {
+  it('preserves line breaks between declarations', () => {
+    const css = '.card {\n  color: red;\n  padding: 1rem;\n}';
+    expect(sanitizeCSS(css).sanitized).toContain('\n');
+    expect(sanitizeCss(css)).toContain('\n');
+  });
+});

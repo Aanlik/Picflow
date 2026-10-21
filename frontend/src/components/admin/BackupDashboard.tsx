@@ -148,6 +148,9 @@ export const BackupDashboard: React.FC<BackupDashboardProps> = ({ status, config
   // — but call out failed/running/zombie attempts explicitly so the
   // admin sees them at a glance.
   const getHealthScore = (): { score: number; status: HealthStatus; message: string } => {
+    if (zombieRuns.length > 0) {
+      return { score: 25, status: 'critical', message: t('backup.dashboard.zombieRuns', { count: zombieRuns.length }) };
+    }
     if (!lastSuccessfulBackup) {
       // No successful backup ever recorded.
       if (lastBackup?.status === 'failed') {

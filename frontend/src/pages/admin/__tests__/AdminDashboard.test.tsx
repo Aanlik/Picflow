@@ -10,6 +10,8 @@ vi.mock('react-i18next', async () => ({
   useTranslation: () => ({ t: (key: string) => key }),
 }));
 
+vi.mock('../../../contexts/PermissionsContext', () => ({ usePermissions: () => ({ isSuperAdmin: false, hasPermission: () => false }) }));
+
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
@@ -22,5 +24,6 @@ describe('admin dashboard', () => {
     expect(screen.getByText('OVERALL_PROJECT_PROGRESS')).toBeTruthy();
     expect(screen.getByText('RECENT_SYSTEM_NOTIFICATIONS')).toBeTruthy();
     expect(screen.queryByText('admin.eventsExpiringSoon')).toBeNull();
+    expect(screen.queryByText('events.createEvent')).toBeNull();
   });
 });

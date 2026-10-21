@@ -537,6 +537,7 @@ router.delete(
       if (!guest) return;
 
       const result = await feedbackService.anonymizeGuestFeedback(guestId);
+      await db('guest_invites').where({ event_id: eventId, guest_id: guestId }).whereNull('revoked_at').update({ revoked_at: db.fn.now() });
 
       await db('gallery_guests').where({ id: guestId }).update({
         is_deleted: true,
@@ -628,6 +629,11 @@ router.post(
           .whereNull('redeemed_at')
           .whereNull('revoked_at')
           .update({ guest_id: keepId });
+
+        // Redeemed invites retain historical ownership but must not offer a
+        // live entrance into the identity that is about to be removed.
+        await trx('guest_invites').whereIn('guest_id', mergeIds)
+          .whereNull('revoked_at').update({ revoked_at: trx.fn.now() });
 
         // Soft-delete the merged (source) guests.
         await trx('gallery_guests')

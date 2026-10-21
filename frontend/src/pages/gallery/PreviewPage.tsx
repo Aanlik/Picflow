@@ -132,7 +132,7 @@ export const PreviewPage: React.FC = () => {
 
         {/* Filters */}
         <PhotoFilterBar
-          categories={mockCategories}
+          categories={mockCategories.map(category => ({ ...category, name: tAudit(`ui.${category.name}`) }))}
           photos={mockPhotos}
           selectedCategoryId={selectedCategoryId}
           onCategoryChange={setSelectedCategoryId}

@@ -66,7 +66,8 @@ export const EventCategoryManager: React.FC<EventCategoryManagerProps> = ({ even
     mutationFn: categoriesService.deleteCategory,
     invalidateKeys: [['event-categories', eventId]],
     successMessage: t('categories.categoryDeletedSuccess'),
-    errorMessage: t('categories.failedToDeleteCategory'),
+    errorMessage: (error: any) => error?.response?.data?.code === 'CATEGORY_HAS_PHOTOS'
+      ? t('categories.hasPhotos') : t('categories.failedToDeleteCategory'),
   });
 
   // Set hero photo mutation

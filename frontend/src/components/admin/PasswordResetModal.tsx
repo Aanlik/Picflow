@@ -1,3 +1,4 @@
+import { passwordPolicyMessage } from '../../utils/passwordPolicyMessage';
 import React, { useState } from 'react';
 import { X, Key, Copy, CheckCircle, Lock, Eye, EyeOff } from 'lucide-react';
 import { toast } from 'react-toastify';
@@ -56,7 +57,7 @@ export const PasswordResetModal: React.FC<PasswordResetModalProps> = ({
     } catch (error: any) {
       const serverError = error?.response?.data;
       if (serverError?.error === 'Password does not meet security requirements') {
-        setErrors({ password: serverError.feedback?.join?.(' ') || t('events.passwordReset.errorMinLength') });
+        setErrors({ password: passwordPolicyMessage(serverError.details, t) });
       } else {
         toast.error(serverError?.error || t('events.passwordReset.toastError'));
       }

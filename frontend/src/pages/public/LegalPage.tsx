@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { useParams, Link, useNavigate } from 'react-router-dom';
+import { useParams, Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { ArrowLeft, Home } from 'lucide-react';
@@ -50,8 +50,10 @@ export const LegalPage: React.FC = () => {
   
   const { data: settingsData } = usePublicSettings();
 
-  // Use admin settings language
-  const lang = settingsData?.default_language || 'en';
+  const [searchParams] = useSearchParams();
+  const requestedLanguage = searchParams.get('lang');
+  const lang = requestedLanguage === 'en' || requestedLanguage === 'zh-CN'
+    ? requestedLanguage : (settingsData?.default_language || 'zh-CN');
 
   // Fetch page content
   const { data: page, isLoading, error } = useQuery({
@@ -62,10 +64,10 @@ export const LegalPage: React.FC = () => {
 
   // Set i18n language when settings are loaded
   useEffect(() => {
-    if (settingsData?.default_language) {
-      i18n.changeLanguage(settingsData.default_language);
+    if (settingsData) {
+      i18n.changeLanguage(lang);
     }
-  }, [settingsData, i18n]);
+  }, [settingsData, lang, i18n]);
 
   // Update page title
   useEffect(() => {
@@ -90,7 +92,7 @@ export const LegalPage: React.FC = () => {
   if (isLoading || willRedirect) {
     return (
       <div className="min-h-screen bg-neutral-50 flex items-center justify-center">
-        <Loading size="lg" text="Loading..." />
+        <Loading size="lg" text={tAudit("common.loading")} />
       </div>
     );
   }
@@ -134,6 +136,9 @@ export const LegalPage: React.FC = () => {
       <main className="container py-12">
         <div className="max-w-4xl mx-auto">
           <Card padding="lg">
+            {page.logo_url && sanitizeExternalUrl(page.logo_url) && (
+              <img src={sanitizeExternalUrl(page.logo_url)!} alt={page.title} className="max-h-24 max-w-full object-contain mb-6" />
+            )}
             <h1 className="text-3xl font-bold text-neutral-900 mb-8">{page.title}</h1>
             
             {/* This page's chrome is hardcoded light (bg-neutral-50 wrapper,

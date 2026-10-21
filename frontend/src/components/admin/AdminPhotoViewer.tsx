@@ -1,3 +1,4 @@
+import { PermissionGate } from './PermissionGate';
 import { usePhotoSelection } from '../../hooks/usePhotoSelection';
 import React, { useState } from 'react';
 import { X, ChevronLeft, ChevronRight, Download, Trash2, Tag, Calendar, HardDrive, Eye, MessageSquare, Star, Heart } from 'lucide-react';
@@ -302,13 +303,13 @@ const AdminPhotoViewerContent: React.FC<ViewerContentProps> = ({
               className="flex-1"
             >
               {tAudit("ui.download")}</Button>
-            <button
+            <PermissionGate permission="photos.delete"><button
               onClick={handleDelete}
               disabled={isDeleting}
               className="flex-1 px-3 py-1.5 text-sm font-medium text-white bg-red-600 hover:bg-red-700 disabled:bg-red-400 rounded-lg flex items-center justify-center gap-2"
             >
               <Trash2 className="w-4 h-4" />
-              {tAudit("ui.delete")}</button>
+              {tAudit("ui.delete")}</button></PermissionGate>
           </div>
 
           {/* Category */}
@@ -317,11 +318,11 @@ const AdminPhotoViewerContent: React.FC<ViewerContentProps> = ({
               <span className="text-neutral-400 text-sm flex items-center gap-1">
                 <Tag className="w-4 h-4" />
                 {tAudit("ui.category")}</span>
-              <button
+              <PermissionGate permission="photos.edit"><button
                 onClick={categoryMenuModal.toggle}
                 className="text-xs text-accent hover:text-accent-dark"
               >
-                {tAudit("ui.change")}</button>
+                {tAudit("ui.change")}</button></PermissionGate>
             </div>
             <p className="text-white">
               {currentPhoto.category_name

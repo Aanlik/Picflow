@@ -317,7 +317,7 @@ router.delete('/:id', adminAuth, requirePermission('settings.edit'), async (req,
     const photoCount = await db('photos').where('category_id', id).count('id as count').first();
     if (photoCount.count > 0) {
       return res.status(400).json({
-        error: 'Cannot delete category with photos. Please reassign photos first.'
+        error: 'Cannot delete category with photos. Please reassign photos first.', code: 'CATEGORY_HAS_PHOTOS'
       });
     }
 

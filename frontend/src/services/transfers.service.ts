@@ -6,6 +6,7 @@
  *   - Public recipient download under /public/transfer/:token (token in URL).
  *   - Public client upload under /public/transfer-upload/:token (6-char token).
  */
+import { downloadBlob } from '../utils/downloadBlob';
 import { api } from '../config/api';
 import { getApiBaseUrl } from '../utils/url';
 
@@ -128,6 +129,10 @@ export const transfersService = {
       throw new Error('Invalid transfer list response');
     }
     return transfers;
+  },
+  async downloadUpload(id: number, uploadId: number, filename: string): Promise<void> {
+    const response = await api.get(`/admin/transfers/${id}/uploads/${uploadId}/download`, { responseType: 'blob' });
+    downloadBlob(response.data, filename);
   },
   async get(id: number): Promise<Transfer> {
     const res = await api.get(`/admin/transfers/${id}`);

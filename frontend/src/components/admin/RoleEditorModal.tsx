@@ -40,7 +40,7 @@ export const RoleEditorModal: React.FC<RoleEditorModalProps> = ({
     ? t(`users.roles.${role.name}`, { defaultValue: role.displayName })
     : undefined;
   const localizedSystemRoleDescription = mode === 'edit' && role?.isSystem
-    ? t(`users.roleDescriptions.${role.name}`, { defaultValue: role.description || '' })
+    ? t(`users.roleDescriptions.${role.name}`, { defaultValue: role.description || t('users.noRoleDescription') })
     : undefined;
 
   const [name, setName] = useState('');

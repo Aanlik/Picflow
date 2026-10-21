@@ -41,6 +41,11 @@ const statusIcons = {
   partial: { icon: AlertCircle, color: 'text-amber-500' }
 };
 
+const backupStats = (backup) => {
+  if (typeof backup.statistics !== 'string') return backup.statistics || {};
+  try { return JSON.parse(backup.statistics) || {}; } catch { return {}; }
+};
+
 const formatBytes = (bytes) => {
   if (!bytes) return '0 B';
   const k = 1024;
@@ -88,7 +93,7 @@ export const BackupHistory = () => {
       return response.data;
     },
     successMessage: t('backup.history.deleteSuccess'),
-    invalidateKeys: [['backup-history']],
+    invalidateKeys: [['backup-history'], ['backup-status'], ['available-backups']],
     errorMessage: t('backup.history.deleteError')
   });
 
@@ -105,7 +110,7 @@ export const BackupHistory = () => {
   const handleDelete = (backup) => {
     if (window.confirm(t('backup.history.deleteConfirm', {
       dateTime: `${format(new Date(backup.created_at))} ${formatTime(backup.created_at)}`,
-      size: formatBytes(backup.total_size || 0),
+      size: formatBytes(backupStats(backup).total_size || backup.total_size_bytes || backup.total_size || 0),
       fileCount: backup.files_backed_up || 0,
     }))) {
       deleteMutation.mutate(backup.id);
@@ -203,7 +208,7 @@ export const BackupHistory = () => {
                   const StatusIcon = statusIcons[backup.status]?.icon || AlertCircle;
                   const statusColor = statusIcons[backup.status]?.color || 'text-gray-500';
                   const isExpanded = expandedRows.has(backup.id);
-                  const stats = backup.statistics || {};
+                  const stats = backupStats(backup);
 
                   return (
                     <React.Fragment key={backup.id}>

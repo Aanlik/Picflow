@@ -19,7 +19,7 @@ const { requirePermission } = require('../middleware/permissions');
 const { requireFeatureFlag } = require('../middleware/requireFeatureFlag');
 const { handleAsync, validateRequest, successResponse } = require('../utils/routeHelpers');
 const { validateFileType } = require('../utils/fileSecurityUtils');
-const { sanitizeFilename } = require('../utils/filenameSanitizer');
+const { buildContentDisposition, sanitizeFilename } = require('../utils/filenameSanitizer');
 const { getAppSetting } = require('../utils/appSettings');
 const { getStorage } = require('../services/storage');
 const transferService = require('../services/transferService');
@@ -386,7 +386,7 @@ router.get('/:id/uploads/:uploadId/download',
     );
     if (!upload) return res.status(404).json({ error: 'Upload not found' });
     res.setHeader('Content-Type', upload.mime_type || 'application/octet-stream');
-    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(upload.original_filename)}"`);
+    res.setHeader('Content-Disposition', buildContentDisposition(upload.original_filename));
     if (upload.localPath && fs.existsSync(upload.localPath)) {
       return fs.createReadStream(upload.localPath).pipe(res);
     }

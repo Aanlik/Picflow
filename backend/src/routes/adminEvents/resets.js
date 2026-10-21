@@ -37,9 +37,14 @@ module.exports = (router) => {
       const keptHash = await sameAsStored(newPassword, event.password_hash)
         && await db('events').where({ id, password_hash: event.password_hash })
           .update(Object.keys(copyColumns).length ? copyColumns : { updated_at: new Date().toISOString() });
+      if (keptHash) await db('events').where({ id }).update({
+        require_password: true,
+        ...(!event.require_password ? await credentialChangeColumns('gallery') : {}),
+      });
       if (!keptHash) {
         await db('events').where('id', id).update({
           password_hash: passwordHash,
+          require_password: true,
           ...copyColumns,
           ...(await credentialChangeColumns('gallery')),
         });

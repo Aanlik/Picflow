@@ -7,6 +7,7 @@ import 'react-toastify/dist/ReactToastify.css';
 import { GalleryAuthProvider, MaintenanceProvider } from './contexts';
 import { ThemeProvider } from './contexts/ThemeContext';
 import { LegalPage } from './pages/public/LegalPage';
+import { PermissionGate } from './components/admin/PermissionGate';
 import { RequireFeature } from './components/admin/RequireFeature';
 import { PageErrorBoundary, OfflineIndicator, SkipLink, DynamicFavicon, RobotsMetaTags, CMSContentBlock, Loading } from './components/common';
 import { MaintenanceWrapper } from './components/MaintenanceWrapper';
@@ -102,7 +103,7 @@ function App() {
                     <Route element={<AdminLayout />}>
                       <Route path="dashboard" element={<AdminDashboard />} />
                       <Route path="events" element={<EventsListPage />} />
-                      <Route path="events/new" element={<CreateEventPage />} />
+                      <Route path="events/new" element={<PermissionGate permission="events.create" fallback={<Navigate to="/admin/events" replace />}><CreateEventPage /></PermissionGate>} />
                       <Route path="events/:id" element={<EventDetailsPage />} />
                       <Route path="archives" element={<ArchivesPage />} />
                       {/* PicTransfer (#997) — cross-event file transfers.

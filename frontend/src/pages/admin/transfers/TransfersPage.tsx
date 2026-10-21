@@ -131,7 +131,7 @@ export const TransfersPage: React.FC = () => {
                       {tr.download_count}{tr.max_downloads ? ` / ${tr.max_downloads}` : ''}
                     </td>
                     <td className="px-4 py-3 text-neutral-500 dark:text-neutral-400">{fmtDate(tr.expires_at)}</td>
-                    <td className="px-4 py-3">{tr.allow_uploads ? tr.upload_count : '—'}</td>
+                    <td className="px-4 py-3">{tr.upload_count || 0}</td>
                   </tr>
                 ))}
               </tbody>
@@ -355,30 +355,30 @@ const TransferDetailModal: React.FC<DetailProps> = ({ transferId, onClose, onCop
   const addFilesMutation = useMutationWithToast({
     mutationFn: (photoIds: number[]) => transfersService.addFiles(transferId, photoIds),
     successMessage: t('transfers.filesAdded', 'Files added'),
-    onSuccess: () => refetch(),
+    invalidateKeys: [['admin-transfers'], ['admin-transfer', transferId]],
   });
   const removeFileMutation = useMutationWithToast({
     mutationFn: (fileId: number) => transfersService.removeFile(transferId, fileId),
-    onSuccess: () => refetch(),
+    invalidateKeys: [['admin-transfers'], ['admin-transfer', transferId]],
   });
   const disableMutation = useMutationWithToast({
     mutationFn: () => transfersService.update(transferId, { isActive: false }),
     successMessage: t('transfers.disabled', 'Link disabled'),
-    onSuccess: () => refetch(),
+    invalidateKeys: [['admin-transfers'], ['admin-transfer', transferId]],
   });
   const reactivateMutation = useMutationWithToast({
     mutationFn: () => transfersService.update(transferId, { isActive: true, expiresInDays: 14 }),
     successMessage: t('transfers.reactivated', 'Link re-activated'),
-    onSuccess: () => refetch(),
+    invalidateKeys: [['admin-transfers'], ['admin-transfer', transferId]],
   });
   const enableUploadsMutation = useMutationWithToast({
     mutationFn: () => transfersService.enableUploads(transferId),
     successMessage: t('transfers.uploadEnabled', 'Upload link enabled'),
-    onSuccess: () => refetch(),
+    invalidateKeys: [['admin-transfers'], ['admin-transfer', transferId]],
   });
   const disableUploadsMutation = useMutationWithToast({
     mutationFn: () => transfersService.disableUploads(transferId),
-    onSuccess: () => refetch(),
+    invalidateKeys: [['admin-transfers'], ['admin-transfer', transferId]],
   });
   const deleteMutation = useMutationWithToast({
     mutationFn: () => transfersService.remove(transferId),
@@ -388,11 +388,11 @@ const TransferDetailModal: React.FC<DetailProps> = ({ transferId, onClose, onCop
   const uploadFilesMutation = useMutationWithToast({
     mutationFn: (list: File[]) => transfersService.uploadFiles(transferId, list),
     successMessage: t('transfers.filesAdded', 'Files added'),
-    onSuccess: () => refetch(),
+    invalidateKeys: [['admin-transfers'], ['admin-transfer', transferId]],
   });
   const removeExtraFileMutation = useMutationWithToast({
     mutationFn: (extraId: number) => transfersService.removeExtraFile(transferId, extraId),
-    onSuccess: () => refetch(),
+    invalidateKeys: [['admin-transfers'], ['admin-transfer', transferId]],
   });
 
   const handleDelete = async () => {
@@ -560,6 +560,10 @@ const TransferDetailModal: React.FC<DetailProps> = ({ transferId, onClose, onCop
                       {t('transfers.copyLink', 'Copy link')}
                     </Button>
                   </div>
+                </>
+              ) : (
+                <p className="text-sm text-neutral-400">{t('transfers.uploadHint')}</p>
+              )}
                   {transfer.uploads && transfer.uploads.length > 0 ? (
                     <ul className="mt-3 divide-y divide-neutral-100 dark:divide-neutral-800">
                       {transfer.uploads.map((u) => (
@@ -567,9 +571,9 @@ const TransferDetailModal: React.FC<DetailProps> = ({ transferId, onClose, onCop
                           <span className="truncate">{u.original_filename}</span>
                           <span className="flex items-center gap-3 text-neutral-500">
                             <span>{formatBytes(u.size_bytes)}</span>
-                            <a href={transfersService.adminUploadDownloadUrl(transferId, u.id)} className="text-primary-600 hover:underline">
+                            <button type="button" aria-label={`${t('common.download')} ${u.original_filename}`} onClick={() => transfersService.downloadUpload(transferId, u.id, u.original_filename).catch(() => toast.error(t('common.error')))} className="text-primary-600 hover:underline">
                               <Download className="h-4 w-4" />
-                            </a>
+                            </button>
                           </span>
                         </li>
                       ))}
@@ -577,12 +581,7 @@ const TransferDetailModal: React.FC<DetailProps> = ({ transferId, onClose, onCop
                   ) : (
                     <p className="mt-2 text-sm text-neutral-400">{t('transfers.noUploads', 'No files uploaded by the client yet.')}</p>
                   )}
-                </>
-              ) : (
-                <p className="text-sm text-neutral-400">
-                  {t('transfers.uploadHint', 'Enable this to give the client a 6-character code to send you files (logos etc.).')}
-                </p>
-              )}
+
             </div>
           </div>
         )}

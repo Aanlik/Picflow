@@ -184,6 +184,26 @@ router.post('/:eventId/sync', requirePermission('events.edit'), (req, res, next)
   res.json(result.data);
 });
 
+// Recovery is owned by the same project editor as sync; Bridge validates
+// current remote presence and confines all chosen files to this project.
+for (const method of ['get', 'post']) {
+  router[method]('/:eventId/photos/:photoId/recovery', requirePermission('events.edit'), (req, res, next) => {
+    if (parseId(req.params.eventId) && parseId(req.params.photoId)) return next();
+    return res.sendStatus(400);
+  }, requireEventOwnership, async (req, res) => {
+    if (await rejectArchivedEvent(req, res)) return;
+    const result = await bridgeRequest(`/api/projects/${Number(req.params.eventId)}/photos/${Number(req.params.photoId)}/recovery`, {
+      method: method.toUpperCase(), ...(method === 'post' ? { body: req.body } : {}),
+    });
+    if (result.status !== 200) {
+      const detail = result.data?.detail;
+      return res.status([400, 404, 409].includes(result.status) ? result.status : 503)
+        .json({ error: typeof detail === 'string' ? detail : '无法处理照片映射，请检查精修服务连接' });
+    }
+    return res.json(result.data);
+  });
+}
+
 router.post('/:eventId/rescan', requirePermission('events.edit'), (req, res, next) => parseId(req.params.eventId) ? next() : res.sendStatus(400), requireEventOwnership, async (req, res) => {
   if (await rejectArchivedEvent(req, res)) return;
   const result = await bridgeRequest(`/api/projects/${Number(req.params.eventId)}/rescan`, { method: 'POST', body: {} });

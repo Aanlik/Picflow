@@ -2,6 +2,7 @@ import { render, screen, waitFor, cleanup, fireEvent, act } from '@testing-libra
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PhotographyWorkflowCard } from '../PhotographyWorkflowCard';
 import { api } from '../../../config/api';
+vi.mock('../../../contexts/PermissionsContext', () => ({ usePermissions: () => ({ hasPermission: () => true, isSuperAdmin: false }) }));
 vi.mock('../../../config/api', () => ({ api: { get: vi.fn(), post: vi.fn(), patch: vi.fn() } }));
 vi.mock('react-toastify', () => ({ toast: { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() } }));
 import { toast } from 'react-toastify';

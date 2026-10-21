@@ -77,7 +77,7 @@ export const BackupManagement: React.FC = () => {
     },
     successMessage: t('backup.messages.backupStarted'),
     errorMessage: t('backup.messages.backupFailed'),
-    invalidateKeys: [['backup-status']],
+    invalidateKeys: [['backup-status'], ['backup-history'], ['available-backups']],
   });
 
   const updateConfigMutation = useMutationWithToast({

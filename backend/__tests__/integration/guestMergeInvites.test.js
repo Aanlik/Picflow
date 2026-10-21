@@ -87,6 +87,8 @@ describe('participant merge preserves invite links', () => {
 
     expect(response.status).toBe(200);
     const inviteId = typeof row === 'object' ? row.id : row;
-    expect((await db('guest_invites').where({ id: inviteId }).first()).guest_id).toBe(merged);
+    const spent = await db('guest_invites').where({ id: inviteId }).first();
+    expect(spent.guest_id).toBe(merged);
+    expect(spent.revoked_at).toBeTruthy();
   });
 });

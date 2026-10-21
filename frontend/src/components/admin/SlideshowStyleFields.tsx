@@ -10,6 +10,7 @@
  * for a SlideshowStyle value and calls onChange with the next value.
  */
 import React from 'react';
+import { categoryLabel } from '../../utils/categoryLabel';
 import { useTranslation } from 'react-i18next';
 import {
   SLIDESHOW_TRANSITIONS,
@@ -123,7 +124,7 @@ export const SlideshowStyleFields: React.FC<SlideshowStyleFieldsProps> = ({ valu
             >
               <option value="">{t('slideshow.categoryAll', 'All photos')}</option>
               {categories.map((c) => (
-                <option key={c.id} value={c.id}>{c.name}</option>
+                <option key={c.id} value={c.id}>{categoryLabel(c, t)}</option>
               ))}
             </select>
           </div>

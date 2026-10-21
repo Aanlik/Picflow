@@ -33,6 +33,9 @@ class Photo(Base):
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
     photo_id: Mapped[int] = mapped_column(Integer)
     source_filename: Mapped[str] = mapped_column(String(512))
+    raw_override: Mapped[str | None] = mapped_column(Text)
+    mapped_source: Mapped[str | None] = mapped_column(String(512))
+    final_overrides: Mapped[str | None] = mapped_column(Text)
     remote_present: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     upload_source_key: Mapped[str | None] = mapped_column(Text)
     upload_snapshot_path: Mapped[str | None] = mapped_column(Text)
@@ -140,6 +143,9 @@ def database(url):
         ("upload_snapshot_hash", "VARCHAR(64)"),
         ("work_filename", "VARCHAR(512)"),
         ("source_kind", "VARCHAR(16)"),
+        ("raw_override", "TEXT"),
+        ("mapped_source", "VARCHAR(512)"),
+        ("final_overrides", "TEXT"),
     ):
         if name not in photo_columns:
             with engine.begin() as conn:

@@ -15,6 +15,8 @@ const { resolvePhotoStorageKey } = require('../services/photoResolver');
 const downloadZipService = require('../services/downloadZipService');
 const logger = require('../utils/logger');
 
+const { normalizeMultipartFilename } = require('../utils/normalizeMultipartFilename');
+
 const router = express.Router();
 const photoExportService = new PhotoExportService();
 const getStoragePath = () => process.env.STORAGE_PATH || path.join(__dirname, '../../../storage');
@@ -37,6 +39,7 @@ async function receiveReplacement(req, res, next) {
     storage: uploadStorage,
     limits: { fileSize: limit, files: 1, fields: 2 },
     fileFilter: (_req, file, callback) => {
+      file.originalname = normalizeMultipartFilename(file.originalname);
       if (/^image\//.test(file.mimetype)) callback(null, true);
       else callback(new Error('仅支持上传图片'));
     },
@@ -70,14 +73,12 @@ router.get('/events/:id/photos', integratedBridgeAuth, requirePermission('photos
       photos: photos.map((photo) => {
         const clientMarks = mergeMarks(photo, 'client');
         const ext = path.extname(photo.source_filename || photo.original_filename || photo.filename || '').toLowerCase();
-        const isGuestImage = localStorage
-          && photo.uploaded_by
-          && photo.uploaded_by !== 'admin'
+        const isManagedImage = localStorage
           && photo.source_origin === 'managed'
           && (photo.media_type === 'image' || String(photo.mime_type || '').startsWith('image/'))
           && !['.arw', '.cr3', '.cr2', '.nef', '.raf', '.dng', '.orf', '.rw2'].includes(ext);
         let uploadSourceKey = null;
-        if (isGuestImage) {
+        if (isManagedImage) {
           try { uploadSourceKey = resolvePhotoStorageKey(event, photo); } catch { /* A malformed row is reported as an unmapped source by Bridge. */ }
         }
         return {
@@ -85,7 +86,8 @@ router.get('/events/:id/photos', integratedBridgeAuth, requirePermission('photos
           filename: photo.filename,
           original_filename: photo.original_filename || null,
           source_filename: photo.source_filename || photo.original_filename || photo.filename || null,
-          upload_source_key: uploadSourceKey,
+          upload_source_key: photo.uploaded_by && photo.uploaded_by !== 'admin' ? uploadSourceKey : null,
+          fallback_source_key: uploadSourceKey,
           average_rating: photo.average_rating ? Number.parseFloat(photo.average_rating) : 0,
           feedback_count: photo.feedback_count || 0,
           like_count: photo.like_count || 0,

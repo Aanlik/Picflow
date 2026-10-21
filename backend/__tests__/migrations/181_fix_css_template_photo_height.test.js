@@ -125,8 +125,10 @@ describe('migration 181 — CSS template image height (#1131)', () => {
    */
   it('fixes a template that has been through the editor, newlines and all', async () => {
     const { sanitizeCSS } = require('../../src/utils/cssSanitizer');
-    const { sanitized } = sanitizeCSS(ELEGANT_DARK);
-    // Precondition: the sanitizer really did flatten it.
+    // Historical editor versions removed all newlines. Model that stored
+    // legacy artifact explicitly; current sanitization preserves formatting.
+    const sanitized = sanitizeCSS(ELEGANT_DARK).sanitized.replace(/[\r\n]/g, '');
+    // Precondition: this fixture represents the flattened legacy data.
     expect(sanitized).not.toContain('\n');
     expect(sanitized).toContain('height: 200px');
     await knex('css_templates').insert({ name: 'Saved Once', css_content: sanitized });

@@ -168,6 +168,7 @@ export const RestoreWizard = () => {
         restoreType: restoreData.restoreType,
         skipPreBackup: restoreData.skipPreBackup,
         force: restoreData.force,
+        acknowledgedWarnings: validationResult?.validation?.warnings || [],
         encryptionPassphrase: restoreData.encryptionPassphrase,
         ...restoreData.sourceConfig
       });
@@ -589,6 +590,13 @@ export const RestoreWizard = () => {
             </div>
           </Card>
 
+          {validationResult.validation?.warnings?.length > 0 && (
+            <Card className="p-4 bg-amber-50 text-amber-900">
+              <p>{t('backup.restore.confirmation.acknowledgeWarnings')}</p>
+              <ul>{validationResult.validation.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul>
+            </Card>
+          )}
+
           {/* Space Check */}
           {validationResult.spaceCheck && (
             <Card className="p-4">
@@ -687,7 +695,7 @@ export const RestoreWizard = () => {
     const subtitle = isRunning
       ? t('backup.restore.progress.inProgress')
       : lastRunFailed
-        ? t('backup.restore.progress.failedSubtitle', 'Restore failed — see error below. Destination has been rolled back to its pre-restore state.')
+        ? t('backup.restore.progress.failedSubtitle', 'Restore failed. See the error and actual rollback result below.')
         : lastRunSucceeded
           ? t('backup.restore.progress.completed')
           : t('backup.restore.progress.idle', 'No restore in progress.');
@@ -716,7 +724,7 @@ export const RestoreWizard = () => {
                 <p className="text-sm text-red-700 dark:text-red-300 font-mono break-all">
                   {lastRunError || t('backup.restore.progress.errorUnknown', 'No error message recorded.')}
                 </p>
-                {lastRun.was_rollback_attempted && (
+                {(lastRun.was_rollback_attempted === true || lastRun.was_rollback_attempted === 1) && /rolled back successfully/.test(lastRunError || '') && (
                   <p className="mt-2 text-xs text-red-600 dark:text-red-400">
                     {t('backup.restore.progress.rolledBack',
                       'Pre-restore safety backup was used to roll back. Destination is in its pre-restore state — safe to retry once the issue above is resolved.')}
