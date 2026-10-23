@@ -97,7 +97,7 @@ const props = {
   isSelectionMode: false,
   allowDownloads: true,
   feedbackEnabled: true,
-  feedbackOptions: { requireGuestName: true, allowComments: true, allowRatings: true },
+  feedbackOptions: { allowLikes: true, requireGuestName: true, allowComments: true, allowRatings: true },
 } as never;
 
 beforeEach(() => {
@@ -173,4 +173,11 @@ describe('GalleryStoryLayout — feedback lives in the lightbox only', () => {
     expect(storyIndex).not.toMatch(/StoryFeedbackSheet/);
     expect(fs.existsSync(path.join(layouts, 'story/StoryFeedbackSheet.tsx'))).toBe(false);
   });
+});
+
+ it('hides card likes when feedback or the likes capability is disabled', () => {
+  const { container, rerender } = render(<GalleryStoryLayout {...props} feedbackEnabled={false} />);
+  expect(container.querySelector('.story-photo-card-actions')).toBeNull();
+  rerender(<GalleryStoryLayout {...props} feedbackOptions={{ ...props.feedbackOptions, allowLikes: false }} />);
+  expect(container.querySelector('.story-photo-card-actions')).toBeNull();
 });

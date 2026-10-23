@@ -6,9 +6,13 @@ import httpx
 
 
 class ApiError(Exception):
-    def __init__(self, status: int, uncertain=False):
+    def __init__(self, status: int, uncertain=False, code=None):
         self.status = status
         self.uncertain = uncertain
+        self.code = code
+        if code == "INVALID_IMAGE_CONTENT":
+            super().__init__("精修文件已损坏或无法完整解码，请重新导出后重试")
+            return
         super().__init__(f"Picflow HTTP {status}" if status else "Picflow 网络中断")
 
 
@@ -75,7 +79,14 @@ class Picflow:
             except httpx.TransportError:
                 raise ApiError(0, uncertain=True)
         if r.status_code >= 400:
-            raise ApiError(r.status_code, uncertain=r.status_code >= 500)
+            code = None
+            if r.status_code == 422:
+                try:
+                    payload = r.json()
+                    code = payload.get("code") if isinstance(payload, dict) else None
+                except ValueError:
+                    pass
+            raise ApiError(r.status_code, uncertain=r.status_code >= 500, code=code)
         try:
             data = r.json()
             if not isinstance(data, dict) or data.get("replaced") is not True or not isinstance(data.get("photo"), dict) or data["photo"].get("id") != photo_id:

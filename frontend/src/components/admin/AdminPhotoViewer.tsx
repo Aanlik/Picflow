@@ -160,6 +160,7 @@ const AdminPhotoViewerContent: React.FC<ViewerContentProps> = ({
       await photosService.setPhotoMark(eventId, photoId, patch);
       // The grid reads my_rating / my_color_label off the photo rows.
       queryClient.invalidateQueries({ queryKey: ['admin-event-photos', String(eventId)] });
+      queryClient.invalidateQueries({ queryKey: ['admin-event-filter-summary', String(eventId)] });
     } catch {
       setMyMarks((prev) => ({ ...prev, [photoId]: previous }));
       toast.error(t('admin.photos.markError', 'Failed to save your mark'));
@@ -295,14 +296,14 @@ const AdminPhotoViewerContent: React.FC<ViewerContentProps> = ({
 
           {/* Actions */}
           <div className="flex gap-2 mb-6">
-            <Button
+            <PermissionGate permission="photos.download"><Button
               variant="primary"
               size="sm"
               onClick={handleDownload}
               leftIcon={<Download className="w-4 h-4" />}
               className="flex-1"
             >
-              {tAudit("ui.download")}</Button>
+              {tAudit("ui.download")}</Button></PermissionGate>
             <PermissionGate permission="photos.delete"><button
               onClick={handleDelete}
               disabled={isDeleting}

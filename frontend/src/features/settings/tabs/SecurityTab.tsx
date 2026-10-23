@@ -1,4 +1,5 @@
 import React from 'react';
+import { usePermissions } from '../../../contexts/PermissionsContext';
 import { Save, AlertTriangle, AlertCircle } from 'lucide-react';
 import { Button, Card, Input } from '../../../components/common';
 import { useTranslation } from 'react-i18next';
@@ -23,6 +24,8 @@ export const SecurityTab: React.FC<SecurityTabProps> = ({
   saveSecurityMutation,
 }) => {
   const { t } = useTranslation();
+  const { hasPermission } = usePermissions();
+  const canEdit = hasPermission('settings.security');
   const setRateLimit = <K extends keyof RateLimitSettings>(key: K, value: RateLimitSettings[K]) =>
     setRateLimitSettings((prev) => ({ ...prev, [key]: value }));
   const numberField = (key: keyof RateLimitSettings, min: number, max: number, labelKey: string, helpKey: string) => (
@@ -43,7 +46,7 @@ export const SecurityTab: React.FC<SecurityTabProps> = ({
   );
 
   return (
-    <div className="space-y-6">
+    <fieldset disabled={!canEdit} className="space-y-6 min-w-0">
       <Card padding="md">
         <h2 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100 mb-4">{t('settings.security.passwordSettings')}</h2>
 
@@ -241,7 +244,8 @@ export const SecurityTab: React.FC<SecurityTabProps> = ({
         <div className="mt-6">
           <Button
             variant="primary"
-            onClick={() => saveSecurityMutation.mutate()}
+            onClick={() => { if (canEdit) saveSecurityMutation.mutate(); }}
+            disabled={!canEdit}
             isLoading={saveSecurityMutation.isPending}
             leftIcon={<Save className="w-5 h-5" />}
           >
@@ -249,6 +253,6 @@ export const SecurityTab: React.FC<SecurityTabProps> = ({
           </Button>
         </div>
       </Card>
-    </div>
+    </fieldset>
   );
 };

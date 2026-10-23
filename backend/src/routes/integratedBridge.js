@@ -130,7 +130,10 @@ router.post('/events/:id/photos', integratedBridgeAuth, requirePermission('photo
       mimeType: req.file.mimetype,
       event,
     });
-    if (!result.success) return res.status(500).json({ error: '替换精修照片失败' });
+    if (!result.success) {
+      if (result.code === 'INVALID_IMAGE_CONTENT') return res.status(422).json({ code: result.code, error: '精修文件已损坏或无法完整解码，请重新导出后重试' });
+      return res.status(500).json({ error: '替换精修照片失败' });
+    }
     downloadZipService.invalidate(eventId);
     await logActivity('photo_replaced', {
       photoId: result.photo.id,

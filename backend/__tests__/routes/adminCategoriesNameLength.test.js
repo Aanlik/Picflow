@@ -23,13 +23,14 @@ const { bootTestDb, seedMinimal, assignAdminRole, mintAdminToken } = require('..
 const TOO_LONG = 'z'.repeat(101);
 
 describe('category name length validation', () => {
-  let db; let cleanup; let app; let superTok;
+  let db; let cleanup; let app; let superTok; let rootId;
 
   const auth = (req) => req.set('Authorization', `Bearer ${superTok}`);
 
   beforeAll(async () => {
     ({ db, cleanup } = await bootTestDb());
     const { adminId: superId } = await seedMinimal(db);
+    rootId = superId;
     await assignAdminRole(db, superId, 'super_admin');
     superTok = mintAdminToken(superId);
 
@@ -73,4 +74,23 @@ describe('category name length validation', () => {
     expect(res.status).toBe(200);
     expect(res.body.name).toBe(name);
   });
+  it('allows event readers without settings.view to list categories, while retaining ownership checks', async () => {
+    const [inserted] = await db('events').insert({
+      event_name: 'Category reader regression', slug: 'category-reader-regression',
+      event_type: 'project', event_date: '2026-10-23', password_hash: 'unused',
+      share_link: '/gallery/category-reader-regression', created_by: rootId,
+    }).returning('id');
+    const eventId = inserted.id || inserted;
+    await assignAdminRole(db, rootId, 'editor');
+    try {
+      const response = await auth(request(app).get(`/api/admin/categories/event/${eventId}`));
+      expect(response.status).toBe(200);
+      expect(Array.isArray(response.body)).toBe(true);
+      await db('events').where({ id: eventId }).update({ created_by: 999999 });
+      expect((await auth(request(app).get(`/api/admin/categories/event/${eventId}`))).status).toBe(403);
+    } finally {
+      await assignAdminRole(db, rootId, 'super_admin');
+    }
+  });
+
 });

@@ -60,6 +60,7 @@ export const GalleryStoryLayout: React.FC<GalleryStoryLayoutProps> = ({
   useEnhancedProtection = false,
   useCanvasRendering = false,
   feedbackEnabled = false,
+  feedbackOptions,
   heroPhotoOverride,
   onLogout,
   showOriginalFilename = false,
@@ -270,6 +271,7 @@ export const GalleryStoryLayout: React.FC<GalleryStoryLayoutProps> = ({
               {scene.type === 'carousel' ? (
                 <StoryCarousel
                   id={`gallery-${scene.id}`}
+                  allowLikes={feedbackEnabled && Boolean(feedbackOptions?.allowLikes)}
                   photos={scene.photos}
                   favorites={favorites}
                   onToggleFavorite={handleToggleFavorite}
@@ -286,6 +288,7 @@ export const GalleryStoryLayout: React.FC<GalleryStoryLayoutProps> = ({
                   {scene.photos.map((photo, index) => (
                     <StoryPhotoCard
                       key={photo.id}
+                      allowLikes={feedbackEnabled && Boolean(feedbackOptions?.allowLikes)}
                       photo={photo}
                       index={index}
                       isFavorite={favorites.has(photo.id)}

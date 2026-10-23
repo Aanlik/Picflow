@@ -3,7 +3,9 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
-const { get } = vi.hoisted(() => ({ get: vi.fn() }));
+const { get, access } = vi.hoisted(() => ({ get: vi.fn(), access: { isSuperAdmin: true, hasPermission: () => true } }));
+vi.mock('../../../contexts/PermissionsContext', () => ({ usePermissions: () => access }));
+vi.mock('../../../components/admin/RoleManagementTab', () => ({ RoleManagementTab: () => <div>role-management-ready</div> }));
 
 vi.mock('../../../config/api', () => ({ api: { get, post: vi.fn() } }));
 vi.mock('react-i18next', async (importOriginal) => ({
@@ -36,4 +38,15 @@ describe('local user page accessibility names', () => {
     expect(screen.queryByRole('textbox', { name: 'localUsers.username' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'localUsers.createButton' })).not.toBeInTheDocument();
   });
+});
+
+it('opens independent role management without requesting super-admin accounts', () => {
+  get.mockClear();
+  access.isSuperAdmin = false;
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<QueryClientProvider client={client}><LocalUsersPage /></QueryClientProvider>);
+  expect(screen.getByText('role-management-ready')).toBeInTheDocument();
+  expect(get).not.toHaveBeenCalled();
+  expect(screen.queryByRole('textbox', { name: 'localUsers.username' })).toBeNull();
+  access.isSuperAdmin = true;
 });

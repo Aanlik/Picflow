@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { usePermissions } from '../../contexts/PermissionsContext';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api } from '../../config/api';
@@ -9,12 +10,14 @@ import { toast } from 'react-toastify';
 export const LocalUsersPage = () => {
   const { t } = useTranslation();
   const cache = useQueryClient();
+  const { isSuperAdmin, hasPermission } = usePermissions();
+  const canManageRoles = hasPermission('roles.manage');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [role, setRole] = useState('');
   const [error, setError] = useState('');
   const [activePanel, setActivePanel] = useState<'users' | 'roles'>('users');
-  const { data, isError, isLoading } = useQuery({ queryKey: ['local-users'], queryFn: async () => (await api.get<{ users: { id: number; username: string; role: string; role_id: number; is_active: boolean }[]; roles: { id: number; name: string; display_name: string }[] }>('/admin/local-users')).data });
+  const { data, isError, isLoading } = useQuery({ enabled: isSuperAdmin, queryKey: ['local-users'], queryFn: async () => (await api.get<{ users: { id: number; username: string; role: string; role_id: number; is_active: boolean }[]; roles: { id: number; name: string; display_name: string }[] }>('/admin/local-users')).data });
   const create = useMutation({
     mutationFn: async () => api.post('/admin/local-users', { username, password, role_id: Number(role) }),
     onSuccess: () => { setUsername(''); setPassword(''); setError(''); cache.invalidateQueries({ queryKey: ['local-users'] }); },
@@ -30,6 +33,7 @@ export const LocalUsersPage = () => {
     onSuccess: () => { cache.invalidateQueries({ queryKey: ['local-users'] }); toast.success(t('localUsers.deleteSuccess')); },
     onError: (err: any) => toast.error(err?.response?.data?.error || t('localUsers.deleteError')),
   });
+  if (!isSuperAdmin && canManageRoles) return <div className="space-y-6"><h1 className="text-2xl font-bold">{t('localUsers.rolesTab')}</h1><RoleManagementTab /></div>;
   if (isLoading) return <p role="status" className="p-6 text-neutral-600">{t('ui.loading')}</p>;
   if (isError || !data) return (
     <main className="mx-auto max-w-2xl rounded-lg border border-neutral-200 bg-white p-6 dark:border-neutral-700 dark:bg-neutral-800">

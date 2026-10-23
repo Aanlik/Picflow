@@ -59,7 +59,7 @@ router.get('/global', adminAuth, requirePermission('settings.view'), async (req,
 // Get categories for a specific event (global + event-specific), resolved to
 // the event's effective order: per-event override, else global default, else
 // name (#782). Each row carries `override_position` (null when not customised).
-router.get('/event/:eventId', adminAuth, requirePermission('settings.view'), requireEventOwnership, async (req, res) => {
+router.get('/event/:eventId', adminAuth, requirePermission(['settings.view', 'events.view', 'photos.view']), requireEventOwnership, async (req, res) => {
   try {
     const categories = await getEventCategoriesOrdered(req.params.eventId);
     res.json(categories.map(serializeCategory));

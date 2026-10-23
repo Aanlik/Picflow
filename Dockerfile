@@ -172,7 +172,7 @@ CMD ["./wait-for-db.sh", "node", "--max-http-header-size=32768", "server.js"]
 
 FROM python:3.12.14-alpine AS bridge-python
 FROM picflow-base AS picflow
-ARG PICFLOW_VERSION=1.0.9
+ARG PICFLOW_VERSION=1.0.10
 ARG PICFLOW_REVISION=unknown
 ENV PICFLOW_BUILD_VERSION=${PICFLOW_VERSION} \
     PICFLOW_BUILD_REVISION=${PICFLOW_REVISION} \

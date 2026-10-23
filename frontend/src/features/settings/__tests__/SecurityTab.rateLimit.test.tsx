@@ -13,6 +13,9 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import { SecurityTab } from '../tabs/SecurityTab';
 import { validateRateLimitSettings, type SecuritySettings, type RateLimitSettings } from '../hooks/useSettingsState';
 
+const access = vi.hoisted(() => ({ canEdit: true }));
+vi.mock('../../../contexts/PermissionsContext', () => ({ usePermissions: () => ({ hasPermission: () => access.canEdit }) }));
+
 const security: SecuritySettings = {
   password_min_length: 8, password_complexity: 'strong', session_timeout_minutes: 60,
   max_login_attempts: 5, attempt_window_minutes: 15, lockout_duration_minutes: 30,
@@ -86,4 +89,14 @@ describe('rate limiter validation before save', () => {
     // a cleared number field arrives as NaN
     expect(validateRateLimitSettings({ ...rateLimit, rate_limit_max_requests: Number('') })).toBe('rate_limit_max_requests');
   });
+});
+
+it('keeps security controls read-only without settings.security', () => {
+  access.canEdit = false;
+  const { mutate } = mount();
+  const save = screen.getByRole('button', { name: 'Save Security Settings' });
+  expect(save).toBeDisabled();
+  fireEvent.click(save);
+  expect(mutate).not.toHaveBeenCalled();
+  access.canEdit = true;
 });

@@ -249,9 +249,10 @@ async def test_withdraw_keep_delivery_returns_photo_to_proof_and_unlinks_raw(tmp
     assert not (cfg.projects[0].selected / "DSC00001.ARW").exists()
     with engine.sessions() as s:
         photo = s.scalar(select(Photo).where(Photo.photo_id == 1))
-        assert photo.cancelled and not photo.selected and photo.delivery_hash
+        assert not photo.cancelled and not photo.selected and photo.delivery_hash
         assert engine.current_version(s, photo) == 1
 
+    engine.set_stage(7, "EDITING")
     # Re-selection of the retained delivery stays in the delivered state.
     client.rows[0]["retouch_selected"] = False
     await engine.sync()
@@ -294,6 +295,7 @@ async def test_withdraw_delete_restores_proof_and_reselection_is_additional(tmp_
         assert not photo.selected and not photo.cancelled and photo.delivery_hash is None
         assert delivery.state == "WITHDRAWN"
 
+    engine.set_stage(7, "SELECTING")
     # A new selection after removing the old delivery is correctly treated as
     # an additional selection, while the Camera originals remain untouched.
     client.rows[0]["retouch_selected"] = True

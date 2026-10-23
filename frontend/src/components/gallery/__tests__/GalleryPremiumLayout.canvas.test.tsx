@@ -220,13 +220,13 @@ describe('Premium lightbox canvas rendering (#1325)', () => {
     const firstBlob = decoded[0].src; // The detached source has already been released.
     expect(firstBlob).toBe('');
     const revokedBefore = revokeObjectURL.mock.calls.length;
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Next' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'ui.nextPhoto' }));
     const second = await readyCanvas(dialog, 2);
     expect(first.width).toBe(0);
     expect(first.height).toBe(0);
     expect(document.querySelectorAll('canvas')).toHaveLength(1);
     expect(revokeObjectURL.mock.calls.length).toBeGreaterThan(revokedBefore);
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'common.close' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(second.width).toBe(0);
     expect(second.height).toBe(0);
@@ -238,11 +238,11 @@ describe('Premium lightbox canvas rendering (#1325)', () => {
     const dialog = await openPhoto();
     const canvas = await readyCanvas(dialog);
     const decodeCount = decoded.length;
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Zoom in' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'ui.zoomIn' }));
     // 1600px preview / (960px viewport - 2 * 16px carousel padding).
     await waitFor(() => expect(canvas.parentElement?.style.transform).toContain('scale(1.72414)'));
     expect(decoded).toHaveLength(decodeCount);
-    expect(within(dialog).getByRole('button', { name: 'Zoom in' })).toBeDisabled();
+    expect(within(dialog).getByRole('button', { name: 'ui.zoomIn' })).toBeDisabled();
   });
 
   it('loads the thumbnail fallback with gallery authentication', async () => {
@@ -261,10 +261,33 @@ describe('Premium lightbox canvas rendering (#1325)', () => {
     mount({ useCanvasRendering: true, allowDownloads: true, showOriginalFilename: true });
     const dialog = await openPhoto();
     await readyCanvas(dialog);
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Next' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'ui.nextPhoto' }));
     await readyCanvas(dialog, 2);
     expect(within(dialog).getByText('original-2.jpg')).toBeInTheDocument();
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Download' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'ui.downloadPhoto' }));
     expect(download).toHaveBeenCalledWith({ slug: 'demo', photoId: 2, filename: 'photo-2.jpg' });
   });
+});
+
+it('selects a tile without opening a lightbox in batch mode', () => {
+  const select = vi.fn();
+  mount({ isSelectionMode: true, onPhotoSelect: select });
+  fireEvent.click(screen.getByTestId('photo-card-1'));
+  expect(select).toHaveBeenCalledWith(1);
+  expect(screen.queryByRole('dialog')).toBeNull();
+});
+it('hides lightbox download for a restricted category', async () => {
+  mount({ allowDownloads: true, photos: photos.map(p => ({ ...p, category_allow_downloads: false })) });
+  const dialog = await openPhoto();
+  expect(within(dialog).queryByRole('button', { name: 'ui.downloadPhoto' })).toBeNull();
+});
+
+it('keeps the feedback drawer open after the current photo color label changes', async () => {
+  const props = { photos, slug: 'demo', onPhotoClick: vi.fn(), onDownload: vi.fn(), feedbackEnabled: true, feedbackOptions: { allowColorLabels: true } };
+  const view = render(<GalleryPremiumLayout {...props} />);
+  await openPhoto();
+  fireEvent.click(screen.getByRole('button', { name: 'ui.toggleFeedback' }));
+  expect(screen.getByTestId('premium-color-labels')).toBeInTheDocument();
+  view.rerender(<GalleryPremiumLayout {...props} photos={photos.map(p => p.id === 1 ? { ...p, my_color_label: 'blue' } : p)} />);
+  expect(screen.getByTestId('premium-color-labels')).toBeInTheDocument();
 });

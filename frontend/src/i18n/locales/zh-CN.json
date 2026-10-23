@@ -674,7 +674,7 @@
     "requirePasswordToggle": "启用访问密码",
     "requirePasswordToggleHelp": "关闭后，客户凭分享链接即可查看照片，无需密码。",
     "publicGalleryWarning": "持有链接的人均可查看照片，请按需设置下载权限和水印。",
-    "passwordHelperText": "密码至少 6 个字符，也可使用易记的日期。",
+    "passwordHelperText": "密码长度和复杂度需符合站点的安全设置。",
     "confirmPassword": "确认密码",
     "newPasswordLabel": "新的访问密码",
     "passwordReset": {
@@ -683,7 +683,7 @@
       "description": "为“{{eventName}}”设置新密码；两个输入框均留空时将自动生成。",
       "newPasswordLabel": "新密码",
       "placeholder": "留空自动生成",
-      "helperText": "至少 6 个字符，留空则自动生成。",
+      "helperText": "密码需符合站点安全设置；留空则自动生成。",
       "confirmLabel": "确认密码",
       "warning": "旧密码将失效，请将新密码告知客户。",
       "submit": "重置密码",
@@ -2863,7 +2863,13 @@
       },
       "validationFailed": "校验失败",
       "started": "已开始恢复",
-      "startFailed": "无法启动恢复"
+      "startFailed": "无法启动恢复",
+      "riskWarnings": {
+        "oldBackup": "此备份已有 {{days}} 天。",
+        "versionMismatch": "备份版本 {{backup}} 与当前版本 {{current}} 不同。",
+        "overwriteProjects": "将覆盖现有 {{count}} 个项目。",
+        "activeAdmins": "数据库中有 {{count}} 个启用的管理员账号。"
+      }
     },
     "messages": {
       "backupStarted": "备份已成功启动",

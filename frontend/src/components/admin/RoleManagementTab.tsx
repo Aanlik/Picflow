@@ -1,3 +1,4 @@
+import { roleDescriptionIsDefault } from '../../utils/roleDescription';
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
@@ -26,7 +27,9 @@ export const RoleManagementTab: React.FC = () => {
   const { t } = useTranslation();
 
   const roleDisplayName = (role: RoleWithPermissions) => t(`users.roles.${role.name}`, { defaultValue: role.displayName });
-  const roleDescription = (role: RoleWithPermissions) => t(`users.roleDescriptions.${role.name}`, { defaultValue: role.description || t('users.noRoleDescription') });
+  const roleDescription = (role: RoleWithPermissions) => roleDescriptionIsDefault(role)
+    ? t(`users.roleDescriptions.${role.name}`, { defaultValue: role.description || t('users.noRoleDescription') })
+    : role.description || t('users.noRoleDescription');
 
   const [editor, setEditor] = useState<{ mode: 'create' | 'edit'; role: RoleWithPermissions | null } | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<RoleWithPermissions | null>(null);

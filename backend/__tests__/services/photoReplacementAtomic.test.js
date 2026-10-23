@@ -49,7 +49,7 @@ test('a concurrent photo change preserves old bytes', async () => {
 
 test('corrupt replacement is rejected before storing or changing the proof', async () => {
   require('sharp').mockImplementationOnce(jest.requireActual('sharp'));
-  expect((await run()).success).toBe(false);
+  expect(await run()).toMatchObject({ success: false, code: 'INVALID_IMAGE_CONTENT' });
   expect(mockStorage.putFromFile).not.toHaveBeenCalled();
   expect(mockUpdate).not.toHaveBeenCalled();
   expect(mockStorage.delete).not.toHaveBeenCalled();

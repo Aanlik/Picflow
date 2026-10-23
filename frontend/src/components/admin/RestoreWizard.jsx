@@ -1,3 +1,4 @@
+import { restoreWarning } from '../../utils/restoreWarning';
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { PicpeakRestoreCard } from './PicpeakBackupCard';
@@ -593,7 +594,7 @@ export const RestoreWizard = () => {
           {validationResult.validation?.warnings?.length > 0 && (
             <Card className="p-4 bg-amber-50 text-amber-900">
               <p>{t('backup.restore.confirmation.acknowledgeWarnings')}</p>
-              <ul>{validationResult.validation.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul>
+              <ul>{validationResult.validation.warnings.map((warning, index) => <li key={index}>{restoreWarning(warning, t)}</li>)}</ul>
             </Card>
           )}
 
@@ -631,7 +632,7 @@ export const RestoreWizard = () => {
             <dl className="space-y-2 text-sm">
               <div className="flex justify-between">
                 <dt className="text-neutral-600 dark:text-neutral-400">{t('backup.restore.confirmation.summary.source')}:</dt>
-                <dd className="font-medium text-neutral-900 dark:text-neutral-100 capitalize">{restoreData.source}</dd>
+                <dd className="font-medium text-neutral-900 dark:text-neutral-100 capitalize">{t(`backup.restore.source.${restoreData.source}.name`)}</dd>
               </div>
               <div className="flex justify-between">
                 <dt className="text-neutral-600 dark:text-neutral-400">{t('backup.restore.confirmation.summary.backupDate')}:</dt>
@@ -641,7 +642,7 @@ export const RestoreWizard = () => {
               </div>
               <div className="flex justify-between">
                 <dt className="text-neutral-600 dark:text-neutral-400">{t('backup.restore.confirmation.summary.restoreType')}:</dt>
-                <dd className="font-medium text-neutral-900 dark:text-neutral-100 capitalize">{restoreData.restoreType}</dd>
+                <dd className="font-medium text-neutral-900 dark:text-neutral-100 capitalize">{t(`backup.restore.restoreTypes.${restoreData.restoreType}.name`)}</dd>
               </div>
               <div className="flex justify-between">
                 <dt className="text-neutral-600 dark:text-neutral-400">{t('backup.restore.confirmation.summary.preBackup')}:</dt>
@@ -683,9 +684,9 @@ export const RestoreWizard = () => {
     // first.
     const lastRun = restoreStatus?.history?.[0];
     const lastRunFailed =
-      !isRunning && lastRun && (lastRun.status === 'failed' || lastRun.was_successful === false);
+      !isRunning && lastRun && (lastRun.status === 'failed' || (lastRun.was_successful === false || lastRun.was_successful === 0));
     const lastRunSucceeded =
-      !isRunning && lastRun && lastRun.status === 'completed' && lastRun.was_successful === true;
+      !isRunning && lastRun && lastRun.status === 'completed' && (lastRun.was_successful === true || lastRun.was_successful === 1);
     const lastRunWarning = lastRunSucceeded && Boolean(lastRun.error_message);
     // Strip the noisy stack-trace tail from the error message so the
     // user sees the actionable line first.

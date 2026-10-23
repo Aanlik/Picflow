@@ -9,7 +9,7 @@
  */
 import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
@@ -27,11 +27,12 @@ vi.mock('react-i18next', async () => {
 vi.mock('react-toastify', () => ({ toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() } }));
 
 const getEvent = vi.fn();
+const updateEvent = vi.fn();
 vi.mock('../../../services/events.service', () => ({
   eventsService: {
     getEvent: (...args: unknown[]) => getEvent(...args),
+    updateEvent: (...args: unknown[]) => updateEvent(...args),
     getEventCategories: vi.fn().mockResolvedValue([]),
-    updateEvent: vi.fn(),
     deleteEvent: vi.fn(),
     extendExpiration: vi.fn(),
     duplicateEvent: vi.fn(),
@@ -55,6 +56,7 @@ vi.mock('../../../services/photos.service', () => ({
 vi.mock('../../../services/feedback.service', () => ({
   feedbackService: {
     getEventFeedbackSettings: vi.fn().mockResolvedValue({ identity_mode: 'simple' }),
+    updateEventFeedbackSettings: vi.fn().mockResolvedValue({}),
   },
 }));
 
@@ -141,4 +143,19 @@ describe('EventDetailsPage photos tab', () => {
     expect(screen.getByRole('button', { name: 'common.retry' })).toBeInTheDocument();
     expect(screen.queryByText('No media uploaded yet')).not.toBeInTheDocument();
   });
+});
+
+it('sends a scheduled reveal and restores its local time after refetch and reopening the editor', async () => {
+  let stored = { ...EVENT, allow_user_uploads: true, reveal_mode: true, reveal_at: null as string | null };
+  getEvent.mockImplementation(async () => stored);
+  getEventPhotos.mockResolvedValue([]);
+  updateEvent.mockImplementation(async (_id, update) => { stored = { ...stored, ...update }; return stored; });
+  const { container } = renderPage('/admin/events/1');
+  fireEvent.click(await screen.findByRole('button', { name: 'common.edit' }));
+  const input = container.querySelector('input[type="datetime-local"]')!;
+  fireEvent.change(input, { target: { value: '2027-01-15T18:30' } });
+  fireEvent.click(screen.getByRole('button', { name: 'events.saveChanges' }));
+  await waitFor(() => expect(updateEvent).toHaveBeenCalledWith(1, expect.objectContaining({ reveal_at: new Date('2027-01-15T18:30').toISOString() })));
+  fireEvent.click(await screen.findByRole('button', { name: 'common.edit' }));
+  expect(container.querySelector('input[type="datetime-local"]')).toHaveValue('2027-01-15T18:30');
 });

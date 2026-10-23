@@ -13,6 +13,7 @@ interface StoryCarouselProps {
   onPhotoClick: (photo: Photo) => void;
   slug: string;
   id: string;
+  allowLikes?: boolean;
   allowDownloads?: boolean;
   useEnhancedProtection?: boolean;
   isSelectionMode?: boolean;
@@ -21,6 +22,7 @@ interface StoryCarouselProps {
 }
 
 export const StoryCarousel: React.FC<StoryCarouselProps> = ({
+  allowLikes = true,
   photos,
   favorites,
   onToggleFavorite,
@@ -49,6 +51,7 @@ export const StoryCarousel: React.FC<StoryCarouselProps> = ({
               <StoryPhotoCard
                 photo={photo}
                 index={index}
+                allowLikes={allowLikes}
                 isFavorite={favorites.has(photo.id)}
                 onToggleFavorite={onToggleFavorite}
                 onClick={() => onPhotoClick(photo)}

@@ -19,6 +19,11 @@ export const CarouselGalleryLayout: React.FC<BaseGalleryLayoutProps> = ({
   onOpenPhotoWithFeedback,
   onDownload,
   allowDownloads = true,
+  isSelectionMode = false,
+  selectedPhotos = new Set(),
+  onPhotoSelect,
+  onSelectAll,
+  onDeselectAll,
   feedbackEnabled = false,
   feedbackOptions
 }) => {
@@ -79,8 +84,15 @@ export const CarouselGalleryLayout: React.FC<BaseGalleryLayoutProps> = ({
 
   return (
     <div className="photo-grid relative">
+      {isSelectionMode && <div className="flex items-center gap-3 mb-3" role="group" aria-label={tAudit('gallery.batchSelect')}>
+        <span>{tAudit('gallery.photosSelected', { count: selectedPhotos.size })}</span>
+        <Button onClick={onSelectAll}>{tAudit('gallery.selectAll')}</Button>
+        <Button onClick={onDeselectAll}>{tAudit('gallery.deselectAll')}</Button>
+        <input type="checkbox" aria-label={currentPhoto.filename} checked={selectedPhotos.has(currentPhoto.id)} onChange={() => onPhotoSelect?.(currentPhoto.id)} />
+      </div>}
       {/* Main Carousel */}
-      <div className="photo-card relative h-[50vh] sm:h-[60vh] lg:h-[70vh] bg-black rounded-lg overflow-hidden">
+      <div onClick={() => { if (isSelectionMode) onPhotoSelect?.(currentPhoto.id); }}
+        className="photo-card relative h-[50vh] sm:h-[60vh] lg:h-[70vh] bg-black rounded-lg overflow-hidden">
         <AuthenticatedImage
           src={currentPhoto.url}
           alt={currentPhoto.filename}
@@ -102,7 +114,7 @@ export const CarouselGalleryLayout: React.FC<BaseGalleryLayoutProps> = ({
         {/* Navigation Controls */}
         <div className="absolute inset-0 flex items-center justify-between p-4">
           <button
-            onClick={goToPrevious}
+            onClick={(event) => { event.stopPropagation(); goToPrevious(); }}
             className="p-2 bg-black/50 text-white rounded-full hover:bg-black/70 transition-colors"
             aria-label={tAudit("ui.previousPhoto")}
           >
@@ -110,7 +122,7 @@ export const CarouselGalleryLayout: React.FC<BaseGalleryLayoutProps> = ({
           </button>
 
           <button
-            onClick={goToNext}
+            onClick={(event) => { event.stopPropagation(); goToNext(); }}
             className="p-2 bg-black/50 text-white rounded-full hover:bg-black/70 transition-colors"
             aria-label={tAudit("ui.nextPhoto")}
           >
@@ -135,7 +147,7 @@ export const CarouselGalleryLayout: React.FC<BaseGalleryLayoutProps> = ({
             <Button
               variant="ghost"
               size="sm"
-              onClick={togglePlayPause}
+              onClick={(event) => { event.stopPropagation(); togglePlayPause(); }}
               className="text-white hover:bg-white/20"
               title={isPlaying ? tAudit('ui.pauseSlideshow') : tAudit('ui.playSlideshow')}
             >
@@ -145,14 +157,14 @@ export const CarouselGalleryLayout: React.FC<BaseGalleryLayoutProps> = ({
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => onPhotoClick(currentIndex)}
+              onClick={(event) => { event.stopPropagation(); if (isSelectionMode) onPhotoSelect?.(currentPhoto.id); else onPhotoClick(currentIndex); }}
               className="text-white hover:bg-white/20"
               title={tAudit("ui.viewFullscreen")}
             >
               <Maximize2 className="w-5 h-5" />
             </Button>
 
-            {allowDownloads && (
+            {allowDownloads && currentPhoto.category_allow_downloads !== false && !isSelectionMode && (
               <Button
                 variant="ghost"
                 size="sm"
@@ -163,7 +175,7 @@ export const CarouselGalleryLayout: React.FC<BaseGalleryLayoutProps> = ({
                 <Download className="w-5 h-5" />
               </Button>
             )}
-            {feedbackEnabled && feedbackOptions?.allowLikes && (
+            {!isSelectionMode && feedbackEnabled && feedbackOptions?.allowLikes && (
               <Button
                 variant="ghost"
                 size="sm"
@@ -209,7 +221,7 @@ export const CarouselGalleryLayout: React.FC<BaseGalleryLayoutProps> = ({
                 <Heart className="w-5 h-5" />
               </Button>
             )}
-            {canQuickComment && (
+            {!isSelectionMode && canQuickComment && (
               <Button
                 variant="ghost"
                 size="sm"
@@ -245,7 +257,9 @@ export const CarouselGalleryLayout: React.FC<BaseGalleryLayoutProps> = ({
             {photos.map((photo, index) => (
               <button
                 key={photo.id}
-                onClick={() => setCurrentIndex(index)}
+                onClick={() => { if (isSelectionMode) onPhotoSelect?.(photo.id); else setCurrentIndex(index); }}
+                aria-label={photo.filename}
+                aria-pressed={isSelectionMode ? selectedPhotos.has(photo.id) : index === currentIndex}
                 className={`relative flex-shrink-0 w-20 h-20 rounded overflow-hidden transition-all ${
                   index === currentIndex
                     ? 'ring-2 ring-primary-600 scale-110'
@@ -259,6 +273,7 @@ export const CarouselGalleryLayout: React.FC<BaseGalleryLayoutProps> = ({
                   loading="lazy"
                   isGallery={true}
                 />
+                {isSelectionMode && <span className="absolute bottom-1 right-1 bg-white text-black rounded px-1" aria-hidden="true">{selectedPhotos.has(photo.id) ? '✓' : '□'}</span>}
                 {/* The strip is the only place this layout shows more than one
                     photo at a time, so it is the only place a label can
                     actually be scanned (#1189). Small variant: these tiles are

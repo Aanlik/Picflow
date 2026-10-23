@@ -230,10 +230,14 @@ class Engine:
                                 # have been migrated. Keep those picks intact
                                 # during that one-time compatibility window.
                                 photo.selected = (item.get("color_label") == "green") if retouch_selected is None else bool(retouch_selected)
-                                if photo.selected and not was_selected and project.last_sync is not None and project.stage in {"EDITING", "DELIVERED"}:
-                                    # A deleted retouch is treated as a fresh
-                                    # additional selection if the client picks it again,
-                                    # including a new task after a retained delivery.
+                                withdrawal = s.scalar(select(Withdrawal).where(Withdrawal.photo_pk == photo.id))
+                                deleted_delivery = bool(withdrawal and withdrawal.state == "SUCCESS" and withdrawal.delete_delivered)
+                                if photo.selected and not was_selected and not photo.delivery_hash and (
+                                    deleted_delivery or (project.last_sync is not None and project.stage in {"EDITING", "DELIVERED"})
+                                ):
+                                    # Reselecting a deleted delivery is additional even
+                                    # after the photographer rolled the project back.
+                                    # A retained delivery remains delivered instead.
                                     photo.added_during_editing = True
                                 elif photo.selected and photo.delivery_hash and not photo.added_during_editing:
                                     # Keeping the existing selection remains a
@@ -555,7 +559,10 @@ class Engine:
                     photo.added_during_editing = False
                     photo.cancelled = False
                 else:
-                    photo.cancelled = True
+                    # Explicit withdrawal finishes in the unselected pool;
+                    # cancelled is reserved for protected in-flight work.
+                    photo.cancelled = False
+                    photo.added_during_editing = False
                 self._remove_selected_raw(cfg, photo)
                 photo.selected, photo.error = False, None
                 task.state, task.error, task.updated = "SUCCESS", None, now()

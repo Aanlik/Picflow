@@ -64,3 +64,11 @@ describe('role permission translations', () => {
     expect(screen.queryByText('Manage Something')).toBeNull();
   });
 });
+
+it('preserves a custom description on a built-in role', () => {
+  render(<RoleEditorModal isOpen mode="edit"
+    role={{ id: 1, name: 'viewer', displayName: 'Viewer', description: '自定义查看范围', isSystem: true, priority: 1, permissions: [], userCount: 0 }}
+    catalog={[]} isLoading={false} onClose={() => {}} onSave={() => {}} />);
+  expect(screen.getByDisplayValue('自定义查看范围')).toBeTruthy();
+  expect(screen.queryByDisplayValue('只读查看概览和项目。')).toBeNull();
+});

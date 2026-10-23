@@ -1,3 +1,4 @@
+const { replayRestoreAudit, replayBackupHistory } = require('./restoreAuditHistory');
 const workflowBackup = require('./workflowBackup');
 const fs = require('fs').promises;
 const path = require('path');
@@ -347,6 +348,8 @@ class RestoreService {
     this.preservedMetaSnapshot = [];  // reset per run
     const startTime = new Date();
     let restoreRun = null;
+    let auditBeforeRestore = [];
+    let backupsBeforeRestore = [];
     let workflowCheckpoint = null;
     let workflowCompleted = false;
     let completedResponse = null;
@@ -507,6 +510,8 @@ class RestoreService {
       // Once database replacement begins, resuming Bridge requires either
       // a complete joint restore or a complete joint rollback.
       if (workflowCheckpoint) workflowRecoverySafe = false;
+      auditBeforeRestore = await db('restore_runs').select('*');
+      backupsBeforeRestore = await db('backup_runs').select('*');
       // Step 6: Perform the actual restore based on type
       let restoreResult;
       switch (options.restoreType) {
@@ -672,8 +677,11 @@ class RestoreService {
       const endTime = new Date();
       const durationSeconds = Math.round((endTime - startTime) / 1000);
 
+      // Database replacement can remove this operation or reuse its old ID.
+      await replayBackupHistory(db, backupsBeforeRestore);
+      restoreRun.id = await replayRestoreAudit(db, auditBeforeRestore, restoreRun.id);
       // Update restore run record
-      await db('restore_runs').where('id', runId).update({
+      await db('restore_runs').where('id', restoreRun.id).update({
         completed_at: endTime,
         status: 'completed',
         // Default for the column is `false`. Without this line, every
@@ -686,6 +694,7 @@ class RestoreService {
         // PR #596 review note about the cosmetic.
         was_successful: true,
         duration_seconds: durationSeconds,
+        restore_log: JSON.stringify(this.restoreLog),
         pre_restore_backup_path: this.preRestoreBackupPath,
         statistics: JSON.stringify({
           ...restoreResult,
@@ -763,6 +772,10 @@ class RestoreService {
       //   - rollback failed   → partial state, admin must inspect before next attempt
       //   - rollback skipped  → user opted out via skipPreBackup; same as above
       if (restoreRun) {
+        if (auditBeforeRestore.length) {
+          await replayBackupHistory(db, backupsBeforeRestore);
+          restoreRun.id = await replayRestoreAudit(db, auditBeforeRestore, restoreRun.id);
+        }
         let failureMessage = rollbackAttempted
           ? (rollbackSucceeded
             ? `${error.message} (rolled back successfully to pre-restore state)`
@@ -953,14 +966,14 @@ class RestoreService {
 
       // File-only restores do not replace administrator identities.
       if (options.restoreType === 'full' || options.restoreType === 'database') {
-      const activeUsers = await db('admin_users')
-        .where('is_active', formatBoolean(true))
-        .count('* as count')
-        .first();
-      const activeUsersN = Number(activeUsers?.count || 0);
-      if (activeUsersN > 0) {
-        validation.warnings.push(`There are ${activeUsersN} active admin users`);
-      }
+        const activeUsers = await db('admin_users')
+          .where('is_active', formatBoolean(true))
+          .count('* as count')
+          .first();
+        const activeUsersN = Number(activeUsers?.count || 0);
+        if (activeUsersN > 0) {
+          validation.warnings.push(`There are ${activeUsersN} active admin users`);
+        }
       }
 
     } catch (error) {

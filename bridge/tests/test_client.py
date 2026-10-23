@@ -68,3 +68,15 @@ async def test_lost_upload_is_uncertain_and_not_retried(tmp_path):
     assert e.value.uncertain
     assert len(calls) == 1
     await client.close()
+
+async def test_corrupt_replacement_is_a_known_failure_with_actionable_message(tmp_path):
+    file = tmp_path / "broken.jpg"
+    file.write_bytes(b"not an image")
+    client = Picflow("http://127.0.0.1:3000", httpx.MockTransport(
+        lambda _: httpx.Response(422, json={"code": "INVALID_IMAGE_CONTENT"})))
+    with pytest.raises(ApiError) as error:
+        await client.replace(1, 3, file, "broken.jpg")
+    assert error.value.status == 422
+    assert not error.value.uncertain
+    assert "重新导出" in str(error.value)
+    await client.close()

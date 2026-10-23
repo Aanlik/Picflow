@@ -337,8 +337,9 @@ export const GalleryPremiumLayout: React.FC<GalleryPremiumLayoutProps> = ({
     setLightboxColorLabel(label && ['red', 'yellow', 'green', 'blue', 'purple'].includes(label)
       ? label as ColorLabel
       : null);
-    setShowFeedbackPanel(false);
   }, [currentLightboxPhotoId, currentLightboxPhoto?.my_color_label]);
+
+  useEffect(() => { setShowFeedbackPanel(false); }, [currentLightboxPhotoId]);
 
   // Get hero photo
   const heroPhoto = heroPhotoOverride || photos[0];
@@ -447,7 +448,7 @@ export const GalleryPremiumLayout: React.FC<GalleryPremiumLayoutProps> = ({
     const photo = slide.photoId != null
       ? filteredPhotos.find(p => p.id === slide.photoId)
       : filteredPhotos.find(p => p.url === slide.src);
-    if (photo) {
+    if (photo && photo.category_allow_downloads !== false) {
       downloadPhotoMutation.mutate({
         slug,
         photoId: photo.id,
@@ -599,7 +600,7 @@ export const GalleryPremiumLayout: React.FC<GalleryPremiumLayoutProps> = ({
                   photo={originalPhoto}
                   width={width}
                   height={height}
-                  onClick={() => setLightboxIndex(photoIndex)}
+                  onClick={() => isSelectionMode ? onPhotoSelect?.(originalPhoto.id) : setLightboxIndex(photoIndex)}
                   onLike={(e) => handleLike(originalPhoto, e)}
                   onDownload={(e) => onDownload(originalPhoto, e)}
                   onSelect={(e) => {
@@ -633,6 +634,17 @@ export const GalleryPremiumLayout: React.FC<GalleryPremiumLayoutProps> = ({
 
       {/* Lightbox */}
       <Lightbox
+        labels={{
+          Close: t('common.close'),
+          Previous: t('ui.previousPhoto'),
+          Next: t('ui.nextPhoto'),
+          Download: t('ui.downloadPhoto'),
+          'Zoom in': t('ui.zoomIn'),
+          'Zoom out': t('ui.zoomOut'),
+          'Enter Fullscreen': t('ui.viewFullscreen'),
+          'Exit Fullscreen': t('common.close'),
+          'Photo gallery': t('ui.viewFullSize'),
+        }}
         open={lightboxIndex >= 0}
         close={() => setLightboxIndex(-1)}
         index={lightboxIndex}
@@ -648,7 +660,7 @@ export const GalleryPremiumLayout: React.FC<GalleryPremiumLayoutProps> = ({
           Thumbnails,
           Zoom,
           Fullscreen,
-          ...(allowDownloads ? [Download] : []),
+          ...(allowDownloads && currentLightboxPhoto?.category_allow_downloads !== false ? [Download] : []),
           ...(showOriginalFilename ? [Captions] : []),
         ]}
         animation={{ fade: 300, swipe: 250 }}

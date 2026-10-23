@@ -169,10 +169,16 @@ async function replacePhoto(existingPhoto, newFileTempPath, { originalFilename, 
       // metadata alone accepts truncated images; derivative errors must not turn
       // an unreadable replacement into a successful delivery.
       const image = sharp(proc.path, { failOn: 'warning' });
-      const metadata = await image.metadata();
-      await image.stats();
+      let metadata;
+      try {
+        metadata = await image.metadata();
+        await image.stats();
+      } catch (error) {
+        error.code = 'INVALID_IMAGE_CONTENT';
+        throw error;
+      }
       ({ width, height } = require('./imageProcessor').orientedDimensions(metadata));
-      if (!width || !height) throw new Error('精修文件不是有效图片');
+      if (!width || !height) throw Object.assign(new Error('精修文件不是有效图片'), { code: 'INVALID_IMAGE_CONTENT' });
       try {
         thumbnailPath = await generateThumbnail(proc.path, { outputBasename: proc.outputBasename });
       } catch {
@@ -288,7 +294,7 @@ async function replacePhoto(existingPhoto, newFileTempPath, { originalFilename, 
   } catch (err) {
     if (newKey && !committed) await getStorage().delete(newKey).catch(() => {});
     logger.error('replacePhoto error', { photoId: existingPhoto.id, error: err.message });
-    return { success: false, error: err.message };
+    return { success: false, error: err.message, code: err.code };
   }
 }
 

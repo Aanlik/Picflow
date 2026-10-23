@@ -14,6 +14,8 @@ import { useMutationWithToast } from '../../hooks';
 export const BrandingPage: React.FC = () => {
   const { t: tAudit } = useTranslation();
   const { t } = useTranslation();
+  const assetPending = useRef({ light: false, dark: false });
+  const [assetBusy, setAssetBusy] = useState({ light: false, dark: false });
   const { theme, setTheme } = useTheme();
   const [brandingSettings, setBrandingSettings] = useState<BrandingSettings>({
     company_name: '',
@@ -200,7 +202,9 @@ export const BrandingPage: React.FC = () => {
 
   const handleLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
+    if (file && !assetPending.current.light) {
+      assetPending.current.light = true;
+      setAssetBusy(prev => ({ ...prev, light: true }));
       try {
         const logoUrl = await settingsService.uploadLogo(file);
         setBrandingSettings(prev => ({ ...prev, logo_url: logoUrl }));
@@ -215,11 +219,15 @@ export const BrandingPage: React.FC = () => {
       } catch (error) {
         console.error('Failed to upload logo:', error);
         toast.error(t('toast.uploadError'));
+      } finally {
+        assetPending.current.light = false;
+        setAssetBusy(prev => ({ ...prev, light: false }));
       }
     }
   };
 
   const handleRemoveLogo = () => {
+    if (assetPending.current.light) return;
     setBrandingSettings(prev => ({ ...prev, logo_url: '' }));
     setCurrentTheme(prev => {
       const updated = { ...prev, logoUrl: '' };
@@ -248,7 +256,9 @@ export const BrandingPage: React.FC = () => {
 
   const handleDarkLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file) return;
+    if (!file || assetPending.current.dark) return;
+    assetPending.current.dark = true;
+    setAssetBusy(prev => ({ ...prev, dark: true }));
     try {
       const url = await settingsService.uploadLogo(file, 'dark');
       setLogoDarkUrl(url);
@@ -257,10 +267,16 @@ export const BrandingPage: React.FC = () => {
     } catch (error) {
       console.error('Failed to upload dark logo:', error);
       toast.error(t('toast.uploadError'));
+    } finally {
+      assetPending.current.dark = false;
+      setAssetBusy(prev => ({ ...prev, dark: false }));
     }
   };
 
   const handleRemoveDarkLogo = async () => {
+    if (assetPending.current.dark) return;
+    assetPending.current.dark = true;
+    setAssetBusy(prev => ({ ...prev, dark: true }));
     try {
       await settingsService.removeLogo('dark');
       setLogoDarkUrl('');
@@ -268,6 +284,9 @@ export const BrandingPage: React.FC = () => {
     } catch (error) {
       console.error('Failed to remove dark logo:', error);
       toast.error(t('toast.saveError'));
+    } finally {
+      assetPending.current.dark = false;
+      setAssetBusy(prev => ({ ...prev, dark: false }));
     }
   };
 
@@ -286,6 +305,7 @@ export const BrandingPage: React.FC = () => {
   };
 
   const handleSave = async () => {
+    if (assetPending.current.light || assetPending.current.dark) return;
     try {
       // Sync logo URL from theme to branding settings, but never let an
       // undefined/empty theme.logoUrl wipe a logo that is still configured in
@@ -382,6 +402,7 @@ export const BrandingPage: React.FC = () => {
             <Button
               variant="primary"
               leftIcon={<Save className="w-4 h-4" />}
+              disabled={assetBusy.light || assetBusy.dark}
               onClick={handleSave}
             >
               {t('branding.saveChanges')}
@@ -648,6 +669,7 @@ export const BrandingPage: React.FC = () => {
                       />
                       <button
                         type="button"
+                        disabled={assetBusy.light}
                         onClick={handleRemoveLogo}
                         className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full w-6 h-6 flex items-center justify-center hover:bg-red-600"
                       >
@@ -659,6 +681,7 @@ export const BrandingPage: React.FC = () => {
                     <input
                       type="file"
                       accept="image/png,image/jpeg,image/svg+xml"
+                      disabled={assetBusy.light}
                       onChange={handleLogoUpload}
                       className="hidden"
                       id="logo-upload"
@@ -666,6 +689,8 @@ export const BrandingPage: React.FC = () => {
                     <Button
                       variant="secondary"
                       size="sm"
+                      disabled={assetBusy.light}
+                      isLoading={assetBusy.light}
                       onClick={() => document.getElementById('logo-upload')?.click()}
                       leftIcon={<Upload className="w-4 h-4" />}
                     >
@@ -692,6 +717,7 @@ export const BrandingPage: React.FC = () => {
                       />
                       <button
                         type="button"
+                        disabled={assetBusy.dark}
                         onClick={handleRemoveDarkLogo}
                         className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full w-6 h-6 flex items-center justify-center hover:bg-red-600"
                       >
@@ -703,6 +729,7 @@ export const BrandingPage: React.FC = () => {
                     <input
                       type="file"
                       accept="image/png,image/jpeg,image/svg+xml"
+                      disabled={assetBusy.dark}
                       onChange={handleDarkLogoUpload}
                       className="hidden"
                       id="logo-dark-upload"
@@ -710,6 +737,8 @@ export const BrandingPage: React.FC = () => {
                     <Button
                       variant="secondary"
                       size="sm"
+                      disabled={assetBusy.dark}
+                      isLoading={assetBusy.dark}
                       onClick={() => document.getElementById('logo-dark-upload')?.click()}
                       leftIcon={<Upload className="w-4 h-4" />}
                     >

@@ -49,7 +49,7 @@ export const EventCategoryManager: React.FC<EventCategoryManagerProps> = ({ even
   const createMutation = useMutationWithToast({
     mutationFn: ({ name, slug }: { name: string; slug: string }) =>
       categoriesService.createCategory({ name, slug, is_global: false, event_id: eventId }),
-    invalidateKeys: [['event-categories', eventId]],
+    invalidateKeys: [['event-categories', eventId], ['admin-event-categories', String(eventId)]],
     successMessage: t('categories.categoryCreatedSuccess'),
     onSuccess: () => {
       setNewCategoryName('');
@@ -64,7 +64,7 @@ export const EventCategoryManager: React.FC<EventCategoryManagerProps> = ({ even
   // Delete category mutation
   const deleteMutation = useMutationWithToast({
     mutationFn: categoriesService.deleteCategory,
-    invalidateKeys: [['event-categories', eventId]],
+    invalidateKeys: [['event-categories', eventId], ['admin-event-categories', String(eventId)]],
     successMessage: t('categories.categoryDeletedSuccess'),
     errorMessage: (error: any) => error?.response?.data?.code === 'CATEGORY_HAS_PHOTOS'
       ? t('categories.hasPhotos') : t('categories.failedToDeleteCategory'),
@@ -74,7 +74,7 @@ export const EventCategoryManager: React.FC<EventCategoryManagerProps> = ({ even
   const heroMutation = useMutationWithToast({
     mutationFn: ({ categoryId, photoId }: { categoryId: number; photoId: number | null }) =>
       categoriesService.setCategoryHeroPhoto(categoryId, photoId),
-    invalidateKeys: [['event-categories', eventId]],
+    invalidateKeys: [['event-categories', eventId], ['admin-event-categories', String(eventId)]],
     successMessage: (_data, variables) =>
       variables.photoId ? t('categories.coverPhotoSet') : t('categories.coverPhotoRemoved'),
     onSuccess: () => {
@@ -87,7 +87,7 @@ export const EventCategoryManager: React.FC<EventCategoryManagerProps> = ({ even
   const downloadToggleMutation = useMutationWithToast({
     mutationFn: ({ category, allow }: { category: PhotoCategory; allow: boolean }) =>
       categoriesService.updateCategory(category.id, category.name, { allow_downloads: allow }),
-    invalidateKeys: [['event-categories', eventId]],
+    invalidateKeys: [['event-categories', eventId], ['admin-event-categories', String(eventId)]],
     successMessage: (_data, variables) =>
       variables.allow
         ? t('categories.downloadsEnabled', 'Downloads enabled for this category')
@@ -117,14 +117,14 @@ export const EventCategoryManager: React.FC<EventCategoryManagerProps> = ({ even
   // convention (no drag-and-drop dependency).
   const reorderMutation = useMutationWithToast({
     mutationFn: (orderedIds: number[]) => categoriesService.reorderCategories(eventId, orderedIds),
-    invalidateKeys: [['event-categories', eventId]],
+    invalidateKeys: [['event-categories', eventId], ['admin-event-categories', String(eventId)]],
     errorMessage: t('categories.failedToReorder', 'Failed to update category order'),
   });
 
   // Revert this gallery to the global default order.
   const resetMutation = useMutationWithToast({
     mutationFn: () => categoriesService.resetEventOrder(eventId),
-    invalidateKeys: [['event-categories', eventId]],
+    invalidateKeys: [['event-categories', eventId], ['admin-event-categories', String(eventId)]],
     successMessage: t('categories.orderReset', 'Reverted to the default order'),
     errorMessage: t('categories.failedToReorder', 'Failed to update category order'),
   });

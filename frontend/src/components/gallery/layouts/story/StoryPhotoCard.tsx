@@ -15,6 +15,7 @@ interface StoryPhotoCardProps {
   onToggleFavorite: (id: number) => void;
   onClick?: () => void;
   slug: string;
+  allowLikes?: boolean;
   allowDownloads?: boolean;
   useEnhancedProtection?: boolean;
   featured?: boolean;
@@ -25,6 +26,7 @@ interface StoryPhotoCardProps {
 }
 
 export const StoryPhotoCard: React.FC<StoryPhotoCardProps> = ({
+  allowLikes = true,
   photo,
   index,
   isFavorite,
@@ -145,7 +147,7 @@ export const StoryPhotoCard: React.FC<StoryPhotoCardProps> = ({
       <div className="story-photo-card-overlay" />
 
       {/* Actions */}
-      <div className="story-photo-card-actions" style={{ top: 'auto', bottom: '1rem' }}>
+      {allowLikes && <div className="story-photo-card-actions" style={{ top: 'auto', bottom: '1rem' }}>
         <button
           type="button"
           onClick={(e) => {
@@ -159,7 +161,7 @@ export const StoryPhotoCard: React.FC<StoryPhotoCardProps> = ({
         >
           <Heart size={18} fill={isFavorite ? 'currentColor' : 'none'} />
         </button>
-      </div>
+      </div>}
 
       {/* Caption */}
       <div className="story-photo-card-caption">

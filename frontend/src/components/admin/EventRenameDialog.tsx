@@ -52,14 +52,18 @@ export const EventRenameDialog: React.FC<EventRenameDialogProps> = ({
     error?: string;
   } | null>(null);
 
-  // Reset state when dialog opens
+  const wasOpen = useRef(false);
+
+  // Parent refetches may change eventName after a successful rename.
+  // Reset only on an opening transition, never during this dialog session.
   useEffect(() => {
-    if (isOpen) {
+    if (isOpen && !wasOpen.current) {
       setNewName(eventName);
       setValidationResult(null);
       setRenameStatus(null);
       setRenameResult(null);
     }
+    wasOpen.current = isOpen;
   }, [isOpen, eventName]);
 
   // Debounced validation

@@ -674,7 +674,7 @@
     "requirePasswordToggle": "Require password for this gallery",
     "requirePasswordToggleHelp": "Disable this if you want to share the gallery without a password. Anyone with the link will be able to view the photos.",
     "publicGalleryWarning": "Public galleries are accessible to anyone with the link. Consider enabling download watermarks and monitoring activity.",
-    "passwordHelperText": "You can use dates like \"04.07.2025\" or any text with 6+ characters",
+    "passwordHelperText": "Password length and complexity must meet the site security policy.",
     "confirmPassword": "Confirm Password",
     "newPasswordLabel": "New Gallery Password",
     "passwordReset": {
@@ -683,7 +683,7 @@
       "description": "Set a new password for {{eventName}}, or leave both fields empty to have one auto-generated.",
       "newPasswordLabel": "New password",
       "placeholder": "Leave empty to auto-generate",
-      "helperText": "Use 6+ characters, or leave blank to auto-generate",
+      "helperText": "Meet the site password policy, or leave blank to auto-generate.",
       "confirmLabel": "Confirm password",
       "warning": "Note: The old password will no longer work. Make sure to share the new password with the host.",
       "submit": "Reset Password",
@@ -2863,7 +2863,13 @@
       },
       "validationFailed": "Validation failed",
       "started": "Restore started successfully",
-      "startFailed": "Failed to start restore"
+      "startFailed": "Failed to start restore",
+      "riskWarnings": {
+        "oldBackup": "This backup is {{days}} days old.",
+        "versionMismatch": "Backup version {{backup}} differs from current version {{current}}.",
+        "overwriteProjects": "{{count}} existing projects will be overwritten.",
+        "activeAdmins": "The database contains {{count}} active administrator accounts."
+      }
     },
     "messages": {
       "backupStarted": "Backup started successfully",

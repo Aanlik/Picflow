@@ -74,6 +74,8 @@ export interface Event {
   // link minted on demand; null token = disabled. Settings drive the running
   // projector and can be changed live.
   show_share_token?: string | null;
+  show_order?: 'chronological' | 'random';
+  show_category_id?: number | null;
   show_interval_ms?: number;
   show_transition?: 'crossfade' | 'cut' | 'slide' | 'kenburns' | 'dipwhite' | 'dipblack';
   show_transition_ms?: number;

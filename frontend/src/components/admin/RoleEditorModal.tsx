@@ -1,3 +1,4 @@
+import { roleDescriptionIsDefault } from '../../utils/roleDescription';
 import React, { useMemo, useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { X, Shield, Lock, Save } from 'lucide-react';
@@ -39,7 +40,7 @@ export const RoleEditorModal: React.FC<RoleEditorModalProps> = ({
   const localizedSystemRoleName = mode === 'edit' && role?.isSystem
     ? t(`users.roles.${role.name}`, { defaultValue: role.displayName })
     : undefined;
-  const localizedSystemRoleDescription = mode === 'edit' && role?.isSystem
+  const localizedSystemRoleDescription = mode === 'edit' && role && roleDescriptionIsDefault(role)
     ? t(`users.roleDescriptions.${role.name}`, { defaultValue: role.description || t('users.noRoleDescription') })
     : undefined;
 
