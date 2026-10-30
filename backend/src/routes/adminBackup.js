@@ -1,0 +1,2078 @@
+const express = require('express');
+const { db } = require('../database/db');
+const { adminAuth } = require('../middleware/auth');
+const { requirePermission, requireSuperAdmin, isSuperAdminUser } = require('../middleware/permissions');
+const { clearAdminAuthCookie } = require('../utils/tokenUtils');
+const { revokeToken } = require('../utils/tokenRevocation');
+const { triggerManualBackup, getBackupStatus, cleanupOldBackupRuns, getBackupManifest, validateBackupManifest } = require('../services/backupService');
+const logger = require('../utils/logger');
+const { errorResponse, getPagination } = require('../utils/routeHelpers');
+const { formatBytes } = require('../utils/formatBytes');
+const fs = require('fs').promises;
+const path = require('path');
+const crypto = require('crypto');
+const { Readable } = require('stream');
+const archiver = require('archiver');
+const S3StorageAdapter = require('../services/storage/s3Storage');
+const { resolveBackupTarget } = require('../services/sharedBackupTarget');
+const { getObjectStorageConfig, isConfigured: isObjectStorageConfigured } = require('../services/objectDeliveryService');
+const { findWriteBlocker, localDestinationHint } = require('../utils/localBackupDestination');
+const {
+  APPROVAL_SETTING: S3_APPROVAL_SETTING,
+  backupS3Access,
+  backupS3Ssl,
+  classifyS3Endpoint,
+  endpointOrigin,
+  isPrivateEndpointApproved,
+  policyApplies: s3PolicyApplies,
+} = require('../utils/s3EndpointPolicy');
+
+const router = express.Router();
+
+// Where backups are sent, and whether they carry the database, decides who
+// ends up with a full copy of this instance. backup.create is held by the
+// built-in admin role, so changing those settings is limited to super_admin.
+// Schedule, retention and which files to include stay on backup.create.
+const DESTINATION_SETTING_RE = /^backup_(destination_|s3_|rsync_)/;
+const DATABASE_SETTING_KEYS = new Set(['backup_include_database', 'backup_database_inline_dump']);
+const SECRET_MASK = '••••••••';
+
+// backup_rsync_ssh_key is the PATH of a private key file: buildRsyncArgs
+// hands it to `ssh -i`. The form used to ask for the key itself, so some
+// installs hold a pasted private key here instead; that value stays masked
+// and is refused on save. Same charset and length as validateRsyncParam.
+const isSshKeyPath = (value) => typeof value === 'string'
+  && value.length <= 1024
+  && /^\/[a-zA-Z0-9._/@:-]+$/.test(value);
+
+// Read like backupService.normalizeBoolean, which decides what a backup
+// actually does: booleans as they are, 'true'/'false' strings, and anything
+// else by truthiness.
+function readBackupBoolean(value) {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    const trimmed = value.trim().toLowerCase();
+    if (trimmed === 'true') return true;
+    if (trimmed === 'false') return false;
+  }
+  return Boolean(value);
+}
+
+function backupS3AdapterCompatibility(config) {
+  // Preserve the historical custom-endpoint path-style default for manually
+  // entered S3 settings. When sharing Settings > Object Storage, honor that
+  // target's exact forcePathStyle choice (notably for COS providers).
+  return { autoPathStyleForCustomEndpoint: !readBackupBoolean(config?.backup_s3_use_object_storage) };
+}
+
+function comparableBackupSetting(key, value) {
+  if (key === 'backup_include_database') return readBackupBoolean(value);
+  if (key === 'backup_database_inline_dump') {
+    // The inline dump stays on unless it was explicitly turned off.
+    return value === undefined || value === null ? true : readBackupBoolean(value);
+  }
+  if (value === undefined || value === null) return '';
+  return String(value).trim();
+}
+
+/** The destination and database-inclusion keys this update would change. */
+async function changedRestrictedBackupSettings(updates) {
+  const keys = Object.keys(updates || {}).filter((key) => (
+    (DESTINATION_SETTING_RE.test(key) || DATABASE_SETTING_KEYS.has(key)) && updates[key] !== SECRET_MASK
+  ));
+  if (keys.length === 0) return [];
+  const rows = await db('app_settings')
+    .where('setting_type', 'backup')
+    .whereIn('setting_key', keys)
+    .select('setting_key', 'setting_value');
+  const stored = new Map(rows.map((row) => {
+    try {
+      return [row.setting_key, JSON.parse(row.setting_value)];
+    } catch {
+      return [row.setting_key, row.setting_value];
+    }
+  }));
+  return keys.filter((key) => comparableBackupSetting(key, updates[key]) !== comparableBackupSetting(key, stored.get(key)));
+}
+
+const S3_ERROR_MESSAGES = {
+  S3_PRIVATE_ENDPOINT: 'S3 endpoint resolves to a private or internal network address. A Super Admin must approve this exact endpoint before it can be used.',
+  S3_ENDPOINT_FORBIDDEN: 'S3 endpoint resolves to a link-local, metadata or reserved address, which can never be approved',
+  S3_ENDPOINT_UNRESOLVED: 'S3 endpoint hostname could not be resolved',
+  S3_ENDPOINT_INVALID: 'S3 endpoint is not a valid URL',
+  S3_APPROVAL_MISMATCH: 'The approval does not match the configured S3 endpoint',
+};
+
+const s3ErrorBody = (code, origin) => ({
+  error: S3_ERROR_MESSAGES[code] || 'S3 endpoint is not permitted',
+  code,
+  severity: code === 'S3_PRIVATE_ENDPOINT' ? 'warning' : 'error',
+  ...(origin && { origin }),
+  ...(code === 'S3_PRIVATE_ENDPOINT' && { requiresApproval: true }),
+});
+
+function parseS3ManifestUri(value) {
+  const match = String(value || '').match(/^s3:\/\/([^/]+)\/(.+)$/);
+  return match ? { bucket: match[1], key: match[2] } : null;
+}
+
+function s3RunPrefixFromManifestKey(key) {
+  const marker = '/manifests/';
+  const markerIndex = key.lastIndexOf(marker);
+  return markerIndex >= 0 ? key.slice(0, markerIndex) : path.posix.dirname(key);
+}
+
+function normalizeS3ObjectKey(value) {
+  const key = String(value || '').replace(/\\/g, '/');
+  if (!key || key.startsWith('/') || key.split('/').some((part) => !part || part === '.' || part === '..')) return null;
+  return path.posix.normalize(key);
+}
+
+function parseRetentionDays(value, defaultValue = 30) {
+  if (value === undefined || value === null || value === '') return defaultValue;
+  const days = Number(value);
+  return Number.isInteger(days) && days >= 1 && days <= 3650 ? days : null;
+}
+
+async function listAllS3Objects(adapter, prefix) {
+  const objects = [];
+  let continuationToken;
+  do {
+    const page = await adapter.list(prefix, { maxKeys: 1000, continuationToken });
+    objects.push(...(page.Contents || []));
+    continuationToken = page.IsTruncated ? page.NextContinuationToken : null;
+  } while (continuationToken);
+  return objects;
+}
+
+async function hasSurvivingS3Child(restorePoint, retainedRuns, loadManifest) {
+  for (const run of retainedRuns) {
+    // Some older schemas stored the parent database row id directly.
+    if (String(run.parent_backup_id || '') === String(restorePoint.run.id)) return true;
+    if (!parseS3ManifestUri(run.manifest_path)) continue;
+    const loaded = await loadManifest(run.id);
+    const parentId = loaded?.manifest?.incremental?.parent_backup_id
+      || loaded?.manifest?.backup?.parent_backup_id;
+    if (String(parentId || '') === String(restorePoint.manifest?.backup?.id || '')) return true;
+  }
+  return false;
+}
+
+/**
+ * Remove S3 restore-point indexes before their payloads. The object store and
+ * SQL database cannot share a transaction: removing payloads first can leave
+ * a visible, completed restore point whose contents are already gone. Hiding
+ * the row first and restoring it when manifest deletion is confirmed to have
+ * failed keeps the UI from advertising a half-deleted restore point.
+ */
+async function removeS3RestorePointManifests(items, adapter, { deleteRun, restoreRun }) {
+  const removed = [];
+  const failed = [];
+  for (const item of items) {
+    let rowRemoved = false;
+    try {
+      await deleteRun(item.run);
+      rowRemoved = true;
+      let result = null;
+      let deleteError = null;
+      try {
+        result = await adapter.deleteMany([item.manifestKey]);
+      } catch (error) {
+        deleteError = error;
+      }
+      const confirmed = (result?.Deleted || []).some((entry) => entry.Key === item.manifestKey);
+      if (deleteError || result?.Errors?.length || !confirmed) {
+        const exists = await adapter.exists(item.manifestKey).catch(() => null);
+        if (exists !== false) throw deleteError || new Error('S3 did not confirm removal of the restore-point manifest');
+      }
+      removed.push(item);
+    } catch (error) {
+      if (rowRemoved) {
+        try {
+          await restoreRun(item.run);
+        } catch (restoreError) {
+          logger.error('Could not restore S3 restore-point index after manifest cleanup failed', {
+            backupId: item.run.id, error: restoreError.message,
+          });
+          failed.push({ ...item, error: 'Restore-point index could not be restored after cleanup failed' });
+          continue;
+        }
+      }
+      failed.push({ ...item, error: error.message });
+    }
+  }
+  return { removed, failed };
+}
+
+const S3_STATUS_CODES = {
+  approvable: 'S3_PRIVATE_ENDPOINT',
+  forbidden: 'S3_ENDPOINT_FORBIDDEN',
+  unresolved: 'S3_ENDPOINT_UNRESOLVED',
+  invalid: 'S3_ENDPOINT_INVALID',
+};
+
+/**
+ * Vet the S3 endpoint a config update would leave in place. Returns
+ * { error } with a 400 body, or {} — clearing a stored approval when the
+ * endpoint it approved is no longer the configured one.
+ */
+async function checkS3EndpointUpdate(updates) {
+  const touched = ['backup_s3_endpoint', 'backup_s3_ssl_enabled', S3_APPROVAL_SETTING]
+    .some((key) => Object.prototype.hasOwnProperty.call(updates || {}, key) && updates[key] !== SECRET_MASK);
+  if (!touched || !s3PolicyApplies()) return {};
+
+  const effective = { ...(await getStoredBackupConfig()) };
+  for (const [key, value] of Object.entries(updates)) {
+    if (value !== SECRET_MASK) effective[key] = value;
+  }
+  if (!effective.backup_s3_endpoint) return {};
+
+  const sslEnabled = readBackupBoolean(effective.backup_s3_ssl_enabled ?? true);
+  const { status, origin } = await classifyS3Endpoint(effective.backup_s3_endpoint, sslEnabled);
+  const approval = typeof effective[S3_APPROVAL_SETTING] === 'string' ? effective[S3_APPROVAL_SETTING].trim() : '';
+  const approvalSupplied = typeof updates[S3_APPROVAL_SETTING] === 'string' && updates[S3_APPROVAL_SETTING].trim() !== '';
+
+  if (approvalSupplied && updates[S3_APPROVAL_SETTING].trim() !== origin) {
+    return { error: s3ErrorBody('S3_APPROVAL_MISMATCH', origin) };
+  }
+  if (status === 'approvable' && approval === origin) return {};
+  if (status !== 'public') return { error: s3ErrorBody(S3_STATUS_CODES[status], origin) };
+  // A public endpoint needs no approval; drop one left over from an earlier
+  // private endpoint so it cannot silently come back into force.
+  if (approval) updates[S3_APPROVAL_SETTING] = '';
+  return {};
+}
+
+// Get backup configuration
+router.get('/config', adminAuth, requirePermission('backup.view'), async (req, res) => {
+  try {
+    const settings = await db('app_settings')
+      .whereIn('setting_type', ['backup', 'database_backup'])
+      .select('setting_key', 'setting_value');
+
+    const config = {};
+    settings.forEach(setting => {
+      try {
+        config[setting.setting_key] = JSON.parse(setting.setting_value);
+      } catch (e) {
+        config[setting.setting_key] = setting.setting_value;
+      }
+    });
+
+    // Never return the stored credentials — mask like other integration keys
+    // config endpoints do. The PUT below skips the mask sentinel, so the
+    // form round-trips without clobbering the real values.
+    if (config.backup_s3_secret_key) config.backup_s3_secret_key = '••••••••';
+    // A key file path is not a secret and is shown; anything else is a
+    // pasted key and stays masked.
+    if (config.backup_rsync_ssh_key && !isSshKeyPath(config.backup_rsync_ssh_key)) {
+      config.backup_rsync_ssh_key = '••••••••';
+    }
+
+    const objectStorage = await getObjectStorageConfig();
+    res.json({
+      ...config,
+      object_storage_target: {
+        configured: isObjectStorageConfigured(objectStorage),
+        endpoint: objectStorage.endpoint || '',
+        region: objectStorage.region || 'us-east-1',
+        bucket: objectStorage.bucket || '',
+        prefix: objectStorage.prefix || '',
+      },
+    });
+  } catch (error) {
+    errorResponse(res, error, 500, 'Failed to get backup configuration');
+  }
+});
+
+// Update backup configuration
+router.put('/config', adminAuth, requirePermission('backup.create'), async (req, res) => {
+  try {
+    const updates = req.body || {};
+
+    // Real booleans only: a string such as "0" would compare as off here but
+    // read as on when the backup runs.
+    for (const key of DATABASE_SETTING_KEYS) {
+      if (Object.prototype.hasOwnProperty.call(updates || {}, key) && typeof updates[key] !== 'boolean') {
+        return res.status(400).json({ error: `${key} must be true or false` });
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(updates, 'backup_s3_use_object_storage')
+      && typeof updates.backup_s3_use_object_storage !== 'boolean') {
+      return res.status(400).json({ error: 'backup_s3_use_object_storage must be true or false' });
+    }
+
+    const sshKeyUpdate = (updates || {}).backup_rsync_ssh_key;
+    const sshKeyNotPath = (sshKeyUpdate !== undefined && sshKeyUpdate !== null && typeof sshKeyUpdate !== 'string')
+      || (typeof sshKeyUpdate === 'string' && sshKeyUpdate !== SECRET_MASK && sshKeyUpdate.trim() !== ''
+        && !isSshKeyPath(sshKeyUpdate.trim()));
+    if (sshKeyNotPath) {
+      return res.status(400).json({
+        error: 'backup_rsync_ssh_key must be the absolute path to a private key file, not the key itself',
+        code: 'RSYNC_SSH_KEY_NOT_PATH',
+      });
+    }
+    if (typeof sshKeyUpdate === 'string' && sshKeyUpdate !== SECRET_MASK) {
+      updates.backup_rsync_ssh_key = sshKeyUpdate.trim();
+    }
+
+    // Stored trimmed: the database dump reads this setting trimmed
+    // (databaseBackup.js readSettingValue) while the file backup and the
+    // restore use it as stored, so a padded value split one backup across
+    // two directories.
+    if (typeof (updates || {}).backup_destination_path === 'string') {
+      updates.backup_destination_path = updates.backup_destination_path.trim();
+    }
+
+    const restricted = await changedRestrictedBackupSettings(updates);
+    if (restricted.length > 0 && !(await isSuperAdminUser(req.admin && req.admin.id))) {
+      return res.status(403).json({
+        error: 'Only a Super Admin can change where backups are stored or whether they include the database',
+        code: 'SUPER_ADMIN_REQUIRED',
+        fields: restricted,
+      });
+    }
+
+    const storedConfig = await getStoredBackupConfig();
+    const effectiveConfig = { ...storedConfig, ...updates };
+    const usesSharedObjectStorage = readBackupBoolean(effectiveConfig.backup_s3_use_object_storage);
+
+    // Validate the effective S3 target. Existing manual credentials remain
+    // untouched when backups reuse the configured object-storage target.
+    if (effectiveConfig.backup_destination_type) {
+      switch (effectiveConfig.backup_destination_type) {
+      case 'local':
+        if (!updates.backup_destination_path) {
+          return res.status(400).json({ error: 'Local backup requires destination path' });
+        }
+        break;
+      case 'rsync':
+        if (!updates.backup_rsync_host || !updates.backup_rsync_path) {
+          return res.status(400).json({ error: 'Rsync backup requires host and path' });
+        }
+        break;
+      case 's3':
+        if (usesSharedObjectStorage) {
+          try {
+            await resolveBackupTarget(effectiveConfig);
+          } catch (error) {
+            return res.status(error.status || 409).json({ code: error.code || 'OBJECT_STORAGE_NOT_CONFIGURED', error: error.message });
+          }
+        } else if (!effectiveConfig.backup_s3_endpoint || !effectiveConfig.backup_s3_bucket
+          || !effectiveConfig.backup_s3_access_key
+          || (!effectiveConfig.backup_s3_secret_key
+            || effectiveConfig.backup_s3_secret_key === SECRET_MASK)
+            && !(storedConfig.backup_s3_secret_key && updates.backup_s3_secret_key === SECRET_MASK)) {
+          return res.status(400).json({ error: 'S3 backup requires endpoint, bucket, and credentials' });
+        }
+        break;
+      }
+    }
+
+    // Keep restore points discoverable by their existing bucket/prefix. The
+    // current cleaner and browser operate on the configured prefix, so do not
+    // silently strand shared-target backups by changing that namespace or
+    // switching away while they still exist.
+    if (await db.schema.hasTable('backup_runs')
+      && await db.schema.hasColumn('backup_runs', 'object_storage_target_id')) {
+      const sharedRuns = db('backup_runs')
+        .whereNotNull('object_storage_target_id')
+        .where((query) => query.where('status', 'running').orWhereNotNull('manifest_path'));
+      const hasSharedRuns = Boolean(await sharedRuns.first('id'));
+      const disablesSharedTarget = storedConfig.backup_s3_use_object_storage === true
+        && effectiveConfig.backup_s3_use_object_storage !== true;
+      const changesSharedPrefix = Object.prototype.hasOwnProperty.call(updates, 'backup_s3_prefix')
+        && String(updates.backup_s3_prefix || '').trim() !== String(storedConfig.backup_s3_prefix || 'backups').trim();
+      if (hasSharedRuns && (disablesSharedTarget || changesSharedPrefix)) {
+        return res.status(409).json({
+          code: 'BACKUP_OBJECT_STORAGE_TARGET_IN_USE',
+          error: '共享对象存储中仍有备份恢复点。请先清理这些备份，再切换目标或修改备份前缀。',
+        });
+      }
+    }
+
+    // SSRF: validate the S3 endpoint whenever it (or its approval) is
+    // supplied — NOT only when the payload also flips backup_destination_type
+    // to 's3'. The PUT persists every backup_* field independently, so with
+    // S3 already selected a caller could PATCH just backup_s3_endpoint to a
+    // private-resolving host; the management ops (manifest, bucket/file
+    // browse, cleanup, test-upload) then connect without going through
+    // testConnection. Prod-only; dev points at localhost MinIO deliberately.
+    //
+    // A private endpoint is accepted only with a Super Admin's approval of
+    // that exact origin (issue 1641). The approval key matches
+    // DESTINATION_SETTING_RE, so the Super Admin check above already covers
+    // who may set it.
+    const endpointUpdate = usesSharedObjectStorage ? {} : await checkS3EndpointUpdate(updates);
+    if (endpointUpdate.error) {
+      return res.status(400).json(endpointUpdate.error);
+    }
+
+    // Update settings
+    for (const [key, value] of Object.entries(updates)) {
+      // An unchanged secret round-trips as the GET mask sentinel — keep the
+      // stored value instead of overwriting it with bullets.
+      if (value === '••••••••') {
+        continue;
+      }
+      if (key.startsWith('backup_')) {
+        await db('app_settings')
+          .insert({
+            setting_key: key,
+            setting_value: JSON.stringify(value),
+            setting_type: 'backup',
+            updated_at: new Date()
+          })
+          .onConflict('setting_key')
+          .merge({
+            setting_value: JSON.stringify(value),
+            updated_at: new Date()
+          });
+      }
+    }
+
+    // Restart backup service if enabled status changed
+    if ('backup_enabled' in updates) {
+      const { startBackupService, stopBackupService } = require('../services/backupService');
+      if (updates.backup_enabled) {
+        await startBackupService();
+      } else {
+        stopBackupService();
+      }
+    }
+
+    res.json({ success: true, message: 'Backup configuration updated' });
+  } catch (error) {
+    errorResponse(res, error, 500, 'Failed to update backup configuration');
+  }
+});
+
+// Get backup status and history
+router.get('/status', adminAuth, requirePermission('backup.view'), async (req, res) => {
+  try {
+    const pagination = getPagination(req, { limit: 20, maxLimit: 100 });
+    const search = typeof req.query.search === 'string' ? req.query.search.trim().slice(0, 200) : '';
+    const filterStatus = typeof req.query.status === 'string' && ['completed', 'failed', 'running', 'partial'].includes(req.query.status)
+      ? req.query.status
+      : '';
+    const status = await getBackupStatus(10, { ...pagination, search, status: filterStatus, includeHistory: true });
+
+    res.json(status);
+  } catch (error) {
+    errorResponse(res, error, 500, 'Failed to get backup status');
+  }
+});
+
+// Trigger manual backup
+router.post('/run', adminAuth, requirePermission('backup.create'), async (req, res) => {
+  try {
+    // Check if backup is already running
+    const status = await getBackupStatus();
+    if (status.isRunning) {
+      return res.status(409).json({ error: 'Backup is already running' });
+    }
+
+    // Start backup in background
+    triggerManualBackup().catch(error => {
+      logger.error('Manual backup failed:', error);
+    });
+
+    res.json({ success: true, message: 'Backup started' });
+  } catch (error) {
+    errorResponse(res, error, 500, 'Failed to trigger backup');
+  }
+});
+
+// Generate + download a portable ".picpeak" export — an engine-neutral logical
+// snapshot (DB rows as NDJSON + stored assets) that can be re-uploaded to
+// another instance via the web UI. `?includePhotos=true` also bundles original
+// gallery photos (larger); otherwise the admin re-uploads them per gallery.
+//
+// SECURITY: the file contains plaintext secrets (legacy settings, admin password
+// hashes, API keys). The download UI must warn before offering it. We surface
+// the flag as a response header too so the client can double-confirm.
+// Full-instance export dumps every table unredacted — bcrypt password
+// hashes, legacy MFA columns, and integration secrets in cleartext.
+// The built-in `admin` role holds backup.create,
+// but is denied this data everywhere else (config APIs mask secrets as
+// ********). Gate the raw dump behind super_admin (GHSA-pv6w-rj34-wj9v).
+router.get('/picpeak/export', adminAuth, requireSuperAdmin(), async (req, res) => {
+  const fsSync = require('fs');
+  try {
+    const includePhotos = req.query.includePhotos === 'true' || req.query.includePhotos === '1';
+    const { createPicpeak } = require('../services/picpeakExportService');
+    const { filePath } = await createPicpeak({ includePhotos });
+    const filename = path.basename(filePath);
+    res.setHeader('X-Picpeak-Contains-Secrets', 'true');
+    res.download(filePath, filename, (err) => {
+      // Best-effort cleanup of the temp .picpeak (and its temp dir) after send.
+      fsSync.rm(path.dirname(filePath), { recursive: true, force: true }, () => {});
+      if (err) logger.error('[picpeak-export] download failed', { error: err.message });
+    });
+  } catch (error) {
+    logger.error('[picpeak-export] failed to create export', { error: error.message });
+    if (!res.headersSent) res.status(500).json({ error: 'Failed to create .picpeak export' });
+  }
+});
+
+// Multipart upload for .picpeak restore — streamed to a temp file. Runs AFTER
+// auth so an unauthenticated request can't push a large file to disk.
+const os = require('os');
+const multer = require('multer');
+const picpeakUpload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => cb(null, os.tmpdir()),
+    filename: (req, file, cb) => cb(null, `picpeak-upload-${Date.now()}-${crypto.randomBytes(6).toString('hex')}.picpeak`),
+  }),
+  // CVE-2026-82333: this route only ever consumes a single unnamed file
+  // field (`backup`) — no legitimate bracket-indexed field name (e.g.
+  // `a[0]`) exists in its form. fieldArrayIndexLimit: 0 rejects any field
+  // name using array-index syntax at all, closing multer's field-parser DoS.
+  limits: { fileSize: 5 * 1024 * 1024 * 1024, fieldArrayIndexLimit: 0 }, // 5 GB — .picpeak with photos can be large
+});
+
+// Upload + restore a .picpeak onto THIS instance. DESTRUCTIVE: full override of
+// all data except the current logged-in account (the client shows an explicit
+// confirmation before calling this). Returns `usesExternalMedia` so the UI can
+// prompt the admin to reconfigure the external-media mount afterwards.
+//
+// super_admin only: the import replaces admin_users, roles and their
+// permissions from the file, so any lesser role able to run it could bring in
+// a Super Admin account of its own.
+router.post('/picpeak/import', adminAuth, requireSuperAdmin(), picpeakUpload.single('backup'), async (req, res) => {
+  const fsSync = require('fs');
+  if (!req.file) return res.status(400).json({ error: 'No backup file uploaded' });
+  const picpeakPath = req.file.path;
+  try {
+    const { importFromPicpeak } = require('../services/picpeakImportService');
+    // adminAuth populates req.admin, not req.user. Passing req.user.id here
+    // left currentAdminId undefined, so reinjectCurrentAdmin() had no account
+    // to preserve and the admin_users table was fully replaced by the backup —
+    // letting a crafted .picpeak take over every admin account (GHSA-qxfx-4493-4v8f).
+    const result = await importFromPicpeak({ picpeakPath, currentAdminId: req.admin && req.admin.id });
+
+    // The restore rewrote admin_users, so ids may have shifted. importFromPicpeak
+    // already stamped a GLOBAL session cutoff (see setSessionsValidAfter), so
+    // every JWT issued before the restore — admin, customer, gallery — now fails
+    // auth. Here we additionally give the importing admin an immediate, clean
+    // logout: revoke this token and clear the cookie so their browser drops the
+    // session at once rather than on the next 401. Cookie clear is the
+    // unconditional guarantee; revokeToken() swallows DB errors and returns
+    // false, so check the result and log loudly if the denylist write didn't
+    // land (the operator still re-logs-in, which the cookie clear forces).
+    let tokenRevoked = false;
+    try {
+      if (req.token) {
+        tokenRevoked = await revokeToken(req.token, 'picpeak-import', { adminId: req.admin && req.admin.id });
+      }
+    } catch (revokeErr) {
+      logger.warn('[picpeak-import] failed to revoke session token after restore', { error: revokeErr.message });
+    }
+    if (req.token && !tokenRevoked) {
+      logger.warn('[picpeak-import] session token was NOT added to the revocation denylist after restore; relying on cookie clear to force re-login');
+    }
+    clearAdminAuthCookie(res);
+
+    res.json({
+      success: true,
+      tables: result.tables,
+      filesRestored: result.filesRestored,
+      usesExternalMedia: result.usesExternalMedia,
+      crossEngine: result.crossEngine,
+      // False when the pre-#1163 external-path conversion failed. The rows and
+      // files are in place, but no external original resolves until it is
+      // retried — the UI must say so rather than showing a plain success.
+      externalPathsConverted: result.externalPathsConverted !== false,
+      externalPathError: result.externalPathError || null,
+      sessionInvalidated: true,
+    });
+  } catch (error) {
+    const status = error.statusCode || 500;
+    logger.error('[picpeak-import] restore failed', { error: error.message });
+    res.status(status).json({ error: error.message || 'Restore failed', validation: error.validation });
+  } finally {
+    fsSync.unlink(picpeakPath, () => {});
+  }
+});
+
+// Remove a restore point without deleting the shared file payload. Local
+// backups are stored as a rolling tree at one destination, not as isolated
+// per-run directories; deleting its files would corrupt other restore points.
+router.delete('/runs/:id', adminAuth, requirePermission('backup.delete'), async (req, res) => {
+  try {
+    const id = String(req.params.id);
+    if (!/^\d+$/.test(id)) return res.status(400).json({ error: 'Invalid backup run id' });
+    const run = await db('backup_runs').where({ id: Number(id) }).first();
+    if (!run) return res.status(404).json({ error: 'Backup run not found' });
+    if (run.status === 'running') return res.status(409).json({ error: 'A running backup cannot be deleted' });
+
+    // An incremental restore point can depend on this run. Check both the
+    // relational link (newer schema) and the manifest link (older installs).
+    const directChild = await db('backup_runs').where({ parent_backup_id: run.id }).first();
+    if (directChild) {
+      return res.status(409).json({ error: 'This restore point is required by a later incremental backup. Delete dependent backups first.' });
+    }
+    let targetManifestId = null;
+    let sourceManifest = null;
+    if (run.manifest_path && !String(run.manifest_path).startsWith('s3://')) {
+      try {
+        const loaded = await getBackupManifest(run.id);
+        sourceManifest = loaded?.manifest || null;
+        targetManifestId = loaded?.manifest?.backup?.id || null;
+      } catch (_) { /* missing/corrupt manifests do not make a failed run undeletable */ }
+    }
+    if (targetManifestId) {
+      const otherRuns = await db('backup_runs').whereNot({ id: run.id }).whereNotNull('manifest_path').select('id');
+      for (const other of otherRuns) {
+        try {
+          const { manifest } = await getBackupManifest(other.id);
+          const parentId = manifest?.incremental?.parent_backup_id || manifest?.backup?.parent_backup_id;
+          if (parentId === targetManifestId) {
+            return res.status(409).json({ error: 'This restore point is required by a later incremental backup. Delete dependent backups first.' });
+          }
+        } catch (_) { /* ignore unrelated unreadable manifests */ }
+      }
+    }
+
+    const config = await getBackupConfig();
+    const destinationType = String(run.manifest_path || '').startsWith('s3://') ? 's3' : 'local';
+    if (destinationType !== 'local') {
+      return res.status(409).json({ error: 'Individual restore-point cleanup is currently supported for local backups only.' });
+    }
+    const backupRoot = path.resolve(config.backup_destination_path || path.join(require('../config/storage').getStoragePath(), 'backups'));
+    const roots = [config.backup_manifest_path, backupRoot]
+      .filter((value) => typeof value === 'string' && value.trim())
+      .map((value) => path.resolve(value));
+    let manifestPath = null;
+    if (run.manifest_path && !String(run.manifest_path).startsWith('s3://')) {
+      manifestPath = path.resolve(run.manifest_path);
+      const contained = roots.some((root) => manifestPath === root || manifestPath.startsWith(`${root}${path.sep}`));
+      if (!contained) return res.status(400).json({ error: 'Backup manifest is outside configured backup locations' });
+    }
+
+    let snapshotPath = null;
+    if (sourceManifest?.metadata?.destination_type === 'local' && sourceManifest?.metadata?.local_snapshot === true) {
+      const manifestBackupPath = sourceManifest?.backup?.path;
+      snapshotPath = typeof manifestBackupPath === 'string' && manifestBackupPath.trim()
+        ? (path.isAbsolute(manifestBackupPath) ? path.resolve(manifestBackupPath) : path.resolve(backupRoot, manifestBackupPath))
+        : null;
+      if (!snapshotPath || (snapshotPath !== backupRoot && !snapshotPath.startsWith(`${backupRoot}${path.sep}`))
+        || path.basename(snapshotPath) !== `backup-${run.id}`) {
+        return res.status(409).json({ error: 'The immutable backup snapshot path is unsafe; its payload was retained.' });
+      }
+      try {
+        const rootReal = await fs.realpath(backupRoot);
+        const snapshotStat = await fs.lstat(snapshotPath);
+        const snapshotReal = await fs.realpath(snapshotPath);
+        if (!snapshotStat.isDirectory() || snapshotStat.isSymbolicLink()
+          || snapshotReal === rootReal || !snapshotReal.startsWith(`${rootReal}${path.sep}`)) {
+          return res.status(409).json({ error: 'The immutable backup snapshot path is unsafe; its payload was retained.' });
+        }
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+        snapshotPath = null;
+      }
+    }
+
+    // Stage filesystem removals first. If the database transaction fails, put
+    // the manifest and immutable snapshot back so the restore point remains
+    // usable. Legacy rolling-tree payloads are never removed per run.
+    const stagedSnapshot = snapshotPath ? `${snapshotPath}.deleting-${run.id}` : null;
+    const stagedManifest = manifestPath ? `${manifestPath}.deleting-${run.id}` : null;
+    let snapshotStaged = false;
+    let manifestStaged = false;
+    try {
+      if (snapshotPath) {
+        await fs.rename(snapshotPath, stagedSnapshot);
+        snapshotStaged = true;
+      }
+      if (manifestPath) {
+        try {
+          await fs.rename(manifestPath, stagedManifest);
+          manifestStaged = true;
+        } catch (error) {
+          if (error.code !== 'ENOENT') throw error;
+        }
+      }
+      await db.transaction(async (trx) => {
+        await trx('backup_runs').where({ id: run.id }).delete();
+      });
+    } catch (error) {
+      if (manifestStaged) await fs.rename(stagedManifest, manifestPath).catch(() => {});
+      if (snapshotStaged) await fs.rename(stagedSnapshot, snapshotPath).catch(() => {});
+      throw error;
+    }
+    if (snapshotStaged) {
+      await fs.rm(stagedSnapshot, { recursive: true, force: true }).catch((cleanupError) => {
+        logger.warn('Could not remove staged backup snapshot after deleting its restore-point record', {
+          backupId: id, error: cleanupError.message,
+        });
+      });
+    }
+    if (manifestStaged) await fs.unlink(stagedManifest).catch((error) => logger.warn('Could not remove staged backup manifest after deleting restore point', { backupId: id, error: error.message }));
+    const manifestRemoved = manifestStaged || !manifestPath;
+    return res.json({ success: true, id: run.id, manifestRemoved, snapshotRemoved: snapshotStaged, payloadRetained: !snapshotStaged });
+  } catch (error) {
+    errorResponse(res, error, 500, 'Failed to delete backup restore point');
+  }
+});
+
+// Get backup run details
+router.get('/runs/:id', adminAuth, requirePermission('backup.view'), async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const run = await db('backup_runs')
+      .where('id', id)
+      .first();
+
+    if (!run) {
+      return res.status(404).json({ error: 'Backup run not found' });
+    }
+
+    // Parse JSON fields
+    if (run.statistics) {
+      try {
+        run.statistics = JSON.parse(run.statistics);
+      } catch (e) {
+        // Keep as string if parsing fails
+      }
+    }
+
+    res.json(run);
+  } catch (error) {
+    errorResponse(res, error, 500, 'Failed to get backup run details');
+  }
+});
+
+// Get file states (for debugging/monitoring)
+router.get('/files', adminAuth, requirePermission('backup.view'), async (req, res) => {
+  try {
+    const { page = 1, limit = 50, search = '' } = req.query;
+    const offset = (page - 1) * limit;
+
+    let query = db('backup_file_states');
+
+    if (search) {
+      query = query.where('file_path', 'like', `%${search}%`);
+    }
+
+    const [files, totalCount] = await Promise.all([
+      query
+        .orderBy('last_backed_up', 'desc')
+        .limit(limit)
+        .offset(offset),
+      db('backup_file_states').count('* as count').first()
+    ]);
+
+    res.json({
+      files,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total: totalCount.count,
+        pages: Math.ceil(totalCount.count / limit)
+      }
+    });
+  } catch (error) {
+    errorResponse(res, error, 500, 'Failed to get file states');
+  }
+});
+
+// Clean up old backup runs
+router.delete('/cleanup', adminAuth, requirePermission('backup.delete'), async (req, res) => {
+  try {
+    const requestedDays = Number(req.body.days ?? 30);
+    if (!Number.isInteger(requestedDays) || requestedDays < 1 || requestedDays > 3650) {
+      return res.status(400).json({ error: 'Retention days must be an integer from 1 to 3650' });
+    }
+    const days = requestedDays;
+
+    const deletedCount = await cleanupOldBackupRuns(days);
+
+    res.json({ success: true, deletedCount, message: `Cleaned up ${deletedCount} local backup restore points older than ${days} days` });
+  } catch (error) {
+    errorResponse(res, error, 500, 'Failed to cleanup backup runs');
+  }
+});
+
+// Test backup destination connectivity
+// Probes a caller-supplied destination, which only matters to whoever may set
+// one: super_admin (see changedRestrictedBackupSettings).
+router.post('/test-connection', adminAuth, requireSuperAdmin(), async (req, res) => {
+  try {
+    const { destination_type, ...config } = req.body;
+
+    switch (destination_type) {
+    case 'local': {
+      // The rule the backup itself applies: writable, or missing below a
+      // writable ancestor, since performLocalBackup creates the directory.
+      // The reason goes into the answer: in production a warn only reaches
+      // logs/combined.log, so "check the server logs" showed nothing in
+      // `docker compose logs` (issue 1365).
+      // Trimmed, as PUT /config stores it.
+      const target = typeof config.path === 'string' ? config.path.trim() : '';
+      if (!target) {
+        res.json({ success: false, message: 'Local backup requires destination path' });
+        break;
+      }
+      const blocker = await findWriteBlocker(target);
+      if (!blocker) {
+        // Writable, but the backup run refuses a destination that is itself
+        // a backed-up folder (issue 1780); say so here rather than there.
+        const backupService = require('../services/backupService');
+        const clashingFolder = await backupService.backedUpFolderAtDestination({
+          ...(await getBackupConfig()),
+          backup_destination_type: 'local',
+          backup_destination_path: target,
+        }, { everyPath: true });
+        if (clashingFolder) {
+          res.json({
+            success: false,
+            code: 'LOCAL_PATH_IS_BACKED_UP_FOLDER',
+            message: backupService.destinationIsBackedUpFolderMessage(clashingFolder)
+          });
+          break;
+        }
+        res.json({ success: true, message: 'Local path is writable' });
+        break;
+      }
+      logger.warn('Local backup path not writable', {
+        path: target,
+        blockedAt: blocker.path,
+        error: blocker.code
+      });
+      const reason = path.resolve(blocker.path) === path.resolve(target)
+        ? `The backend cannot write to ${target} (${blocker.code}).`
+        : `${target} does not exist and the backend cannot create it: ${blocker.path} is not writable (${blocker.code}).`;
+      res.json({
+        success: false,
+        code: 'LOCAL_PATH_NOT_WRITABLE',
+        message: `${reason} ${localDestinationHint()}`
+      });
+      break;
+    }
+
+    case 'rsync': {
+      // Test rsync connection using spawn with argument arrays to prevent command injection
+      const { spawn } = require('child_process');
+
+      // Validate and sanitize inputs to prevent command injection
+      const sanitizeInput = (input) => {
+        if (!input || typeof input !== 'string') return null;
+        // Remove any shell metacharacters and limit length
+        return input.replace(/[;&|`$(){}[\]<>\\!#*?"'\n\r]/g, '').substring(0, 255);
+      };
+
+      const host = sanitizeInput(config.host);
+      const user = sanitizeInput(config.user);
+      // The key file path from the form, or the saved one when the form
+      // holds the mask or sends none. An explicit '' tests without a key, as
+      // saving the emptied field would. A value that is not a path (a pasted
+      // key) is never handed to ssh.
+      const useSavedKey = typeof config.ssh_key !== 'string' || config.ssh_key.trim() === SECRET_MASK;
+      const keyCandidate = useSavedKey
+        ? (await getBackupConfig()).backup_rsync_ssh_key
+        : config.ssh_key.trim();
+      if (keyCandidate && !isSshKeyPath(keyCandidate)) {
+        res.json({
+          success: false,
+          code: 'RSYNC_SSH_KEY_NOT_PATH',
+          message: 'The SSH key setting must be the absolute path to a private key file, not the key itself',
+        });
+        break;
+      }
+      const sshKeyPath = keyCandidate || null;
+
+      if (!host) {
+        res.json({ success: false, message: 'Invalid host specified' });
+        break;
+      }
+
+      // Validate host format (hostname or IP only)
+      const hostRegex = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*$/;
+      const ipRegex = /^(\d{1,3}\.){3}\d{1,3}$/;
+      if (!hostRegex.test(host) && !ipRegex.test(host)) {
+        res.json({ success: false, message: 'Invalid host format' });
+        break;
+      }
+
+      // SSRF protection: resolve the host and block any private/internal
+      // address. ssh does its own DNS at connect time, so a literal-only
+      // check let a hostname resolving to an internal IP through (#GHSA-4jh8).
+      const { isHostAllowed } = require('../utils/networkValidation');
+      if (!(await isHostAllowed(host))) {
+        res.json({ success: false, message: 'Host cannot be a private or internal network address' });
+        break;
+      }
+
+      // Validate username format if provided
+      if (user && !/^[a-zA-Z_][a-zA-Z0-9_-]*$/.test(user)) {
+        res.json({ success: false, message: 'Invalid username format' });
+        break;
+      }
+
+      // Build SSH arguments as array (safe from injection)
+      const sshArgs = [];
+      if (sshKeyPath) {
+        // Validate SSH key path exists and is a file
+        const fsSync = require('fs');
+        if (!fsSync.existsSync(sshKeyPath) || !fsSync.statSync(sshKeyPath).isFile()) {
+          res.json({ success: false, message: 'SSH key file not found' });
+          break;
+        }
+        sshArgs.push('-i', sshKeyPath);
+      }
+      sshArgs.push('-o', 'StrictHostKeyChecking=no');
+      sshArgs.push('-o', 'ConnectTimeout=10');
+      sshArgs.push('-o', 'BatchMode=yes');
+
+      // Add target (user@host or just host)
+      const target = user ? `${user}@${host}` : host;
+      sshArgs.push(target);
+      sshArgs.push('echo', 'Connection successful');
+
+      try {
+        await new Promise((resolve, reject) => {
+          const sshProcess = spawn('ssh', sshArgs, {
+            timeout: 15000,
+            stdio: ['ignore', 'pipe', 'pipe']
+          });
+
+          let stdout = '';
+          let stderr = '';
+
+          sshProcess.stdout.on('data', (data) => { stdout += data; });
+          sshProcess.stderr.on('data', (data) => { stderr += data; });
+
+          sshProcess.on('close', (code) => {
+            if (code === 0) {
+              resolve({ success: true, stdout });
+            } else {
+              reject(new Error(stderr || `SSH exited with code ${code}`));
+            }
+          });
+
+          sshProcess.on('error', (err) => {
+            reject(err);
+          });
+        });
+
+        res.json({ success: true, message: 'Rsync connection successful' });
+      } catch (error) {
+        logger.warn('Rsync connection test failed', {
+          destination: host,
+          error: error.message
+        });
+        res.json({ success: false, message: 'Rsync connection failed. Check server logs for details.' });
+      }
+      break;
+    }
+
+    case 's3': {
+      // A real HeadBucket against the values in the form (issue 1641).
+      const stored = await getStoredBackupConfig();
+      if (config.use_object_storage === true) {
+        const shared = await resolveBackupTarget({
+          ...stored,
+          backup_destination_type: 's3',
+          backup_s3_use_object_storage: true,
+        });
+        let probeKey;
+        const adapter = new S3StorageAdapter({
+          endpoint: shared.backup_s3_endpoint || undefined,
+          bucket: shared.backup_s3_bucket,
+          accessKeyId: shared.backup_s3_access_key,
+          secretAccessKey: shared.backup_s3_secret_key,
+          region: shared.backup_s3_region,
+          forcePathStyle: shared.backup_s3_force_path_style,
+          ...backupS3AdapterCompatibility(shared),
+          sslEnabled: backupS3Ssl(shared),
+          ...backupS3Access(shared),
+          maxRetries: 1,
+          connectionTimeout: 10000,
+          socketTimeout: 15000,
+        });
+        try {
+          await adapter.testConnection();
+          probeKey = `${shared.backup_s3_prefix}/.picflow-connection-check/${Date.now()}-${crypto.randomUUID()}.txt`;
+          await adapter.uploadStream(Readable.from([Buffer.from('Picflow backup destination check', 'utf8')]), probeKey, {
+            contentType: 'text/plain',
+          });
+          await adapter.delete(probeKey);
+          probeKey = null;
+          res.json({ success: true, message: 'Configured object storage is reachable and the backup prefix is writable' });
+        } finally {
+          if (probeKey) await adapter.delete(probeKey).catch((error) => {
+            logger.warn('Could not remove the shared-backup S3 connection probe', { error: error.message });
+          });
+          adapter.s3Client.destroy?.();
+        }
+        break;
+      }
+      const endpoint = typeof config.endpoint === 'string' ? config.endpoint.trim() : '';
+      // The scheme a scheme-less endpoint gets, as a backup run would use it:
+      // the form has no SSL field, so the saved setting applies unless the
+      // caller sends one.
+      const sslEnabled = readBackupBoolean(config.ssl_enabled ?? stored.backup_s3_ssl_enabled ?? true);
+      const storedSsl = readBackupBoolean(stored.backup_s3_ssl_enabled ?? true);
+      const sameEndpoint = endpointOrigin(endpoint, sslEnabled) === endpointOrigin(stored.backup_s3_endpoint, storedSsl);
+      // The form holds the mask for a saved secret. Reuse the stored one only
+      // against the endpoint it was saved for, so a test cannot send the
+      // saved credentials somewhere new.
+      const secretKey = config.secret_key === SECRET_MASK
+        ? (sameEndpoint ? stored.backup_s3_secret_key : '')
+        : config.secret_key;
+      if (!config.bucket || !config.access_key || !secretKey) {
+        res.json({ success: false, code: 'S3_CONFIG_INCOMPLETE', message: 'S3 test requires endpoint, bucket and credentials' });
+        break;
+      }
+      const approval = typeof config.private_endpoint_approval === 'string'
+        ? config.private_endpoint_approval
+        : stored[S3_APPROVAL_SETTING];
+      try {
+        const s3Adapter = new S3StorageAdapter({
+          endpoint: endpoint || undefined,
+          bucket: config.bucket,
+          accessKeyId: config.access_key,
+          secretAccessKey: secretKey,
+          region: config.region || 'us-east-1',
+          sslEnabled,
+          allowPrivateEndpoint: isPrivateEndpointApproved(endpoint, sslEnabled, approval),
+          maxRetries: 1,
+          connectionTimeout: 10000,
+          socketTimeout: 15000,
+        });
+        await s3Adapter.testConnection();
+        res.json({ success: true, message: 'S3 bucket is reachable' });
+      } catch (error) {
+        if (S3_ERROR_MESSAGES[error.code]) {
+          res.json({ success: false, ...s3ErrorBody(error.code, error.origin || endpointOrigin(endpoint, sslEnabled)), message: S3_ERROR_MESSAGES[error.code] });
+          break;
+        }
+        logger.warn('S3 connection test failed', { bucket: config.bucket, error: error.message });
+        res.json({ success: false, code: 'S3_CONNECTION_FAILED', message: 'Could not reach the S3 bucket with these settings. Check server logs for details.' });
+      }
+      break;
+    }
+
+    default:
+      res.status(400).json({ error: 'Invalid destination type' });
+    }
+  } catch (error) {
+    errorResponse(res, error, 500, 'Failed to test connection');
+  }
+});
+
+// Get backup manifest for a specific backup run
+router.get('/manifest/:backupRunId', adminAuth, requirePermission('backup.view'), async (req, res) => {
+  try {
+    const { backupRunId } = req.params;
+    const result = await getBackupManifest(backupRunId);
+
+    res.json({
+      backupRunId,
+      manifest: result.manifest,
+      summary: result.summary
+    });
+  } catch (error) {
+    logger.error('Failed to get backup manifest:', error);
+    res.status(404).json({ error: 'Backup manifest not found' });
+  }
+});
+
+// Validate a backup manifest
+router.post('/manifest/validate', adminAuth, requirePermission('backup.view'), async (req, res) => {
+  try {
+    const { manifestPath } = req.body;
+
+    if (!manifestPath) {
+      return res.status(400).json({ error: 'manifestPath is required' });
+    }
+
+    // Prevent path traversal — manifest must be within backup directory
+    const backupBasePath = process.env.BACKUP_PATH || path.join(__dirname, '../../../backups');
+    const { safePathJoin } = require('../utils/fileSecurityUtils');
+    const safePath = safePathJoin(backupBasePath, manifestPath);
+
+    const result = await validateBackupManifest(safePath);
+
+    res.json({
+      valid: result.valid,
+      error: result.error,
+      manifestPath
+    });
+  } catch (error) {
+    errorResponse(res, error, 500, 'Failed to validate manifest');
+  }
+});
+
+// Download backup manifest
+router.get('/manifest/:backupRunId/download', adminAuth, requirePermission('backup.view'), async (req, res) => {
+  try {
+    const { backupRunId } = req.params;
+    const { format = 'json' } = req.query;
+
+    const result = await getBackupManifest(backupRunId);
+
+    // Set appropriate headers
+    const filename = `backup-manifest-${backupRunId}.${format}`;
+    res.setHeader('Content-Type', format === 'yaml' ? 'text/yaml' : 'application/json');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+
+    // Send the manifest in requested format
+    if (format === 'yaml') {
+      const yaml = require('js-yaml');
+      res.send(yaml.dump(result.manifest, {
+        indent: 2,
+        lineWidth: -1,
+        noRefs: true,
+        sortKeys: true
+      }));
+    } else {
+      res.json(result.manifest);
+    }
+  } catch (error) {
+    logger.error('Failed to download backup manifest:', error);
+    res.status(404).json({ error: 'Backup manifest not found' });
+  }
+});
+
+// Get manifest for specific backup
+router.get('/manifests/:backupId', adminAuth, requirePermission('backup.view'), async (req, res) => {
+  try {
+    const { backupId } = req.params;
+    const result = await getBackupManifest(backupId);
+
+    res.json({
+      backupId,
+      manifest: result.manifest,
+      summary: result.summary
+    });
+  } catch (error) {
+    logger.error('Failed to get backup manifest:', error);
+    res.status(404).json({ error: 'Backup manifest not found' });
+  }
+});
+
+// Download manifest file
+router.get('/manifests/:backupId/download', adminAuth, requirePermission('backup.view'), async (req, res) => {
+  try {
+    const { backupId } = req.params;
+    const { format = 'json' } = req.query;
+
+    const result = await getBackupManifest(backupId);
+
+    // Set appropriate headers
+    const filename = `backup-manifest-${backupId}.${format}`;
+    res.setHeader('Content-Type', format === 'yaml' ? 'text/yaml' : 'application/json');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+
+    // Send the manifest in requested format
+    if (format === 'yaml') {
+      const yaml = require('js-yaml');
+      res.send(yaml.dump(result.manifest, {
+        indent: 2,
+        lineWidth: -1,
+        noRefs: true,
+        sortKeys: true
+      }));
+    } else {
+      res.json(result.manifest);
+    }
+  } catch (error) {
+    logger.error('Failed to download backup manifest:', error);
+    res.status(404).json({ error: 'Backup manifest not found' });
+  }
+});
+
+// Validate a manifest
+router.post('/manifests/validate', adminAuth, requirePermission('backup.view'), async (req, res) => {
+  try {
+    const { manifestPath, manifestData } = req.body;
+
+    if (!manifestPath && !manifestData) {
+      return res.status(400).json({ error: 'Either manifestPath or manifestData is required' });
+    }
+
+    if (manifestData) {
+      // Validate provided manifest data directly
+      const validationResult = await validateManifestData(manifestData);
+      return res.json(validationResult);
+    }
+
+    // Prevent path traversal — manifest must be within backup directory
+    const backupBasePath = process.env.BACKUP_PATH || path.join(__dirname, '../../../backups');
+    const { safePathJoin } = require('../utils/fileSecurityUtils');
+    const safePath = safePathJoin(backupBasePath, manifestPath);
+
+    // Use existing validation function for path
+    const result = await validateBackupManifest(safePath);
+
+    res.json({
+      valid: result.valid,
+      error: result.error,
+      manifestPath
+    });
+  } catch (error) {
+    errorResponse(res, error, 500, 'Failed to validate manifest');
+  }
+});
+
+// List S3 buckets. An account-wide ListBuckets with the stored backup
+// credential — provider inventory beyond the configured bucket, so Super
+// Admin only, like /test-connection. The Owner object is not returned.
+router.get('/s3/buckets', adminAuth, requireSuperAdmin(), async (req, res) => {
+  try {
+    const config = await getBackupConfig();
+
+    if (config.backup_destination_type !== 's3') {
+      return res.status(400).json({ error: 'S3 backup not configured' });
+    }
+
+    const s3Adapter = new S3StorageAdapter({
+      endpoint: config.backup_s3_endpoint,
+      bucket: config.backup_s3_bucket,
+      accessKeyId: config.backup_s3_access_key,
+      secretAccessKey: config.backup_s3_secret_key,
+      region: config.backup_s3_region || 'us-east-1',
+      forcePathStyle: config.backup_s3_force_path_style || false,
+      ...backupS3AdapterCompatibility(config),
+      sslEnabled: backupS3Ssl(config),
+      ...backupS3Access(config)
+    });
+
+    // List buckets using the S3 client
+    const { ListBucketsCommand } = require('@aws-sdk/client-s3');
+    const result = await s3Adapter.s3Client.send(new ListBucketsCommand({}));
+
+    res.json({
+      buckets: result.Buckets || []
+    });
+  } catch (error) {
+    errorResponse(res, error, 500, 'Failed to list S3 buckets');
+  }
+});
+
+// List files in S3 backup location
+router.get('/s3/files', adminAuth, requirePermission('backup.view'), async (req, res) => {
+  try {
+    const { prefix = '', maxKeys = 100, continuationToken } = req.query;
+    const config = await getBackupConfig();
+
+    if (config.backup_destination_type !== 's3') {
+      return res.status(400).json({ error: 'S3 backup not configured' });
+    }
+
+    const requestedPrefix = String(prefix).replace(/^\/+|\/+$/g, '');
+    if (requestedPrefix && (requestedPrefix.includes('\\')
+      || requestedPrefix.split('/').some((part) => !part || part === '.' || part === '..'))) {
+      return res.status(400).json({ error: 'S3 prefix is invalid' });
+    }
+    const backupPrefix = String(config.backup_s3_prefix || 'backups').replace(/^\/+|\/+$/g, '');
+    const usesSharedObjectStorage = readBackupBoolean(config.backup_s3_use_object_storage);
+    if (usesSharedObjectStorage && requestedPrefix
+      && requestedPrefix !== backupPrefix && !requestedPrefix.startsWith(`${backupPrefix}/`)) {
+      return res.status(403).json({ error: 'Shared object-storage backups can only browse within the configured backup prefix' });
+    }
+    const effectivePrefix = usesSharedObjectStorage
+      ? (requestedPrefix || `${backupPrefix}/`)
+      : requestedPrefix;
+
+    const s3Adapter = new S3StorageAdapter({
+      endpoint: config.backup_s3_endpoint,
+      bucket: config.backup_s3_bucket,
+      accessKeyId: config.backup_s3_access_key,
+      secretAccessKey: config.backup_s3_secret_key,
+      region: config.backup_s3_region || 'us-east-1',
+      forcePathStyle: config.backup_s3_force_path_style || false,
+      ...backupS3AdapterCompatibility(config),
+      sslEnabled: backupS3Ssl(config),
+      ...backupS3Access(config)
+    });
+
+    const result = await s3Adapter.list(effectivePrefix, {
+      maxKeys: Math.min(1000, Math.max(1, parseInt(maxKeys, 10) || 100)),
+      continuationToken
+    });
+
+    res.json({
+      files: (result.Contents || []).map((object) => ({
+        key: object.Key,
+        size: object.Size,
+        lastModified: object.LastModified,
+        etag: object.ETag,
+      })),
+      directories: result.CommonPrefixes || [],
+      isTruncated: Boolean(result.IsTruncated),
+      nextContinuationToken: result.NextContinuationToken,
+      prefix: effectivePrefix
+    });
+  } catch (error) {
+    errorResponse(res, error, 500, 'Failed to list S3 files');
+  }
+});
+
+// Clean up old S3 backups
+router.delete('/s3/cleanup', adminAuth, requirePermission('backup.delete'), async (req, res) => {
+  try {
+    const { retentionDays: requestedRetentionDays, dryRun = false } = req.body;
+    const retentionDays = parseRetentionDays(requestedRetentionDays);
+    if (retentionDays === null) {
+      return res.status(400).json({ error: 'Retention days must be an integer from 1 to 3650' });
+    }
+    const config = await getBackupConfig();
+
+    if (config.backup_destination_type !== 's3') {
+      return res.status(400).json({ error: 'S3 backup not configured' });
+    }
+
+    const s3Adapter = new S3StorageAdapter({
+      endpoint: config.backup_s3_endpoint,
+      bucket: config.backup_s3_bucket,
+      accessKeyId: config.backup_s3_access_key,
+      secretAccessKey: config.backup_s3_secret_key,
+      region: config.backup_s3_region || 'us-east-1',
+      forcePathStyle: config.backup_s3_force_path_style || false,
+      ...backupS3AdapterCompatibility(config),
+      sslEnabled: backupS3Ssl(config),
+      ...backupS3Access(config)
+    });
+
+    const basePrefix = String(config.backup_s3_prefix || 'backups').replace(/^\/+|\/+$/g, '');
+    if (!basePrefix || basePrefix.split('/').some((part) => part === '..' || part === '.')) {
+      return res.status(400).json({ error: 'S3 backup prefix is invalid' });
+    }
+    const cutoffDate = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
+    const activeBucket = String(config.backup_s3_bucket || '');
+    const allRuns = await db('backup_runs').whereNot('status', 'running').whereNotNull('manifest_path');
+    const s3Runs = allRuns.filter((run) => {
+      const uri = parseS3ManifestUri(run.manifest_path);
+      return uri?.bucket === activeBucket && uri.key.startsWith(`${basePrefix}/`);
+    });
+    const expired = s3Runs.filter((run) => new Date(run.completed_at || run.started_at || 0) < cutoffDate);
+    const expiredIds = new Set(expired.map((run) => String(run.id)));
+
+    // A surviving incremental point must keep its parent and all referenced
+    // objects. Malformed retained manifests abort cleanup rather than risk
+    // deleting shared content-addressed payloads.
+    // A surviving child can live in another S3 bucket or prefix after an
+    // operator changes the destination. Search every retained S3 run, not
+    // only the currently selected prefix, before purging an old parent.
+    const retainedRuns = allRuns.filter((run) => {
+      const uri = parseS3ManifestUri(run.manifest_path);
+      return uri && !expiredIds.has(String(run.id));
+    });
+    const referencedObjects = new Set();
+    const expiredManifests = new Map();
+    for (const run of [...s3Runs].sort((a, b) => new Date(b.completed_at || b.started_at || 0) - new Date(a.completed_at || a.started_at || 0))) {
+      const uri = parseS3ManifestUri(run.manifest_path);
+      const { manifest } = await getBackupManifest(run.id);
+      const runPrefix = s3RunPrefixFromManifestKey(uri.key);
+      const keys = (manifest?.files?.manifest || []).map((file) => file.storage_key || path.posix.join(runPrefix, file.path));
+      if (manifest?.database?.backup_file) {
+        keys.push(manifest.database.storage_key || path.posix.join(runPrefix, 'database', path.posix.basename(manifest.database.backup_file)));
+      }
+      if (expiredIds.has(String(run.id))) {
+        expiredManifests.set(String(run.id), { run, runPrefix, manifestKey: uri.key, keys, manifest });
+      } else {
+        for (const key of keys) referencedObjects.add(key);
+      }
+    }
+
+    // If an expired parent has a child outside this cleanup set, retain it.
+    const eligible = new Map(expiredManifests);
+    for (const [id, item] of eligible) {
+      const hasDependency = await hasSurvivingS3Child(item, retainedRuns, getBackupManifest);
+      if (hasDependency) {
+        eligible.delete(id);
+        for (const key of item.keys) referencedObjects.add(key);
+      }
+    }
+
+    const objects = await listAllS3Objects(s3Adapter, `${basePrefix}/`);
+    let filesToDelete = [];
+    let totalSize = 0;
+    for (const object of objects) {
+      const key = object.Key;
+      const expiredRun = [...eligible.values()].some((item) => key === item.runPrefix || key.startsWith(`${item.runPrefix}/`));
+      const expiredUnreferencedObject = [...eligible.values()].some((item) => item.keys.includes(key))
+        && !referencedObjects.has(key);
+      if ((expiredRun || expiredUnreferencedObject) && !referencedObjects.has(key)) {
+        filesToDelete.push(key);
+        totalSize += Number(object.Size) || 0;
+      }
+    }
+
+    if (dryRun) {
+      return res.json({
+        wouldDelete: filesToDelete.length,
+        totalSize: totalSize,
+        files: filesToDelete.slice(0, 100), // Limit preview
+        message: 'Dry run completed - no files were deleted'
+      });
+    }
+
+    const committed = await removeS3RestorePointManifests([...eligible.values()], s3Adapter, {
+      deleteRun: async (run) => db.transaction(async (trx) => trx('backup_runs').where({ id: run.id }).delete()),
+      restoreRun: async (run) => db('backup_runs').insert(run),
+    });
+    const purgeRuns = committed.removed;
+    const retainedAfterFailure = committed.failed;
+    for (const item of retainedAfterFailure) {
+      for (const key of item.keys) referencedObjects.add(key);
+    }
+    const purgePrefixes = purgeRuns.map((item) => item.runPrefix);
+    const purgeObjectKeys = new Set(purgeRuns.flatMap((item) => item.keys));
+    const purgedManifestKeys = new Set(purgeRuns.map((item) => item.manifestKey));
+    filesToDelete = [];
+    totalSize = 0;
+    for (const object of objects) {
+      const key = object.Key;
+      const expiredRun = purgePrefixes.some((prefix) => key === prefix || key.startsWith(`${prefix}/`));
+      const expiredUnreferencedObject = purgeObjectKeys.has(key) && !referencedObjects.has(key);
+      if (!purgedManifestKeys.has(key) && (expiredRun || expiredUnreferencedObject) && !referencedObjects.has(key)) {
+        filesToDelete.push(key);
+        totalSize += Number(object.Size) || 0;
+      }
+    }
+
+    // Delete payload objects only after their restore-point rows and manifests
+    // are gone. A partial S3 delete can then leave harmless orphan objects,
+    // never a completed restore point with missing payloads.
+    const deleteResult = await s3Adapter.deleteMany(filesToDelete);
+    const deletedCount = deleteResult.Deleted ? deleteResult.Deleted.length : 0;
+    if (deleteResult.Errors?.length) {
+      return res.status(502).json({
+        error: 'Some expired S3 payload objects could not be deleted. Their restore-point records were already removed; orphaned objects may remain.',
+        deletedCount,
+        deletedRuns: purgeRuns.length,
+        failedCount: deleteResult.Errors.length,
+      });
+    }
+
+    const deletedRuns = purgeRuns.map((item) => item.run.id);
+
+    res.json({
+      success: true,
+      deletedCount: deletedCount,
+      deletedRuns: deletedRuns.length,
+      retainedRuns: retainedAfterFailure.length,
+      totalSize: totalSize,
+      message: `Cleaned up ${deletedCount} S3 backup files older than ${retentionDays} days`
+    });
+  } catch (error) {
+    errorResponse(res, error, 500, 'Failed to cleanup S3 backups');
+  }
+});
+
+// Test S3 upload functionality
+router.post('/s3/test-upload', adminAuth, requirePermission('backup.create'), async (req, res) => {
+  try {
+    const config = await getBackupConfig();
+
+    if (config.backup_destination_type !== 's3') {
+      return res.status(400).json({ error: 'S3 backup not configured' });
+    }
+
+    const s3Adapter = new S3StorageAdapter({
+      endpoint: config.backup_s3_endpoint,
+      bucket: config.backup_s3_bucket,
+      accessKeyId: config.backup_s3_access_key,
+      secretAccessKey: config.backup_s3_secret_key,
+      region: config.backup_s3_region || 'us-east-1',
+      forcePathStyle: config.backup_s3_force_path_style || false,
+      ...backupS3AdapterCompatibility(config),
+      sslEnabled: backupS3Ssl(config),
+      ...backupS3Access(config)
+    });
+
+    // Create test content
+    const testKey = `test/backup-test-${Date.now()}.txt`;
+    const testContent = `Picflow S3 backup test\nTimestamp: ${new Date().toISOString()}\nEndpoint: ${config.backup_s3_endpoint || 'AWS'}\nBucket: ${config.backup_s3_bucket}`;
+    const tempDir = path.join(require('../config/storage').getStoragePath(), 'temp');
+    const uploadPath = path.join(tempDir, `s3-backup-test-${Date.now()}.txt`);
+    const downloadPath = `${uploadPath}.downloaded`;
+
+    let uploadTime = 0;
+    let downloadTime = 0;
+    let contentMatch = false;
+    await fs.mkdir(tempDir, { recursive: true });
+    try {
+      await fs.writeFile(uploadPath, testContent);
+      const uploadStart = Date.now();
+      await s3Adapter.upload(uploadPath, testKey);
+      uploadTime = Date.now() - uploadStart;
+
+      const downloadStart = Date.now();
+      await s3Adapter.download(testKey, downloadPath);
+      downloadTime = Date.now() - downloadStart;
+      contentMatch = (await fs.readFile(downloadPath, 'utf8')) === testContent;
+    } finally {
+      await s3Adapter.delete(testKey).catch((error) => logger.warn('Could not remove temporary S3 backup test object', { error: error.message }));
+      await fs.unlink(uploadPath).catch(() => {});
+      await fs.unlink(downloadPath).catch(() => {});
+    }
+
+    if (!contentMatch) return res.status(502).json({ error: 'S3 test object did not match after upload and download', contentMatch: false });
+
+
+    res.json({
+      success: true,
+      testKey: testKey,
+      uploadTime: uploadTime,
+      downloadTime: downloadTime,
+      contentMatch: contentMatch,
+      message: 'S3 upload test completed successfully'
+    });
+  } catch (error) {
+    errorResponse(res, error, 500, 'S3 upload test failed');
+  }
+});
+
+// Download entire backup
+router.get('/download/:backupId', adminAuth, requirePermission('backup.view'), async (req, res) => {
+  try {
+    const { backupId } = req.params;
+
+    // Get backup run details
+    const backupRun = await db('backup_runs')
+      .where('id', backupId)
+      .first();
+
+    if (!backupRun) {
+      return res.status(404).json({ error: 'Backup not found' });
+    }
+
+    if (backupRun.status !== 'completed') {
+      return res.status(400).json({ error: 'Backup is not completed' });
+    }
+
+    const config = await getBackupConfig();
+
+    // A stored run remains downloadable after the operator changes the active
+    // destination. Its manifest is the source of truth, not today's setting.
+    const runDestinationType = String(backupRun.manifest_path || '').startsWith('s3://')
+      ? 's3'
+      : (backupRun.manifest_path ? 'local' : String(config.backup_destination_type || 'local'));
+
+    // Handle different backup types
+    switch (runDestinationType) {
+    case 'local': {
+      if (!backupRun.manifest_path) {
+        return res.status(409).json({ error: 'This backup has no manifest; a complete download cannot be assembled.' });
+      }
+      const { manifest: sourceManifest } = await getBackupManifest(backupRun.id);
+      const configuredBackupRoot = path.resolve(config.backup_destination_path || path.join(require('../config/storage').getStoragePath(), 'backups'));
+      const backupPathValue = sourceManifest?.backup?.path;
+      const backupRootCandidate = typeof backupPathValue === 'string' && backupPathValue.trim()
+        ? (path.isAbsolute(backupPathValue) ? path.resolve(backupPathValue) : path.resolve(configuredBackupRoot, backupPathValue))
+        : configuredBackupRoot;
+      const backupRootReal = await fs.realpath(configuredBackupRoot);
+      const backupRootResolved = path.resolve(backupRootCandidate);
+      const isConfiguredRoot = (candidate) => candidate === configuredBackupRoot
+        || candidate.startsWith(`${configuredBackupRoot}${path.sep}`)
+        || candidate === backupRootReal
+        || candidate.startsWith(`${backupRootReal}${path.sep}`);
+      if (!isConfiguredRoot(backupRootResolved)) {
+        return res.status(409).json({ error: 'The backup manifest points outside the configured backup location.' });
+      }
+      const backupRoot = await fs.realpath(backupRootResolved);
+      if (!isConfiguredRoot(backupRoot)) {
+        return res.status(409).json({ error: 'The backup snapshot resolves outside the configured backup location.' });
+      }
+      let databaseRoot = config.database_backup_destination_path
+        ? path.resolve(config.database_backup_destination_path)
+        : null;
+      if (databaseRoot) {
+        try { databaseRoot = await fs.realpath(databaseRoot); } catch (_) { databaseRoot = path.resolve(databaseRoot); }
+      }
+      const isWithin = (candidate, root) => candidate === root || candidate.startsWith(`${root}${path.sep}`);
+      // Incremental manifests only list files changed in that run. Materialize
+      // the parent chain into a standalone full manifest for this download.
+      const runRows = await db('backup_runs').where('status', 'completed').whereNotNull('manifest_path').select('id');
+      const manifestsById = new Map([[sourceManifest?.backup?.id, sourceManifest]]);
+      for (const row of runRows) {
+        if (Number(row.id) === Number(backupRun.id)) continue;
+        try {
+          const loaded = await getBackupManifest(row.id);
+          if (loaded?.manifest?.backup?.id) manifestsById.set(loaded.manifest.backup.id, loaded.manifest);
+        } catch (_) { /* unrelated unreadable manifests do not block this download */ }
+      }
+      const chainNewestFirst = [sourceManifest];
+      const visitedManifestIds = new Set([sourceManifest?.backup?.id]);
+      let parentManifestId = sourceManifest?.incremental?.parent_backup_id || sourceManifest?.backup?.parent_backup_id || null;
+      while (parentManifestId) {
+        if (visitedManifestIds.has(parentManifestId)) return res.status(409).json({ error: 'The incremental backup chain contains a cycle.' });
+        const parent = manifestsById.get(parentManifestId);
+        if (!parent) return res.status(409).json({ error: 'A parent backup required to assemble this restore point is missing.' });
+        visitedManifestIds.add(parentManifestId);
+        chainNewestFirst.push(parent);
+        parentManifestId = parent.incremental?.parent_backup_id || parent.backup?.parent_backup_id || null;
+      }
+      const effectiveFiles = new Map();
+      for (const chainManifest of chainNewestFirst.reverse()) {
+        if (!chainManifest.incremental) effectiveFiles.clear();
+        const changedFiles = Array.isArray(chainManifest.files?.manifest) ? chainManifest.files.manifest : [];
+        for (const entry of changedFiles) effectiveFiles.set(String(entry.path || ''), entry);
+        for (const deletedPath of chainManifest.incremental?.deleted_files || []) effectiveFiles.delete(String(deletedPath));
+      }
+      const files = Array.from(effectiveFiles.values());
+      const backupManifest = require('../services/backupManifest');
+      const downloadManifest = JSON.parse(JSON.stringify(sourceManifest));
+      const selectedDatabaseManifest = [...chainNewestFirst].reverse().find((item) => item?.database?.backup_file);
+      if (selectedDatabaseManifest) downloadManifest.database = { ...selectedDatabaseManifest.database };
+      downloadManifest.backup = { ...downloadManifest.backup, type: 'full', parent_backup_id: null, path: '.' };
+      downloadManifest.files = {
+        ...(downloadManifest.files || {}),
+        count: files.length,
+        total_size: files.reduce((sum, entry) => sum + (Number(entry.size) || 0), 0),
+        manifest: files,
+        checksums: Object.fromEntries(files.filter((entry) => entry.checksum).map((entry) => [entry.path, entry.checksum])),
+      };
+      downloadManifest.metadata = { ...(downloadManifest.metadata || {}), materialized_download_bundle: true };
+      const archiveEntries = [];
+      const archiveEntryNames = new Set();
+      for (const entry of files) {
+        const relative = String(entry?.path || '').replace(/\\/g, '/');
+        if (!relative || path.isAbsolute(relative) || /^[a-zA-Z]:/.test(relative)
+          || relative.split('/').some((part) => part === '..' || part === '.' || part === '')) {
+          return res.status(409).json({ error: 'The backup manifest contains an unsafe file path.' });
+        }
+        const filePath = path.resolve(backupRoot, relative);
+        if (!isWithin(filePath, backupRoot)) return res.status(409).json({ error: 'The backup manifest contains an unsafe file path.' });
+        let realPath; let stat;
+        try { realPath = await fs.realpath(filePath); stat = await fs.stat(realPath); } catch (_) {
+          return res.status(409).json({ error: `A required backup file is missing: ${relative}` });
+        }
+        if (!isWithin(realPath, backupRoot) || !stat.isFile()) {
+          return res.status(409).json({ error: `A required backup file is not a regular file inside the backup location: ${relative}` });
+        }
+        if (entry.checksum) {
+          const hash = crypto.createHash('sha256');
+          await new Promise((resolve, reject) => {
+            const stream = require('fs').createReadStream(realPath);
+            stream.on('data', (chunk) => hash.update(chunk));
+            stream.on('error', reject);
+            stream.on('end', resolve);
+          });
+          if (hash.digest('hex').toLowerCase() !== String(entry.checksum).toLowerCase()) {
+            return res.status(409).json({ error: `A required backup file no longer matches its recorded checksum: ${relative}` });
+          }
+        }
+        if (!archiveEntryNames.has(relative)) {
+          archiveEntries.push({ path: realPath, name: relative });
+          archiveEntryNames.add(relative);
+        }
+      }
+
+      const databaseFile = downloadManifest?.database?.backup_file;
+      let packagedDatabaseName = null;
+      if (typeof databaseFile === 'string' && databaseFile.trim()) {
+        const candidates = [
+          path.isAbsolute(databaseFile) ? path.resolve(databaseFile) : path.resolve(backupRoot, databaseFile),
+          ...(databaseRoot ? [path.join(databaseRoot, path.basename(databaseFile)), path.join(databaseRoot, 'database', path.basename(databaseFile))] : []),
+          path.join(backupRoot, 'database', path.basename(databaseFile)),
+          path.join(backupRoot, path.basename(databaseFile)),
+        ];
+        let resolvedDatabase = null;
+        for (const candidate of [...new Set(candidates)]) {
+          try {
+            const real = await fs.realpath(candidate);
+            const stat = await fs.stat(real);
+            if (stat.isFile() && [backupRoot, databaseRoot].filter(Boolean).some((root) => isWithin(real, root))) {
+              resolvedDatabase = real;
+              break;
+            }
+          } catch (_) { /* try the next configured backup-root candidate */ }
+        }
+        if (!resolvedDatabase) return res.status(409).json({ error: 'The database dump required by this backup is missing from configured backup locations.' });
+        packagedDatabaseName = `database/${path.basename(resolvedDatabase)}`;
+        if (!archiveEntryNames.has(packagedDatabaseName)) {
+          archiveEntries.push({ path: resolvedDatabase, name: packagedDatabaseName });
+          archiveEntryNames.add(packagedDatabaseName);
+        }
+        downloadManifest.database.backup_file = packagedDatabaseName;
+      }
+
+      downloadManifest.verification = {
+        ...(downloadManifest.verification || {}),
+        file_count_check: files.length,
+        size_check: files.reduce((sum, entry) => sum + (Number(entry.size) || 0), 0),
+        integrity_timestamp: new Date().toISOString(),
+      };
+      downloadManifest.verification.checksum_algorithm = backupManifest.getManifestKey() ? 'hmac-sha256' : 'sha256';
+      downloadManifest.verification.total_checksum = backupManifest.calculateManifestChecksum(downloadManifest);
+
+      const archive = archiver('zip', { zlib: { level: 1 } });
+      archive.on('error', (error) => {
+        logger.error('Failed to stream backup archive', { backupId: backupRun.id, error: error.message });
+        if (!res.headersSent) res.status(500).json({ error: 'Failed to package backup files' });
+        else res.destroy(error);
+      });
+      res.attachment(`picflow-backup-${backupRun.id}.zip`);
+      archive.pipe(res);
+      for (const entry of archiveEntries) archive.file(entry.path, { name: entry.name });
+      archive.append(JSON.stringify(downloadManifest, null, 2), { name: 'manifest.json' });
+      archive.append(JSON.stringify({
+        backupRunId: backupRun.id,
+        createdAt: backupRun.started_at,
+        note: 'This download materializes the selected restore point and its incremental parents into a standalone full manifest.',
+        databaseFile: packagedDatabaseName,
+      }, null, 2), { name: 'download-info.json' });
+      await archive.finalize();
+      break;
+    }
+
+    case 's3': {
+      // For S3, provide pre-signed URLs or stream files
+      const s3Adapter = new S3StorageAdapter({
+        endpoint: config.backup_s3_endpoint,
+        bucket: config.backup_s3_bucket,
+        accessKeyId: config.backup_s3_access_key,
+        secretAccessKey: config.backup_s3_secret_key,
+        region: config.backup_s3_region || 'us-east-1',
+        forcePathStyle: config.backup_s3_force_path_style || false,
+        ...backupS3AdapterCompatibility(config),
+        sslEnabled: backupS3Ssl(config),
+        ...backupS3Access(config)
+      });
+
+      const { manifest } = await getBackupManifest(backupRun.id);
+      const manifestUri = parseS3ManifestUri(backupRun.manifest_path);
+      const declaredPath = parseS3ManifestUri(manifest?.backup?.path);
+      const runPrefix = declaredPath?.bucket === manifestUri?.bucket
+        ? normalizeS3ObjectKey(declaredPath.key)
+        : s3RunPrefixFromManifestKey(manifestUri?.key || '');
+      const declaredPrefix = manifest?.metadata?.backup_settings?.backup_s3_prefix;
+      const configuredPrefix = String(declaredPrefix || config.backup_s3_prefix || 'backups').replace(/^\/+|\/+$/g, '');
+      const basePrefix = normalizeS3ObjectKey(configuredPrefix);
+      const runBasePrefix = runPrefix?.match(/^(.*)\/runs\/[^/]+$/)?.[1];
+      const allowedPrefix = normalizeS3ObjectKey(declaredPrefix ? configuredPrefix : (runBasePrefix || configuredPrefix));
+      const files = Array.isArray(manifest?.files?.manifest) ? manifest.files.manifest : [];
+      const manifestFiles = files.map((entry) => ({
+        key: normalizeS3ObjectKey(entry.storage_key || path.posix.join(runPrefix || '', String(entry.path || '').replace(/\\/g, '/'))),
+        size: Number(entry.size) || 0,
+      }));
+      if (manifest?.database?.backup_file) {
+        const databaseKey = normalizeS3ObjectKey(manifest.database.storage_key
+          || path.posix.join(runPrefix || '', 'database', path.posix.basename(manifest.database.backup_file)));
+        if (!databaseKey) return res.status(409).json({ error: 'The backup manifest contains an unsafe database object key.' });
+        if (!manifestFiles.some((entry) => entry.key === databaseKey)) {
+          manifestFiles.push({ key: databaseKey, size: Number(manifest.database.size) || 0 });
+        }
+      }
+      if (!manifestUri || !runPrefix || !basePrefix || !allowedPrefix
+        || manifestFiles.some((file) => !file.key || !file.key.startsWith(`${allowedPrefix}/`))) {
+        return res.status(409).json({ error: 'The backup manifest points outside the configured object-storage prefix.' });
+      }
+
+      const urls = await Promise.all(manifestFiles.map(async (file) => ({
+        key: file.key,
+        size: file.size,
+        url: await s3Adapter.getSignedUrl('getObject', file.key, { expiresIn: 3600 }),
+      })));
+
+      res.json({
+        backupId: backupRun.id,
+        type: 's3',
+        files: urls,
+        manifestUrl: await s3Adapter.getSignedUrl('getObject', manifestUri.key, { expiresIn: 3600 }),
+        expiresIn: 3600,
+        message: 'Use the provided URLs to download the files in this complete restore point'
+      });
+      break;
+    }
+
+    case 'rsync':
+      return res.status(400).json({ error: 'Direct download not available for rsync backups' });
+
+    default:
+      return res.status(400).json({ error: 'Unknown backup type' });
+    }
+  } catch (error) {
+    errorResponse(res, error, 500, 'Failed to download backup');
+  }
+});
+
+// Get current file checksums
+router.get('/checksums', adminAuth, requirePermission('backup.view'), async (req, res) => {
+  try {
+    const { path: targetPath = '', recursive = true } = req.query;
+    const checksums = {};
+
+    // Get storage path
+    const storagePath = process.env.STORAGE_PATH || path.join(__dirname, '../../../storage');
+    let basePath = storagePath;
+    if (targetPath) {
+      const { safePathJoin } = require('../utils/fileSecurityUtils');
+      basePath = safePathJoin(storagePath, targetPath);
+    }
+
+    // Calculate checksums for files
+    const calculateDirChecksums = async (dirPath, relative = '') => {
+      try {
+        const entries = await fs.readdir(dirPath, { withFileTypes: true });
+
+        for (const entry of entries) {
+          const fullPath = path.join(dirPath, entry.name);
+          const relativePath = path.join(relative, entry.name);
+
+          if (entry.isDirectory() && recursive) {
+            await calculateDirChecksums(fullPath, relativePath);
+          } else if (entry.isFile()) {
+            const hash = crypto.createHash('sha256');
+            const stream = require('fs').createReadStream(fullPath);
+
+            await new Promise((resolve, reject) => {
+              stream.on('data', data => hash.update(data));
+              stream.on('end', () => {
+                checksums[relativePath] = {
+                  checksum: hash.digest('hex'),
+                  size: entry.size,
+                  modified: entry.mtime
+                };
+                resolve();
+              });
+              stream.on('error', reject);
+            });
+          }
+        }
+      } catch (error) {
+        logger.error(`Failed to calculate checksums for ${dirPath}:`, error);
+      }
+    };
+
+    await calculateDirChecksums(basePath);
+
+    // Also get database checksums from backup_file_states
+    const dbChecksums = await db('backup_file_states')
+      .select('file_path', 'checksum', 'size_bytes', 'last_modified');
+
+    res.json({
+      currentChecksums: checksums,
+      totalFiles: Object.keys(checksums).length,
+      databaseChecksums: dbChecksums.reduce((acc, row) => {
+        acc[row.file_path] = {
+          checksum: row.checksum,
+          size: row.size_bytes,
+          modified: row.last_modified
+        };
+        return acc;
+      }, {}),
+      path: targetPath || '/'
+    });
+  } catch (error) {
+    errorResponse(res, error, 500, 'Failed to get file checksums');
+  }
+});
+
+// Estimate backup size before running
+router.post('/estimate', adminAuth, requirePermission('backup.view'), async (req, res) => {
+  try {
+    const { includeArchived = true } = req.body;
+
+    // Get storage path
+    const storagePath = process.env.STORAGE_PATH || path.join(__dirname, '../../../storage');
+    let totalSize = 0;
+    let fileCount = 0;
+    const breakdown = {};
+
+    // Estimate size for each directory
+    const estimateDir = async (dirPath, category) => {
+      let dirSize = 0;
+      let dirCount = 0;
+
+      try {
+        const entries = await fs.readdir(dirPath, { withFileTypes: true });
+
+        for (const entry of entries) {
+          const fullPath = path.join(dirPath, entry.name);
+
+          if (entry.isDirectory()) {
+            const subResult = await estimateDir(fullPath, category);
+            dirSize += subResult.size;
+            dirCount += subResult.count;
+          } else if (entry.isFile()) {
+            const stats = await fs.stat(fullPath);
+            dirSize += stats.size;
+            dirCount++;
+          }
+        }
+      } catch (error) {
+        if (error.code !== 'ENOENT') {
+          logger.error(`Failed to estimate ${dirPath}:`, error);
+        }
+      }
+
+      return { size: dirSize, count: dirCount };
+    };
+
+    // Estimate each category
+    const categories = [
+      { path: 'events/active', name: 'Active Events' },
+      { path: 'thumbnails', name: 'Thumbnails' },
+      { path: 'uploads', name: 'Uploads' }
+    ];
+
+    if (includeArchived) {
+      categories.push({ path: 'events/archived', name: 'Archived Events' });
+    }
+
+    for (const category of categories) {
+      const result = await estimateDir(path.join(storagePath, category.path), category.name);
+      breakdown[category.name] = {
+        size: result.size,
+        sizeFormatted: formatBytes(result.size),
+        fileCount: result.count
+      };
+      totalSize += result.size;
+      fileCount += result.count;
+    }
+
+    // Estimate database size
+    const dbPath = process.env.DB_TYPE === 'postgresql'
+      ? null
+      : path.join(__dirname, '../../database.sqlite');
+
+    if (dbPath) {
+      try {
+        const dbStats = await fs.stat(dbPath);
+        breakdown['Database'] = {
+          size: dbStats.size,
+          sizeFormatted: formatBytes(dbStats.size),
+          fileCount: 1
+        };
+        totalSize += dbStats.size;
+        fileCount += 1;
+      } catch (error) {
+        logger.error('Failed to get database size:', error);
+      }
+    }
+
+    // Estimate compression ratio (typically 20-40% for mixed media)
+    const estimatedCompressedSize = Math.round(totalSize * 0.7);
+
+    res.json({
+      totalSize: totalSize,
+      totalSizeFormatted: formatBytes(totalSize),
+      estimatedCompressedSize: estimatedCompressedSize,
+      estimatedCompressedSizeFormatted: formatBytes(estimatedCompressedSize),
+      fileCount: fileCount,
+      breakdown: breakdown,
+      includeArchived: includeArchived,
+      estimatedDuration: Math.max(60, Math.round(totalSize / (50 * 1024 * 1024))), // Estimate 50MB/s
+      warnings: totalSize > 10 * 1024 * 1024 * 1024 ? ['Backup size exceeds 10GB, may take significant time'] : []
+    });
+  } catch (error) {
+    errorResponse(res, error, 500, 'Failed to estimate backup size');
+  }
+});
+
+// Helper function to format bytes
+// Helper function to get backup configuration
+async function getStoredBackupConfig() {
+  try {
+    const settings = await db('app_settings')
+      .where('setting_type', 'backup')
+      .select('setting_key', 'setting_value');
+
+    const config = {};
+    settings.forEach(setting => {
+      try {
+        config[setting.setting_key] = JSON.parse(setting.setting_value);
+      } catch (e) {
+        config[setting.setting_key] = setting.setting_value;
+      }
+    });
+
+    return config;
+  } catch (error) {
+    logger.error('Failed to get backup configuration:', error);
+    return {};
+  }
+}
+
+async function getBackupConfig() {
+  return resolveBackupTarget(await getStoredBackupConfig());
+}
+
+// Helper function to validate manifest data
+async function validateManifestData(manifestData) {
+  try {
+    // Check required fields
+    const requiredFields = ['version', 'backupId', 'timestamp', 'files'];
+    const missingFields = requiredFields.filter(field => !manifestData[field]);
+
+    if (missingFields.length > 0) {
+      return {
+        valid: false,
+        error: `Missing required fields: ${missingFields.join(', ')}`,
+        details: { missingFields }
+      };
+    }
+
+    // Validate version
+    if (manifestData.version !== '1.0') {
+      return {
+        valid: false,
+        error: `Unsupported manifest version: ${manifestData.version}`,
+        details: { version: manifestData.version }
+      };
+    }
+
+    // Validate files array
+    if (!Array.isArray(manifestData.files)) {
+      return {
+        valid: false,
+        error: 'Files must be an array',
+        details: { filesType: typeof manifestData.files }
+      };
+    }
+
+    // Validate each file entry
+    const invalidFiles = [];
+    for (let i = 0; i < manifestData.files.length; i++) {
+      const file = manifestData.files[i];
+      if (!file.path || !file.checksum || typeof file.size !== 'number') {
+        invalidFiles.push({ index: i, file });
+      }
+    }
+
+    if (invalidFiles.length > 0) {
+      return {
+        valid: false,
+        error: `Invalid file entries: ${invalidFiles.length}`,
+        details: { invalidFiles: invalidFiles.slice(0, 10) } // Limit to first 10
+      };
+    }
+
+    return {
+      valid: true,
+      details: {
+        version: manifestData.version,
+        backupId: manifestData.backupId,
+        timestamp: manifestData.timestamp,
+        fileCount: manifestData.files.length,
+        totalSize: manifestData.files.reduce((sum, f) => sum + (f.size || 0), 0)
+      }
+    };
+  } catch (error) {
+    logger.error('Manifest validation error', { error: error.message });
+    return {
+      valid: false,
+      error: 'Validation error encountered while processing manifest',
+      details: { hint: 'See server logs for diagnostic details.' }
+    };
+  }
+}
+
+module.exports = router;
+module.exports._internal = {
+  hasSurvivingS3Child,
+  removeS3RestorePointManifests,
+  parseS3ManifestUri,
+  s3RunPrefixFromManifestKey,
+  normalizeS3ObjectKey,
+  parseRetentionDays,
+};

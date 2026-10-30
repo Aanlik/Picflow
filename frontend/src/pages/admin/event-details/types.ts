@@ -1,0 +1,95 @@
+export type EventDetailsTab = 'overview' | 'photos' | 'categories' | 'guests';
+
+export type EditFormState = {
+  color_theme: string;
+  css_template_id: number | null;
+  expires_at: string;
+  allow_user_uploads: boolean;
+  // Reveal mode (#838): reveal_at is a datetime-local input string ('' = none)
+  reveal_mode: boolean;
+  reveal_at: string;
+  upload_category_id: number | null;
+  hero_photo_id: number | null;
+  customer_name: string;
+  customer_phone: string;
+  require_password: boolean;
+  new_password: string;
+  confirm_new_password: string;
+  // Download protection settings
+  protection_level: 'basic' | 'standard' | 'enhanced' | 'maximum';
+  disable_right_click: boolean;
+  allow_downloads: boolean;
+  allow_original_downloads: boolean;
+  allow_delivery_downloads: boolean;
+  watermark_downloads: boolean;
+  enable_devtools_protection: boolean;
+  use_canvas_rendering: boolean;
+  // Hero logo settings. null = inherit the global branding toggle (#756).
+  hero_logo_visible: boolean | null;
+  hero_logo_size: 'small' | 'medium' | 'large' | 'xlarge' | null;
+  hero_logo_position: 'top' | 'center' | 'bottom';
+  // #894: null = default (show); false hides the logo on the password page.
+  login_logo_visible: boolean | null;
+  // Hero image anchor position (#162) – keyword or "X% Y%" focal point
+  hero_image_anchor: string;
+  // Photo cap
+  photo_cap: number;
+  // Default photo sort
+  default_photo_sort: string;
+  // Per-event promotional override (#440). Three-way mode:
+  //   inherit → use the global branding_promo_markdown
+  //   custom  → render this event's promo_markdown
+  //   off     → no promo for this event regardless of global
+  promo_mode: 'inherit' | 'custom' | 'off';
+  promo_markdown: string;
+  // Info banner (#932) — same three-way mode, rendered above the grid.
+  info_mode: 'inherit' | 'custom' | 'off';
+  info_markdown: string;
+  // Per-event opt-in for hero photo as social-share preview (#474).
+  og_image_share_enabled: boolean;
+};
+
+export const INITIAL_EDIT_FORM: EditFormState = {
+  color_theme: '',
+  css_template_id: null,
+  expires_at: '',
+  allow_user_uploads: false,
+  reveal_mode: false,
+  reveal_at: '',
+  upload_category_id: null,
+  hero_photo_id: null,
+  customer_name: '',
+  customer_phone: '',
+  require_password: true,
+  new_password: '',
+  confirm_new_password: '',
+  // Download protection settings
+  protection_level: 'standard',
+  disable_right_click: true,
+  allow_downloads: true,
+  allow_original_downloads: true,
+  allow_delivery_downloads: true,
+  watermark_downloads: false,
+  enable_devtools_protection: true,
+  use_canvas_rendering: false,
+  // Hero logo settings — null = inherit global branding toggle (#756)
+  hero_logo_visible: null,
+  hero_logo_size: null,
+  hero_logo_position: 'top',
+  login_logo_visible: null,
+  // Hero image anchor position (#162)
+  hero_image_anchor: 'center',
+  // Photo cap
+  photo_cap: 0,
+  // Default photo sort
+  default_photo_sort: 'upload_date_desc',
+  // Per-event promotional override (#440)
+  promo_mode: 'inherit',
+  promo_markdown: '',
+  info_mode: 'inherit',
+  info_markdown: '',
+  // Per-event social-share opt-in (#474). Default false everywhere
+  // so a freshly opened editor never displays "on" against the saved
+  // (off) state.
+  og_image_share_enabled: false,
+};

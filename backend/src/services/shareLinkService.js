@@ -1,0 +1,253 @@
+const { db } = require('../database/db');
+const { formatBoolean } = require('../utils/dbCompat');
+const { extractShareToken, isPotentialShareToken, buildSharePath } = require('../utils/shareLinkUtils');
+const { getFrontendBaseUrl, isLoopbackBase } = require('../utils/frontendUrl');
+const logger = require('../utils/logger');
+
+const SETTING_KEY = 'general_short_gallery_urls';
+const CACHE_TTL_MS = 60_000;
+
+let cachedSetting = null;
+let cacheExpiresAt = 0;
+
+const parseSettingValue = (rawValue) => {
+  if (rawValue === undefined || rawValue === null) {
+    return null;
+  }
+
+  if (typeof rawValue === 'boolean') {
+    return rawValue;
+  }
+
+  if (typeof rawValue === 'number') {
+    return rawValue !== 0;
+  }
+
+  if (typeof rawValue === 'string') {
+    const trimmed = rawValue.trim();
+    if (!trimmed) {
+      return null;
+    }
+
+    try {
+      const parsed = JSON.parse(trimmed);
+      return parseSettingValue(parsed);
+    } catch {
+      const normalized = trimmed.toLowerCase();
+      if (normalized === 'true' || normalized === '1' || normalized === 'yes') {
+        return true;
+      }
+      if (normalized === 'false' || normalized === '0' || normalized === 'no') {
+        return false;
+      }
+      return null;
+    }
+  }
+
+  if (typeof rawValue === 'object') {
+    try {
+      return parseSettingValue(JSON.parse(JSON.stringify(rawValue)));
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+};
+
+const getRawSettingValue = async () => {
+  try {
+    const setting = await db('app_settings').where({ setting_key: SETTING_KEY }).first();
+    return setting?.setting_value ?? null;
+  } catch (error) {
+    logger.error('Failed to read gallery URL setting:', error.message);
+    return null;
+  }
+};
+
+const isShortGalleryUrlsEnabled = async () => {
+  if (cachedSetting !== null && Date.now() < cacheExpiresAt) {
+    return cachedSetting;
+  }
+
+  const rawValue = await getRawSettingValue();
+  const parsed = parseSettingValue(rawValue);
+  cachedSetting = parsed === null ? false : Boolean(parsed);
+  cacheExpiresAt = Date.now() + CACHE_TTL_MS;
+  return cachedSetting;
+};
+
+const clearShareLinkSettingsCache = () => {
+  cachedSetting = null;
+  cacheExpiresAt = 0;
+};
+
+const buildShareLinkVariants = async ({ slug, shareToken }) => {
+  if (!shareToken) {
+    throw new Error('shareToken is required to build share link variants');
+  }
+
+  const shortEnabled = await isShortGalleryUrlsEnabled();
+  const sharePath = buildSharePath(slug, shareToken, shortEnabled);
+  const frontendBase = await getFrontendBaseUrl();
+  const shareUrl = frontendBase ? `${frontendBase}${sharePath}` : sharePath;
+
+  return {
+    shortEnabled,
+    sharePath,
+    shareUrl,
+    shareLinkToStore: sharePath
+  };
+};
+
+/**
+ * Resolve a stored gallery path to the customer-facing URL used by the
+ * current installation. The database normally stores relative paths, so the
+ * configured Site URL must be applied when an admin copies a link or creates
+ * a QR code. Keep the old absolute origin only when no site origin is
+ * configured; when one is configured, retain the path/token and move it to
+ * that origin so changing the customer access address takes effect for
+ * existing galleries too.
+ */
+const resolveShareLinkUrl = async (link, { req, requestOrigin } = {}) => {
+  if (!link || typeof link !== 'string') return null;
+
+  let sharePath = link;
+  if (/^https?:\/\//i.test(link)) {
+    try {
+      const parsed = new URL(link);
+      sharePath = `${parsed.pathname}${parsed.search}${parsed.hash}`;
+    } catch {
+      return link;
+    }
+  }
+  if (!sharePath.startsWith('/')) sharePath = `/gallery/${sharePath}`;
+
+  // Resolve without the request first so general_site_url (and an explicit
+  // FRONTEND_URL) beats the host used by the admin browser, which may be a
+  // LAN-only address or an internal reverse-proxy hostname.
+  const configuredBase = await getFrontendBaseUrl();
+  if (configuredBase) return `${configuredBase}${sharePath}`;
+
+  // Preserve a legacy reachable absolute address when no global customer
+  // address is configured. Loopback URLs are unusable to customers on other
+  // devices, so they may still use the explicit/request-derived fallback.
+  if (/^https?:\/\//i.test(link) && !isLoopbackBase(link)) return link;
+
+  const explicitOrigin = typeof requestOrigin === 'string'
+    && /^https?:\/\/[^\s/]+$/i.test(requestOrigin)
+    ? requestOrigin.replace(/\/$/, '')
+    : '';
+  if (explicitOrigin) return `${explicitOrigin}${sharePath}`;
+
+  const requestBase = req ? await getFrontendBaseUrl(req) : '';
+  if (requestBase) return `${requestBase}${sharePath}`;
+
+  // No configured or request-derived base: retain a legacy absolute URL.
+  return /^https?:\/\//i.test(link) ? link : sharePath;
+};
+
+const getEventShareToken = (event) => {
+  if (!event) {
+    return null;
+  }
+
+  if (event.share_token) {
+    return event.share_token;
+  }
+
+  return extractShareToken(event.share_link);
+};
+
+const ACTIVE_EVENT_FILTER = {
+  is_active: formatBoolean(true),
+  is_archived: formatBoolean(false),
+  is_draft: formatBoolean(false)
+};
+
+// Include inactive drafts for admin preview only (#1386); published inactive
+// galleries remain unavailable. Callers MUST authorize any draft matched —
+// see /resolve, which only reaches for this filter after the preview flag.
+const UNPUBLISHED_EVENT_FILTER = {
+  is_archived: formatBoolean(false),
+};
+
+const resolveShareIdentifier = async (identifier, { includeDrafts = false } = {}) => {
+  if (!identifier) {
+    return null;
+  }
+
+  const trimmed = String(identifier).trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const baseQuery = db('events')
+    .select(
+      'id',
+      'slug',
+      'share_link',
+      'share_token',
+      'require_password',
+      'event_name',
+      'event_date',
+      'expires_at',
+      'is_active',
+      'is_archived',
+      'is_draft'
+    )
+    .where(includeDrafts ? UNPUBLISHED_EVENT_FILTER : ACTIVE_EVENT_FILTER);
+  if (includeDrafts) {
+    baseQuery.where((query) => query
+      .where({ is_active: formatBoolean(true) })
+      .orWhere({ is_draft: formatBoolean(true) }));
+  }
+
+  let event = await baseQuery.clone().where({ slug: trimmed }).first();
+  if (event) {
+    return { event, matchType: 'slug', shareToken: getEventShareToken(event) };
+  }
+
+  event = await baseQuery.clone().where({ share_token: trimmed }).first();
+  if (event) {
+    return { event, matchType: 'token', shareToken: getEventShareToken(event) };
+  }
+
+  event = await baseQuery.clone().where({ share_link: trimmed }).first();
+  if (event) {
+    return { event, matchType: 'link', shareToken: getEventShareToken(event) };
+  }
+
+  // GHSA-rh8r hardening: `trimmed` is attacker-controlled, so escape LIKE
+  // wildcards (`%`, `_`, and the escape char itself) before embedding it.
+  // Otherwise an anonymous `/resolve/________…________` (32 underscores)
+  // matches ANY share_link via single-char wildcards, resolves as
+  // matchType 'link_partial', and the /resolve route hands back the
+  // gallery's bearer token — reopening the very hole the token-withholding
+  // fix closed. Explicit ESCAPE clause because SQLite has no default LIKE
+  // escape character (Postgres defaults to backslash, but we set it for both).
+  const likeTail = `%/${trimmed.replace(/[\\%_]/g, (c) => `\\${c}`)}`;
+  event = await baseQuery.clone().whereRaw('share_link LIKE ? ESCAPE \'\\\'', [likeTail]).first();
+  if (event) {
+    return { event, matchType: 'link_partial', shareToken: getEventShareToken(event) };
+  }
+
+  // As a final fallback, if identifier looks like a token but we did not match via share_token
+  if (isPotentialShareToken(trimmed)) {
+    event = await baseQuery.clone().whereRaw('LOWER(share_token) = ?', [trimmed.toLowerCase()]).first();
+    if (event) {
+      return { event, matchType: 'token_case_insensitive', shareToken: getEventShareToken(event) };
+    }
+  }
+
+  return null;
+};
+
+module.exports = {
+  isShortGalleryUrlsEnabled,
+  clearShareLinkSettingsCache,
+  buildShareLinkVariants,
+  resolveShareLinkUrl,
+  getEventShareToken,
+  resolveShareIdentifier
+};

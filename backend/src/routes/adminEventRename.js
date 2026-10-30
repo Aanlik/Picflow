@@ -1,0 +1,87 @@
+/**
+ * Admin Event Rename Routes
+ * Handles event renaming operations
+ */
+
+const express = require('express');
+const { body, validationResult } = require('express-validator');
+const { safeValidationErrors } = require('../utils/routeHelpers');
+const { adminAuth } = require('../middleware/auth');
+const { requirePermission } = require('../middleware/permissions');
+const { requireEventOwnership } = require('../middleware/ownership');
+const eventRenameService = require('../services/eventRenameService');
+const logger = require('../utils/logger');
+const router = express.Router();
+
+/**
+ * POST /api/admin/events/:eventId/rename
+ * Rename an event
+ */
+router.post('/:eventId/rename', adminAuth, requirePermission('events.edit'), requireEventOwnership, [
+  body('newEventName')
+    .trim()
+    .isLength({ min: 3, max: 100 })
+    .withMessage('Event name must be between 3 and 100 characters'),
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ success: false, errors: safeValidationErrors(errors) });
+    }
+
+    const { eventId } = req.params;
+    const { newEventName } = req.body;
+
+    const result = await eventRenameService.renameEvent(
+      parseInt(eventId, 10),
+      newEventName,
+      req.admin
+    );
+
+    if (!result.success) {
+      return res.status(400).json(result);
+    }
+
+    res.json({
+      success: true,
+      message: 'Event renamed successfully',
+      data: result.data
+    });
+  } catch (error) {
+    logger.error('Error renaming event:', error);
+    res.status(500).json({ success: false, error: 'Failed to rename event' });
+  }
+});
+
+/**
+ * POST /api/admin/events/:eventId/validate-rename
+ * Validate a potential rename without executing it
+ */
+router.post('/:eventId/validate-rename', adminAuth, requirePermission('events.edit'), requireEventOwnership, [
+  body('newEventName')
+    .trim()
+    .isLength({ min: 3, max: 100 })
+    .withMessage('Event name must be between 3 and 100 characters')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ valid: false, errors: safeValidationErrors(errors) });
+    }
+
+    const { eventId } = req.params;
+    const { newEventName } = req.body;
+
+    const validation = await eventRenameService.validateRename(
+      parseInt(eventId, 10),
+      newEventName
+    );
+
+    res.json(validation);
+  } catch (error) {
+    logger.error('Error validating rename:', error);
+    res.status(500).json({ valid: false, error: 'Validation failed' });
+  }
+});
+
+module.exports = router;

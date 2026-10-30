@@ -1,0 +1,95 @@
+import { api } from '../config/api';
+
+export interface PublicSettings {
+  branding_company_name: string;
+  branding_company_tagline: string;
+  branding_footer_text: string;
+  branding_watermark_enabled: boolean;
+  branding_watermark_logo_url: string;
+  branding_watermark_position: 'bottom-right' | 'bottom-left' | 'top-right' | 'top-left' | 'center';
+  branding_watermark_opacity: number;
+  branding_watermark_size: number;
+  branding_favicon_url: string;
+  branding_logo_url: string;
+  branding_logo_url_dark?: string;
+  branding_logo_size?: string;
+  branding_logo_max_height?: number;
+  /**
+   * Logo placement. 'left' | 'center' | 'right' = inside the gallery
+   * header. 'sidepanel' = moved into the admin sidebar's brand row
+   * (admin chrome only — gallery falls back to 'left').
+   */
+  branding_logo_position?: 'left' | 'center' | 'right' | 'sidepanel';
+  branding_logo_display_mode?: 'logo_only' | 'text_only' | 'logo_and_text';
+  branding_logo_display_header?: boolean;
+  branding_logo_display_hero?: boolean;
+  branding_hide_powered_by?: boolean;
+  /**
+   * Force the entire site into a specific color mode (instance-wide).
+   * 'dark' or 'light' override user/system preference; null = no force.
+   * AdminDarkModeContext + ThemeContext both honor this.
+   */
+  branding_force_color_mode?: 'dark' | 'light' | null;
+  /**
+   * Login-page-only branding (#354 follow-up). Applies to the admin login
+   * and setup screens. Defaults: frame on, size 'medium'.
+   */
+  branding_login_logo_frame_enabled?: boolean;
+  branding_login_logo_size?: 'small' | 'medium' | 'large' | 'xlarge';
+  // Domestic social links shown in the gallery footer. Empty strings mean "hide".
+  branding_douyin_url?: string;
+  branding_xiaohongshu_url?: string;
+  branding_weibo_url?: string;
+  branding_kuaishou_url?: string;
+  branding_promo_markdown?: string;
+  // Global default for the gallery info banner (#932).
+  branding_info_markdown?: string;
+  branding_promo_position?: 'above_footer' | 'below_footer';
+  // Per-install promo banner alignment (#482). Defaults to 'center'
+  // so the banner aligns with the gallery footer's centering.
+  branding_promo_alignment?: 'left' | 'center' | 'right';
+  theme_config: any;
+  default_language: string;
+  general_date_format: string | { format: string; locale: string };
+  /** '12h' or '24h' — controls how times are rendered in admin and gallery
+   *  views. Storage is always 24h; only display toggles. */
+  general_time_format?: '12h' | '24h';
+  maintenance_mode: boolean;
+  // Upload settings
+  allowed_file_types?: string;
+  // #613 — per-batch file count limit, surfaced so the guest UserPhotoUpload
+  // modal can render the real number in `upload.fileRequirements` and refuse
+  // oversized batches client-side. Backend enforces the same value too.
+  general_max_files_per_upload?: number;
+  // #613 follow-up — per-file size limit (MB), surfaced so the guest upload
+  // modal shows the real limit and guards client-side. Backend enforces it too.
+  general_max_file_size_mb?: number;
+  // Event field requirements
+  event_require_customer_name?: boolean;
+  event_require_event_date?: boolean;
+  event_require_expiration?: boolean;
+  event_default_require_password?: boolean;
+  event_default_feedback_enabled?: boolean;
+  // Per-type feedback defaults (#1044) — seed the create form's feedback panel.
+  event_default_allow_ratings?: boolean;
+  event_default_allow_likes?: boolean;
+  event_default_allow_favorites?: boolean;
+  event_default_allow_comments?: boolean;
+  event_default_allow_reactions?: boolean;
+  event_default_allow_color_labels?: boolean;
+  event_default_keybind_mode?: 'colors' | 'lightroom';
+  gallery_show_filter_bar?: boolean;
+  event_phone_field_enabled?: boolean;
+  // SEO meta tags (consumed by RobotsMetaTags)
+  seo_meta_noindex?: boolean;
+  seo_meta_nofollow?: boolean;
+  seo_meta_noai?: boolean;
+}
+
+export const publicSettingsService = {
+  // Get public settings (no authentication required)
+  async getPublicSettings(): Promise<PublicSettings> {
+    const response = await api.get<PublicSettings>('/public/settings');
+    return response.data;
+  }
+};

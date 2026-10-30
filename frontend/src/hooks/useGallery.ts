@@ -1,0 +1,111 @@
+import { useQuery, useMutation } from '@tanstack/react-query';
+import { galleryService } from '../services';
+import { toast } from 'react-toastify';
+import { useTranslation } from 'react-i18next';
+import { galleryRefreshInterval } from '../utils/galleryRefreshInterval';
+
+export const useGalleryInfo = (slug?: string, token?: string, enabled: boolean = true) => {
+  return useQuery({
+    queryKey: ['gallery-info', slug, token],
+    queryFn: () => {
+      if (!slug) {
+        throw new Error('Gallery slug is required');
+      }
+      return galleryService.getGalleryInfo(slug, token);
+    },
+    retry: 1,
+    staleTime: 5 * 60 * 1000, // 5 minutes
+    enabled: Boolean(slug) && enabled,
+  });
+};
+
+export const useGalleryPhotos = (
+  slug: string,
+  filter?: 'liked' | 'favorited' | 'commented' | 'rated' | 'all',
+  guestId?: string,
+  enabled: boolean = true
+) => {
+  return useQuery({
+    queryKey: ['gallery-photos', slug, filter, guestId],
+    // Pass guestId so backend can filter per-guest views when needed
+    queryFn: ({ signal }) => galleryService.getGalleryPhotos(slug, filter, guestId, signal),
+    enabled,
+    retry: 1,
+    staleTime: 5 * 60 * 1000, // 5 minutes
+    // Keep shared proofing state (labels, likes, ratings and comment counts)
+    // fresh for guests who leave the gallery open on another device.
+    refetchInterval: (query) => galleryRefreshInterval(query.state.data?.photos?.length || 0),
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
+    // Add a small delay to ensure auth token is properly set
+    retryDelay: 100,
+  });
+};
+
+export const useDownloadPhoto = () => {
+  const { t } = useTranslation();
+  return useMutation({
+    networkMode: 'always',
+    mutationFn: ({
+      slug,
+      photoId,
+      filename,
+    }: {
+      slug: string;
+      photoId: number;
+      filename: string;
+    }) => galleryService.downloadPhoto(slug, photoId, filename),
+    onSuccess: () => {
+      toast.success(t('gallery.photoDownloadStarted'));
+    },
+    onError: () => {
+      toast.error(t('gallery.photoDownloadFailed'));
+    },
+  });
+};
+
+// Save-aware download — opens the OS share sheet on mobile (so "Save to
+// Photos" lands the file in the Photos/Gallery app instead of Files),
+// falls back to a regular download on browsers without Web Share file
+// support. See galleryService.savePhotoToDevice for the negotiation
+// (#531).
+//
+// Toast omitted on success because the share-sheet path doesn't really
+// finish from this code's perspective — the OS UI takes over and the
+// user picks where it goes. Showing "Photo downloaded" before they've
+// even picked is misleading. The fallback download path is also silent
+// to keep the two paths symmetrical; the file appearing in Downloads
+// is its own affordance.
+export const useSavePhotoToDevice = () => {
+  const { t } = useTranslation();
+  return useMutation({
+    networkMode: 'always',
+    mutationFn: ({
+      slug,
+      photoId,
+      filename,
+    }: {
+      slug: string;
+      photoId: number;
+      filename: string;
+    }) => galleryService.savePhotoToDevice(slug, photoId, filename),
+    onError: () => {
+      toast.error(t('gallery.photoSaveFailed'));
+    },
+  });
+};
+
+export const useDownloadAllPhotos = () => {
+  const { t } = useTranslation();
+  return useMutation({
+    networkMode: 'always',
+    mutationFn: ({ slug }: { slug: string }) =>
+      galleryService.downloadAllPhotos(slug),
+    onSuccess: () => {
+      toast.success(t('gallery.allDownloadsStarted'));
+    },
+    onError: () => {
+      toast.error(t('gallery.allDownloadsFailed'));
+    },
+  });
+};

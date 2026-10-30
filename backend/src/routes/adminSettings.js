@@ -1,0 +1,1841 @@
+const express = require('express');
+const multer = require('multer');
+const path = require('path');
+const { uploadedAssetPath } = require('../utils/safePath');
+const fs = require('fs').promises;
+const { body, validationResult } = require('express-validator');
+const validator = require('validator');
+const { db, logActivity } = require('../database/db');
+const { formatBoolean } = require('../utils/dbCompat');
+const { adminAuth } = require('../middleware/auth');
+const { requirePermission, userHasAnyPermission, isSuperAdminUser } = require('../middleware/permissions');
+const { clearMaintenanceCache } = require('../middleware/maintenance');
+const { clearSettingsCache, initializeRateLimiters, RATE_LIMIT_DEFAULTS } = require('../services/rateLimitService');
+const { SETTING_KEY: GALLERY_PASSWORD_SETTING, purgeRecoverablePasswords, purgePlanForSettingWrite } = require('../utils/galleryPasswordVault');
+const {
+  DEFAULT_PUBLIC_SITE_HTML,
+  DEFAULT_PUBLIC_SITE_CSS,
+} = require('../constants/publicSiteDefaults');
+const {
+  clearPublicSiteCache,
+  getDefaultPublicSitePayload,
+  getRawPublicSiteSettings,
+} = require('../services/publicSiteService');
+const { sanitizeCss } = require('../utils/cssSanitizer');
+const { upsertAppSetting } = require('../utils/appSettings');
+const { clearShareLinkSettingsCache } = require('../services/shareLinkService');
+const { invalidateSiteUrlCache, isEnvPinned, envPinnedBase } = require('../utils/frontendUrl');
+const { resetSecurityConfigCache } = require('../utils/authSecurity');
+const { errorResponse, safeValidationErrors } = require('../utils/routeHelpers');
+const { measureLocalStorageUsage } = require('../services/localStorageUsage');
+const logger = require('../utils/logger');
+const router = express.Router();
+
+// What a stored secret looks like on GET; a save that carries it back means
+// "unchanged", never "set the secret to this".
+const { clearMaxFilesPerUploadCache, MAX_ALLOWED_FILES_PER_UPLOAD, clearMaxFileSizeCache, clearMaxVideoSizeCache, MAX_ALLOWED_FILE_SIZE_MB } = require('../services/uploadSettings');
+const watermarkService = require('../services/watermarkService');
+const watermarkGeneratorService = require('../services/watermarkGeneratorService');
+
+const getStoragePath = () => process.env.STORAGE_PATH || path.join(__dirname, '../../../storage');
+
+// Reserved first-run bootstrap marker — never writable through the generic
+// settings upserts in this file. Every handler that loops arbitrary request
+// keys into app_settings must strip it first.
+// Branding *path* keys (GHSA-665x) are server-computed by the logo-upload
+// flow and feed a filesystem logo resolver; letting the general settings PUT
+// set them to arbitrary strings makes them an input to path resolution.
+// Reserve them here — the dedicated upload endpoints still write them.
+const RESERVED_SETTING_KEYS = [
+  'setup_wizard_completed',
+  'branding_logo_path', 'branding_logo_path_dark', 'branding_watermark_logo_path',
+];
+// Every download_* key is reserved too (#858): the cached download-all zip is
+// built AT the standard resolution, so changing it has to invalidate those
+// zips and re-validate the value against the preset list. A generic upsert
+// would do neither, leaving galleries handing out archives at the old size.
+const isReservedSettingKey = (key) => RESERVED_SETTING_KEYS.includes(key)
+  || key.startsWith('download_')
+  // Derived, read-only fields the GET response adds for the General tab
+  // (#705). They are computed from the environment, never stored, so a
+  // round-trip of the GET payload must not create phantom setting rows.
+  || key === 'general_site_url_env_pinned'
+  || key === 'general_site_url_effective';
+const stripReservedSettingKeys = (settings) => {
+  for (const key of Object.keys(settings)) {
+    if (isReservedSettingKey(key)) delete settings[key];
+  }
+  return settings;
+};
+// Keys owned by a dedicated, separately permission-checked writer. Those
+// routes apply their own permission rules and validate the values; a generic
+// upsert would skip all of that. Writers only — the generic reads still
+// return these rows.
+//   backup_* / database_backup_*  PUT /admin/backup/config and
+//                                 /admin/database-backup/config (super_admin
+//                                 for destinations and the manifest location)
+//   rate_limit_*                  PUT /admin/settings/security/rate-limit
+//                                 (settings.security; range-validated — a
+//                                 settings.edit holder could otherwise switch
+//                                 the limiter off through /general)
+//   max_image_requests_*          PUT /admin/image-security/settings
+//                                 (image_security.manage)
+//   restore_*                     PUT /admin/restore/settings (backup.restore;
+//                                 restore_allow_force and
+//                                 restore_require_pre_backup gate restore-start)
+const DEDICATED_ROUTE_KEY_PREFIXES = [
+  'backup_', 'database_backup_', 'rate_limit_', 'max_image_requests_', 'restore_', 'ledger_',
+];
+const isDedicatedRouteOwnedKey = (key) => DEDICATED_ROUTE_KEY_PREFIXES.some((prefix) => key.startsWith(prefix));
+// 400 (naming the keys) when a generic write carries route-owned keys, rather
+// than dropping them silently; returns true if the request was rejected.
+const rejectDedicatedRouteOwnedKeys = (settings, res) => {
+  const keys = Object.keys(settings).filter(isDedicatedRouteOwnedKey);
+  if (keys.length === 0) return false;
+  res.status(400).json({
+    error: 'These settings are saved through their own configuration endpoint, not the general settings',
+    code: 'SETTINGS_OWNED_ELSEWHERE',
+    keys,
+  });
+  return true;
+};
+
+// Generic settings writers use a per-key permission boundary for sensitive
+// settings.
+const parseStoredSetting = (row) => {
+  if (!row) return undefined;
+  try { return JSON.parse(row.setting_value); } catch (_) { return row.setting_value; }
+};
+// A rule names either the owning `perm`, or `superAdmin: true` when the key is
+// a super-admin decision that no delegable permission can grant.
+const PROTECTED_SETTING_KEY_PERMS = [
+  { match: (k) => k === 'general_site_url', perm: 'settings.domains' },
+  { match: (k) => k.startsWith('security_'), perm: 'settings.security' },
+];
+// Returns the list of {key, perm} the caller tried to CHANGE without the owning
+// permission. Callers 403 when it's non-empty rather than silently no-op'ing a
+// permission boundary. Change-detection matters: the General tab re-posts
+// general_site_url on every save, so a no-op round-trip of the stored value must
+// not 403 an otherwise-safe settings.edit save (the office-manager role this PR
+// exists to enable) — only an actual change is rejected. A denied key the caller
+// couldn't change is left in `settings` (the request 403s before the upsert); an
+// unauthorized no-op is dropped so the rest of the save proceeds.
+const collectUnauthorizedProtectedKeys = async (settings, adminId) => {
+  const denied = [];
+  for (const key of Object.keys(settings)) {
+    const rule = PROTECTED_SETTING_KEY_PERMS.find((r) => r.match(key));
+    if (!rule) continue;
+    const allowed = rule.superAdmin
+      ? await isSuperAdminUser(adminId)
+      : await userHasAnyPermission(adminId, [rule.perm]);
+    if (allowed) continue;
+    const row = await db('app_settings').where({ setting_key: key }).first();
+    const stored = row ? parseStoredSetting(row) : undefined;
+    if (String(stored ?? '') === String(settings[key] ?? '')) {
+      delete settings[key]; // unchanged — let the rest of the save through
+      continue;
+    }
+    denied.push({ key, perm: rule.superAdmin ? 'super_admin' : rule.perm });
+  }
+  return denied;
+};
+// Express helper: 403 (naming the keys + required perms) when the caller tried
+// to write a protected key they don't hold; returns true if the request was
+// rejected so the route can stop.
+const rejectUnauthorizedProtectedKeys = async (settings, req, res) => {
+  const denied = await collectUnauthorizedProtectedKeys(settings, req.admin.id);
+  if (denied.length > 0) {
+    res.status(403).json({
+      error: `You don't have permission to change: ${denied.map((d) => d.key).join(', ')}`,
+      code: 'FORBIDDEN',
+      keys: denied,
+    });
+    return true;
+  }
+  return false;
+};
+
+// Configure multer for logo uploads
+const storage = multer.diskStorage({
+  destination: async (req, file, cb) => {
+    const uploadDir = path.join(getStoragePath(), 'uploads/logos');
+    await fs.mkdir(uploadDir, { recursive: true });
+    cb(null, uploadDir);
+  },
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname);
+    cb(null, `logo-${Date.now()}${ext}`);
+  }
+});
+
+const { validateFileType } = require('../utils/fileSecurityUtils');
+
+const upload = multer({
+  storage,
+  // CVE-2026-82333: single unnamed field (`logo` or `watermarkLogo`) per
+  // route — no legitimate array-indexed field names, so reject any
+  // bracket-index field name.
+  limits: { fileSize: 5 * 1024 * 1024, fieldArrayIndexLimit: 0 }, // 5MB
+  fileFilter: (req, file, cb) => {
+    // Note: SVG files are excluded from magic number validation for logos
+    const allowedMimeTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/svg+xml'];
+
+    if (validateFileType(file.originalname, file.mimetype, allowedMimeTypes)) {
+      return cb(null, true);
+    } else {
+      cb(new Error('Only JPEG, PNG, GIF and SVG image files are allowed'));
+    }
+  }
+});
+
+// Configure multer for favicon uploads
+const faviconStorage = multer.diskStorage({
+  destination: async (req, file, cb) => {
+    const uploadDir = path.join(getStoragePath(), 'uploads/favicons');
+    await fs.mkdir(uploadDir, { recursive: true });
+    cb(null, uploadDir);
+  },
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname);
+    cb(null, `favicon-${Date.now()}${ext}`);
+  }
+});
+
+const faviconUpload = multer({
+  storage: faviconStorage,
+  // CVE-2026-82333: single unnamed `favicon` field only — no legitimate
+  // array-indexed field names, so reject any bracket-index field name.
+  limits: { fileSize: 2 * 1024 * 1024, fieldArrayIndexLimit: 0 }, // 2MB — roomy enough for a 512×512+ square PNG
+  fileFilter: (req, file, cb) => {
+    const allowedMimeTypes = ['image/png', 'image/x-icon', 'image/vnd.microsoft.icon'];
+    const name = file.originalname.toLowerCase();
+
+    // For ICO files, we can't use the standard validateFileType
+    if (file.mimetype === 'image/png') {
+      if (validateFileType(file.originalname, file.mimetype, ['image/png'])) {
+        cb(null, true);
+      } else {
+        cb(new Error('Invalid PNG file'));
+      }
+    } else if (file.mimetype === 'image/svg+xml' && name.endsWith('.svg')) {
+      // SVG favicons are supported by modern browsers and are crisp at any
+      // size. Served SVGs are CSP-locked (no script execution) by the
+      // secureStatic middleware, so an admin-uploaded SVG is render-only.
+      cb(null, true);
+    } else if (allowedMimeTypes.includes(file.mimetype) &&
+               (name.endsWith('.ico') || name.endsWith('.png'))) {
+      cb(null, true);
+    } else {
+      cb(new Error('Favicon must be PNG, ICO, or SVG format'));
+    }
+  }
+});
+
+// Get all settings, or a subset when ?keys=k1,k2,… is supplied.
+// Many caller pages only need a handful of keys (e.g. ReminderTemplates
+// reads 2 of the ~100 rows). The keys filter is allowlist-bounded by
+// what's stored, so passing unknown keys just returns them as `null`
+// — no enumeration risk beyond what GET / returned already.
+/**
+ * Recoverable gallery passwords (#1271): every transition of the setting
+ * starts from a clean vault. Off is a promise that nothing reversible is
+ * left behind; on-from-off must not resurrect copies a write left behind
+ * after the previous purge. Decided BEFORE the upsert (needs the old value),
+ * applied after it. Every writer that accepts a security_ key does this.
+ */
+// Every writer that accepts a security_ key runs the vault purge on the side
+// of the write the transition calls for (see purgePlanForSettingWrite).
+async function galleryPasswordPurgePlan(settings) {
+  if (!settings || !Object.prototype.hasOwnProperty.call(settings, GALLERY_PASSWORD_SETTING)) return { before: false, after: false };
+  return purgePlanForSettingWrite(settings[GALLERY_PASSWORD_SETTING]);
+}
+
+router.get('/', adminAuth, requirePermission('settings.view'), async (req, res) => {
+  try {
+    const keysParam = typeof req.query.keys === 'string' ? req.query.keys : null;
+    const keysFilter = keysParam
+      ? keysParam.split(',').map((k) => k.trim()).filter(Boolean).slice(0, 100)
+      : null;
+
+    const query = db('app_settings').select('*');
+    if (keysFilter && keysFilter.length > 0) {
+      query.whereIn('setting_key', keysFilter);
+    }
+    const settings = await query;
+
+    // Convert to object format
+    const settingsObject = {};
+    settings.forEach(setting => {
+      // Check for null/undefined explicitly to handle boolean false and 0 values
+      // PostgreSQL json column returns parsed values (false as boolean, not string)
+      if (setting.setting_value !== null && setting.setting_value !== undefined) {
+        // If the value is already parsed (from json column), use it directly
+        if (typeof setting.setting_value !== 'string') {
+          settingsObject[setting.setting_key] = setting.setting_value;
+        } else {
+          try {
+            // Try to parse as JSON first
+            settingsObject[setting.setting_key] = JSON.parse(setting.setting_value);
+          } catch (e) {
+            // If it's not valid JSON, use the raw value
+            settingsObject[setting.setting_key] = setting.setting_value;
+          }
+        }
+      } else {
+        settingsObject[setting.setting_key] = null;
+      }
+    });
+
+    // Reserved bootstrap keys are NEVER readable through generic settings
+    // reads; these are owned by the first-run setup flow.
+    stripReservedSettingKeys(settingsObject);
+
+    // Surface whether FRONTEND_URL pins the public origin (#705). The env var
+    // OVERRIDES general_site_url, so without this the General tab would offer
+    // an editable field whose value is silently ignored at runtime.
+    settingsObject.general_site_url_env_pinned = isEnvPinned();
+    if (settingsObject.general_site_url_env_pinned) {
+      settingsObject.general_site_url_effective = envPinnedBase();
+    }
+
+    // Backup credentials — the S3 secret key and the rsync SSH PRIVATE KEY
+    // were returned in plaintext to any settings.view holder. The dedicated
+    // /admin/backup/config endpoints handle the edit round-trip.
+    if (settingsObject.backup_s3_secret_key) {
+      settingsObject.backup_s3_secret_key = '••••••••';
+    }
+    if (settingsObject.backup_rsync_ssh_key) {
+      settingsObject.backup_rsync_ssh_key = '••••••••';
+    }
+
+    // The general API rate limiter falls back to code defaults when a key has
+    // no row, which is every fresh install. Surface those so the Security tab
+    // shows the budget actually in force instead of an empty field (#1337).
+    for (const [key, value] of Object.entries(RATE_LIMIT_DEFAULTS)) {
+      if (settingsObject[key] === undefined && (!keysFilter || keysFilter.includes(key))) {
+        settingsObject[key] = value;
+      }
+    }
+    res.json(settingsObject);
+  } catch (error) {
+    errorResponse(res, error, 500, 'Failed to fetch settings');
+  }
+});
+
+// Global Live Slideshow defaults (migration 139). The per-event watermark is
+// tri-state (events.show_watermark NULL = inherit these). Read via the generic
+// GET /:type ('slideshow'); this is the typed write.
+router.put('/slideshow', adminAuth, requirePermission('settings.edit'), async (req, res) => {
+  try {
+    const updates = [];
+    const push = (key, value) => updates.push({ setting_key: key, setting_value: JSON.stringify(value), setting_type: 'slideshow' });
+    const has = (k) => Object.prototype.hasOwnProperty.call(req.body, k);
+
+    if (has('slideshow_fit')) {
+      push('slideshow_fit', req.body.slideshow_fit === 'contain' ? 'contain' : 'cover');
+    }
+    // Picpeak-wide display preset (default style new events inherit).
+    if (has('slideshow_interval_ms')) {
+      const n = Math.min(120000, Math.max(1000, Math.round(Number(req.body.slideshow_interval_ms) || 5000)));
+      push('slideshow_interval_ms', n);
+    }
+    if (has('slideshow_transition')) {
+      const allowed = ['crossfade', 'cut', 'slide', 'kenburns', 'dipwhite', 'dipblack'];
+      push('slideshow_transition', allowed.includes(req.body.slideshow_transition) ? req.body.slideshow_transition : 'crossfade');
+    }
+    if (has('slideshow_transition_ms')) {
+      const n = Math.min(5000, Math.max(100, Math.round(Number(req.body.slideshow_transition_ms) || 800)));
+      push('slideshow_transition_ms', n);
+    }
+    if (has('slideshow_colorfilter')) {
+      const allowed = ['none', 'bw', 'sepia', 'warm', 'cool', 'vignette'];
+      push('slideshow_colorfilter', allowed.includes(req.body.slideshow_colorfilter) ? req.body.slideshow_colorfilter : 'none');
+    }
+    if (has('slideshow_watermark_enabled')) push('slideshow_watermark_enabled', !!req.body.slideshow_watermark_enabled);
+    if (has('slideshow_watermark_source')) {
+      const v = ['logo', 'logo_dark', 'favicon', 'event'].includes(req.body.slideshow_watermark_source) ? req.body.slideshow_watermark_source : 'logo';
+      push('slideshow_watermark_source', v);
+    }
+    if (has('slideshow_watermark_position')) {
+      const allowed = ['top-left', 'top-right', 'bottom-left', 'bottom-right'];
+      const v = allowed.includes(req.body.slideshow_watermark_position) ? req.body.slideshow_watermark_position : 'bottom-right';
+      push('slideshow_watermark_position', v);
+    }
+    if (has('slideshow_watermark_opacity')) {
+      const n = Math.min(100, Math.max(0, Math.round(Number(req.body.slideshow_watermark_opacity) || 0)));
+      push('slideshow_watermark_opacity', n);
+    }
+    if (has('slideshow_watermark_style')) {
+      const v = ['white', 'original'].includes(req.body.slideshow_watermark_style) ? req.body.slideshow_watermark_style : 'white';
+      push('slideshow_watermark_style', v);
+    }
+    if (has('slideshow_watermark_size')) {
+      const n = Math.min(40, Math.max(3, Math.round(Number(req.body.slideshow_watermark_size) || 12)));
+      push('slideshow_watermark_size', n);
+    }
+    // QR overlay (#837) — same option shape as the watermark.
+    if (has('slideshow_qr_enabled')) push('slideshow_qr_enabled', !!req.body.slideshow_qr_enabled);
+    if (has('slideshow_qr_position')) {
+      const allowed = ['top-left', 'top-right', 'bottom-left', 'bottom-right'];
+      const v = allowed.includes(req.body.slideshow_qr_position) ? req.body.slideshow_qr_position : 'bottom-left';
+      push('slideshow_qr_position', v);
+    }
+    if (has('slideshow_qr_opacity')) {
+      const n = Math.min(100, Math.max(0, Math.round(Number(req.body.slideshow_qr_opacity) || 0)));
+      push('slideshow_qr_opacity', n);
+    }
+    if (has('slideshow_qr_size')) {
+      const n = Math.min(40, Math.max(5, Math.round(Number(req.body.slideshow_qr_size) || 14)));
+      push('slideshow_qr_size', n);
+    }
+
+    for (const u of updates) {
+      await upsertAppSetting(u.setting_key, u.setting_value, u.setting_type);
+    }
+    // Drop the slideshow-globals cache so a running projector picks up the
+    // change on its next poll rather than after the 5s TTL.
+    require('../utils/slideshowGlobals').invalidateSlideshowGlobals();
+    res.json({ message: 'Slideshow settings updated', updated: updates.map((u) => u.setting_key) });
+  } catch (error) {
+    errorResponse(res, error, 500, 'Failed to save slideshow settings');
+  }
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// Download resolutions (#858). The standard resolution is what every ordinary
+// download hands out; the picker is an opt-in modal letting guests choose a
+// different size. Dedicated endpoints because a change here has to invalidate
+// the pre-built download-all zips, which are built AT the standard resolution.
+// ──────────────────────────────────────────────────────────────────────────
+
+router.get('/downloads', adminAuth, requirePermission('settings.view'), async (req, res) => {
+  try {
+    const { getDownloadGlobals } = require('../utils/downloadResolutions');
+    res.json(await getDownloadGlobals());
+  } catch (error) {
+    errorResponse(res, error, 500, 'Failed to load download settings');
+  }
+});
+
+router.put('/downloads', adminAuth, requirePermission('settings.edit'), async (req, res) => {
+  try {
+    const {
+      invalidateDownloadGlobals, getDownloadGlobals, ORIGINAL,
+    } = require('../utils/downloadResolutions');
+    const has = (k) => Object.prototype.hasOwnProperty.call(req.body, k);
+    const updates = [];
+    const push = (key, value) => updates.push({
+      setting_key: key, setting_value: JSON.stringify(value), setting_type: 'download',
+    });
+
+    // Presets first — the standard is validated against the resulting list,
+    // so a single request can add a size and select it in one go.
+    const before = await getDownloadGlobals();
+    const previousStandard = before.standard_resolution;
+    let presets = before.resolutions;
+    if (has('download_resolutions')) {
+      const raw = Array.isArray(req.body.download_resolutions) ? req.body.download_resolutions : [];
+      const cleaned = [];
+      const seen = new Set();
+      for (const p of raw) {
+        const width = Math.round(Number(p?.width));
+        const height = Math.round(Number(p?.height));
+        // 20000px ceiling keeps a typo ("30000000") from asking sharp for a
+        // multi-terabyte canvas on every subsequent download.
+        if (!width || !height || width < 1 || height < 1 || width > 20000 || height > 20000) continue;
+        const id = `${width}x${height}`;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        cleaned.push({ label: String(p.label || id).slice(0, 40), width, height });
+      }
+      if (cleaned.length === 0) {
+        return res.status(400).json({ error: 'At least one valid resolution is required' });
+      }
+      push('download_resolutions', cleaned);
+      presets = cleaned.map((p) => ({ ...p, id: `${p.width}x${p.height}` }));
+    }
+
+    if (has('download_standard_resolution')) {
+      const v = String(req.body.download_standard_resolution || ORIGINAL);
+      if (v !== ORIGINAL && !presets.some((p) => p.id === v)) {
+        return res.status(400).json({ error: `Unknown resolution "${v}"` });
+      }
+      push('download_standard_resolution', v);
+    } else if (has('download_resolutions')) {
+      // Replacing the preset list without naming a standard can orphan the
+      // CURRENT standard — galleries would keep handing out a size the picker
+      // no longer offers, breaking the "standard is always a preset" invariant.
+      if (previousStandard !== ORIGINAL && !presets.some((p) => p.id === previousStandard)) {
+        return res.status(400).json({
+          error: `The current standard resolution "${previousStandard}" is not in the new list — set download_standard_resolution in the same request`,
+        });
+      }
+    }
+    if (has('download_resolution_picker_enabled')) {
+      push('download_resolution_picker_enabled', !!req.body.download_resolution_picker_enabled);
+    }
+    if (has('download_allow_original')) {
+      push('download_allow_original', !!req.body.download_allow_original);
+    }
+
+    for (const u of updates) {
+      await upsertAppSetting(u.setting_key, u.setting_value, u.setting_type);
+    }
+    invalidateDownloadGlobals();
+
+    // The cached download-all zip is built at the standard resolution, so a
+    // change to the GLOBAL standard makes every INHERITING gallery's zip
+    // stale. Events with their own override are unaffected and keep theirs.
+    // Only a REAL change to the standard invalidates. The settings form
+    // submits every field on every save, so keying off "was it present" would
+    // schedule a rebuild of every inheriting gallery each time an admin
+    // renamed a preset — a stampede on installs with many galleries.
+    const standardUpdate = updates.find((u) => u.setting_key === 'download_standard_resolution');
+    const standardChanged = standardUpdate
+      && JSON.parse(standardUpdate.setting_value) !== previousStandard;
+
+    let invalidatedZips = 0;
+    if (standardChanged) {
+      // Every inheriting event, whether or not it currently HAS a cached zip:
+      // one may be mid-build against the old standard right now. Going through
+      // downloadZipService.invalidate bumps its generation counter, which
+      // aborts that build — a raw UPDATE would let it finish and re-publish a
+      // permanently stale archive.
+      const downloadZipService = require('../services/downloadZipService');
+      const inheriting = await db('events')
+        .whereNull('download_standard_resolution')
+        .select('id');
+      for (const ev of inheriting) {
+        downloadZipService.invalidate(ev.id);
+      }
+      invalidatedZips = inheriting.length;
+    }
+
+    res.json({
+      message: 'Download settings updated',
+      updated: updates.map((u) => u.setting_key),
+      invalidated_zips: invalidatedZips,
+    });
+  } catch (error) {
+    errorResponse(res, error, 500, 'Failed to save download settings');
+  }
+});
+
+// Get settings by type
+// ──────────────────────────────────────────────────────────────────────────
+// Get settings by type
+// ──────────────────────────────────────────────────────────────────────────
+router.get('/:type', adminAuth, (req, res, next) => {
+  // Branding's read-only permission is intentionally narrower than settings.view.
+  // The settings page used to expose the Branding tab for branding.view while
+  // this generic read route denied it, producing an endless/failed page load.
+  const permissions = ['branding', 'theme'].includes(req.params.type)
+    ? ['settings.view', 'branding.view']
+    : ['settings.view'];
+  return requirePermission(permissions)(req, res, next);
+}, async (req, res) => {
+  try {
+    const { type } = req.params;
+    const settings = await db('app_settings')
+      .where('setting_type', type)
+      .select('*');
+
+    // Convert to object format
+    const settingsObject = {};
+    settings.forEach(setting => {
+      // Check for null/undefined explicitly to handle boolean false and 0 values
+      // PostgreSQL json column returns parsed values (false as boolean, not string)
+      if (setting.setting_value !== null && setting.setting_value !== undefined) {
+        // If the value is already parsed (from json column), use it directly
+        if (typeof setting.setting_value !== 'string') {
+          settingsObject[setting.setting_key] = setting.setting_value;
+        } else {
+          try {
+            // Try to parse as JSON first
+            settingsObject[setting.setting_key] = JSON.parse(setting.setting_value);
+          } catch (e) {
+            // If it's not valid JSON, use the raw value
+            settingsObject[setting.setting_key] = setting.setting_value;
+          }
+        }
+      } else {
+        settingsObject[setting.setting_key] = null;
+      }
+    });
+
+    // Reserved bootstrap keys are not exposed through generic settings reads.
+    stripReservedSettingKeys(settingsObject);
+
+    // Same derived read-only fields as GET / (#705) — the General tab reads
+    // through this typed route, so the env-pinned hint must be here too.
+    if (type === 'general') {
+      settingsObject.general_site_url_env_pinned = isEnvPinned();
+      if (settingsObject.general_site_url_env_pinned) {
+        settingsObject.general_site_url_effective = envPinnedBase();
+      }
+    }
+
+    // Backup credentials — the S3 secret key and the rsync SSH PRIVATE KEY
+    // were returned in plaintext to any settings.view holder. The dedicated
+    // /admin/backup/config endpoints handle the edit round-trip.
+    if (settingsObject.backup_s3_secret_key) {
+      settingsObject.backup_s3_secret_key = '••••••••';
+    }
+    if (settingsObject.backup_rsync_ssh_key) {
+      settingsObject.backup_rsync_ssh_key = '••••••••';
+    }
+
+    res.json(settingsObject);
+  } catch (error) {
+    errorResponse(res, error, 500, 'Failed to fetch settings');
+  }
+});
+
+// Get password complexity settings for frontend
+router.get('/password/complexity', adminAuth, requirePermission('settings.view'), async (req, res) => {
+  try {
+    const { getPasswordComplexitySettings, getPasswordConfigForComplexity } = require('../utils/passwordValidation');
+
+    // Get current complexity level from database
+    const complexityLevel = await getPasswordComplexitySettings();
+
+    // Get configuration for the complexity level
+    const config = getPasswordConfigForComplexity(complexityLevel);
+
+    res.json({
+      complexityLevel,
+      config
+    });
+  } catch (error) {
+    errorResponse(res, error, 500, 'Failed to fetch password complexity settings');
+  }
+});
+
+// Update branding settings
+router.put('/branding', adminAuth, requirePermission('settings.edit'), async (req, res) => {
+  try {
+    const {
+      company_name,
+      company_tagline,
+      footer_text,
+      watermark_enabled,
+      watermark_position,
+      watermark_opacity,
+      watermark_size,
+      favicon_url,
+      logo_url,
+      watermark_logo_url,
+      logo_size,
+      logo_max_height,
+      logo_position,
+      logo_display_header,
+      logo_display_hero,
+      logo_display_mode,
+      hide_powered_by,
+      force_color_mode,
+      // Login-page-only branding (#354 follow-up). Both toggles apply
+      // to the admin login and setup screens — the gallery
+      // and admin chrome use their own logo_size / logo_max_height.
+      // - login_logo_frame_enabled: true (default) renders the tinted
+      //   square behind the logo; false drops it.
+      // - login_logo_size: 'small' | 'medium' | 'large' | 'xlarge'
+      //   matches the gallery logo_size token set but applies only to
+      //   these entry screens.
+      login_logo_frame_enabled,
+      login_logo_size,
+      // Domestic social profile URLs are strings (empty hides the icon).
+      // Promo content is markdown (rendered via
+      // marked → DOMPurify on the frontend, no raw HTML accepted).
+      douyin_url,
+      xiaohongshu_url,
+      weibo_url,
+      kuaishou_url,
+      promo_markdown,
+      promo_position,
+      promo_alignment,
+      // Info banner (#932). Markdown only, same sanitiser path as promo.
+      info_markdown
+    } = req.body;
+
+    // Normalize force_color_mode: only 'dark' | 'light' | null are valid.
+    const normalizedForceColorMode = force_color_mode === 'dark'
+      ? 'dark'
+      : force_color_mode === 'light'
+        ? 'light'
+        : null;
+
+    // Get current watermark settings hash for change detection
+    const oldSettingsHash = await watermarkService.getSettingsHash();
+
+    // Normalize promo_position: only 'above_footer' | 'below_footer' valid.
+    const normalizedPromoPosition = promo_position === 'below_footer'
+      ? 'below_footer'
+      : 'above_footer';
+
+    // Normalize promo_alignment: 'left' | 'center' | 'right'. Defaults
+    // to 'center' to match the gallery footer's full-width centering
+    // (#482 — the previous default left the markdown left-aligned in
+    // a max-w-3xl block, which read as visually offset from the footer).
+    const allowedPromoAlignments = ['left', 'center', 'right'];
+    const normalizedPromoAlignment = allowedPromoAlignments.includes(promo_alignment)
+      ? promo_alignment
+      : 'center';
+
+    // Normalize login_logo_size to the same token set as logo_size.
+    // Anything else falls back to 'medium' on the next render.
+    const allowedLoginLogoSizes = ['small', 'medium', 'large', 'xlarge'];
+    const normalizedLoginLogoSize = allowedLoginLogoSizes.includes(login_logo_size)
+      ? login_logo_size
+      : undefined;
+
+    const brandingSettings = {
+      company_name,
+      company_tagline,
+      footer_text,
+      watermark_enabled,
+      watermark_position,
+      watermark_opacity,
+      watermark_size,
+      favicon_url,
+      logo_url,
+      watermark_logo_url,
+      logo_size,
+      logo_max_height,
+      logo_position,
+      logo_display_header,
+      logo_display_hero,
+      logo_display_mode,
+      hide_powered_by,
+      force_color_mode: normalizedForceColorMode,
+      // Login-only knobs (only persist when the request actually
+      // included the key, so a partial PUT from another tab doesn't
+      // accidentally clear them).
+      ...(login_logo_frame_enabled !== undefined && { login_logo_frame_enabled }),
+      ...(normalizedLoginLogoSize !== undefined && { login_logo_size: normalizedLoginLogoSize }),
+      // Social URL fields normalize empty/undefined → '' so the column is
+      // always a known type. Only persist
+      // when the request actually included the key (partial PUTs).
+      ...(douyin_url !== undefined && { douyin_url: String(douyin_url || '').trim() }),
+      ...(xiaohongshu_url !== undefined && { xiaohongshu_url: String(xiaohongshu_url || '').trim() }),
+      ...(weibo_url !== undefined && { weibo_url: String(weibo_url || '').trim() }),
+      ...(kuaishou_url !== undefined && { kuaishou_url: String(kuaishou_url || '').trim() }),
+      ...(promo_markdown !== undefined && { promo_markdown: typeof promo_markdown === 'string' ? promo_markdown : '' }),
+      ...(info_markdown !== undefined && { info_markdown: typeof info_markdown === 'string' ? info_markdown : '' }),
+      ...(promo_position !== undefined && { promo_position: normalizedPromoPosition }),
+      ...(promo_alignment !== undefined && { promo_alignment: normalizedPromoAlignment })
+    };
+
+
+    // Handle favicon deletion if empty string or null is provided
+    if (favicon_url === '' || favicon_url === null || favicon_url === undefined) {
+      // Get current favicon path to delete file
+      const currentFaviconSetting = await db('app_settings')
+        .where('setting_key', 'branding_favicon_url')
+        .first();
+
+      if (currentFaviconSetting && currentFaviconSetting.setting_value) {
+        let currentFaviconUrl;
+        try {
+          // Try to parse as JSON first
+          currentFaviconUrl = JSON.parse(currentFaviconSetting.setting_value);
+        } catch (e) {
+          // If it's not valid JSON, use the raw value
+          currentFaviconUrl = currentFaviconSetting.setting_value;
+        }
+
+        // Containment: the stored URL is admin-writable, so only the leaf
+        // name is used and it is joined onto the fixed favicon directory. A
+        // prefix test alone let `/uploads/favicons/../../<anything>` pass
+        // and path.join collapse it -- an arbitrary-file delete for any
+        // holder of settings.edit.
+        const faviconPath = uploadedAssetPath(currentFaviconUrl, 'favicons', getStoragePath());
+        if (faviconPath) {
+          try {
+            await fs.unlink(faviconPath);
+            logger.info('Deleted favicon file:', faviconPath);
+          } catch (err) {
+            logger.error('Error deleting favicon file:', err);
+          }
+        }
+      }
+    }
+
+    // Handle logo deletion if empty string or null is provided
+    if (logo_url === '' || logo_url === null || logo_url === undefined) {
+      // Get current logo path to delete file
+      const currentLogoSetting = await db('app_settings')
+        .where('setting_key', 'branding_logo_url')
+        .first();
+
+      if (currentLogoSetting && currentLogoSetting.setting_value) {
+        let currentLogoUrl;
+        try {
+          // Try to parse as JSON first
+          currentLogoUrl = JSON.parse(currentLogoSetting.setting_value);
+        } catch (e) {
+          // If it's not valid JSON, use the raw value
+          currentLogoUrl = currentLogoSetting.setting_value;
+        }
+
+        // Same containment as the favicon branch above.
+        const logoPath = uploadedAssetPath(currentLogoUrl, 'logos', getStoragePath());
+        if (logoPath) {
+          try {
+            await fs.unlink(logoPath);
+            logger.info('Deleted logo file:', logoPath);
+          } catch (err) {
+            logger.error('Error deleting logo file:', err);
+          }
+        }
+      }
+    }
+
+    // Update or insert each setting
+    for (const [key, value] of Object.entries(brandingSettings)) {
+      await db('app_settings')
+        .insert({
+          setting_key: `branding_${key}`,
+          setting_value: JSON.stringify(value),
+          setting_type: 'branding',
+          updated_at: new Date()
+        })
+        .onConflict('setting_key')
+        .merge({
+          setting_value: JSON.stringify(value),
+          updated_at: new Date()
+        });
+    }
+
+    // Log activity
+    await db('activity_logs').insert({
+      activity_type: 'branding_updated',
+      actor_type: 'admin',
+      actor_id: req.admin.id,
+      actor_name: req.admin.username,
+      metadata: JSON.stringify({ company_name })
+    });
+
+    clearPublicSiteCache();
+
+    // Check if watermark settings changed and trigger regeneration
+    const newSettingsHash = await watermarkService.getSettingsHash();
+    let watermarkRegenerationStarted = false;
+
+    if (oldSettingsHash !== newSettingsHash) {
+      // Clear watermark cache
+      watermarkService.clearCache();
+
+      // Check if watermarking is now enabled or settings changed
+      const currentSettings = await watermarkService.getWatermarkSettings();
+
+      if (currentSettings && currentSettings.enabled) {
+        // Start background regeneration of all watermarks
+        logger.info('Watermark settings changed, starting background regeneration');
+        watermarkGeneratorService.regenerateAll()
+          .then(result => {
+            logger.info(`Watermark regeneration completed: ${result.success}/${result.total} successful`);
+          })
+          .catch(err => {
+            logger.error('Watermark regeneration failed:', err);
+          });
+        watermarkRegenerationStarted = true;
+      } else {
+        // Watermarking was disabled, clear all pre-generated watermarks
+        logger.info('Watermarking disabled, clearing pre-generated watermarks');
+        watermarkGeneratorService.clearAllWatermarks()
+          .catch(err => logger.error('Failed to clear watermarks:', err));
+      }
+    }
+
+    res.json({
+      message: 'Branding settings updated successfully',
+      watermarkRegenerationStarted
+    });
+  } catch (error) {
+    errorResponse(res, error, 500, 'Failed to update branding settings');
+  }
+});
+
+// Upload logo
+router.post('/logo', adminAuth, requirePermission('settings.edit'), upload.single('logo'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No logo file uploaded' });
+    }
+
+    // ?variant=dark stores a separate dark-mode logo (branding_logo_*_dark);
+    // anything else is the default (light) logo. Consumers pick the dark
+    // variant when the active theme is dark, falling back to the light one.
+    const isDark = req.query.variant === 'dark' || req.body.variant === 'dark';
+    const pathKey = isDark ? 'branding_logo_path_dark' : 'branding_logo_path';
+    const urlKey = isDark ? 'branding_logo_url_dark' : 'branding_logo_url';
+
+    // Get old logo to delete
+    const oldLogoSetting = await db('app_settings')
+      .where('setting_key', pathKey)
+      .first();
+
+    if (oldLogoSetting && oldLogoSetting.setting_value) {
+      try {
+        // Handle both JSON-serialized and legacy raw path values
+        let oldPath = oldLogoSetting.setting_value;
+        if (oldPath.startsWith('"')) {
+          oldPath = JSON.parse(oldPath);
+        }
+        await fs.unlink(oldPath);
+      } catch (error) {
+        logger.error('Failed to delete old logo:', error);
+      }
+    }
+
+    // Save new logo path
+    const logoPath = req.file.path;
+    const publicPath = `/uploads/logos/${req.file.filename}`;
+
+    await db('app_settings')
+      .insert({
+        setting_key: pathKey,
+        setting_value: JSON.stringify(logoPath),
+        setting_type: 'branding',
+        updated_at: new Date()
+      })
+      .onConflict('setting_key')
+      .merge({
+        setting_value: JSON.stringify(logoPath),
+        updated_at: new Date()
+      });
+
+    // Save public URL
+    await db('app_settings')
+      .insert({
+        setting_key: urlKey,
+        setting_value: JSON.stringify(publicPath),
+        setting_type: 'branding',
+        updated_at: new Date()
+      })
+      .onConflict('setting_key')
+      .merge({
+        setting_value: JSON.stringify(publicPath),
+        updated_at: new Date()
+      });
+
+    res.json({
+      message: 'Logo uploaded successfully',
+      logoUrl: publicPath
+    });
+  } catch (error) {
+    errorResponse(res, error, 500, 'Failed to upload logo');
+  }
+});
+
+// Remove a logo. ?variant=dark clears the dark-mode logo
+// (branding_logo_*_dark); otherwise the default logo. Best-effort file
+// unlink, then blanks the url + path settings.
+router.delete('/logo', adminAuth, requirePermission('settings.edit'), async (req, res) => {
+  try {
+    const isDark = req.query.variant === 'dark';
+    const pathKey = isDark ? 'branding_logo_path_dark' : 'branding_logo_path';
+    const urlKey = isDark ? 'branding_logo_url_dark' : 'branding_logo_url';
+
+    const pathSetting = await db('app_settings').where('setting_key', pathKey).first();
+    if (pathSetting && pathSetting.setting_value) {
+      try {
+        let p = pathSetting.setting_value;
+        if (p.startsWith('"')) p = JSON.parse(p);
+        await fs.unlink(p);
+      } catch (error) {
+        logger.error('Failed to delete logo file:', error);
+      }
+    }
+    await db('app_settings')
+      .whereIn('setting_key', [pathKey, urlKey])
+      .update({ setting_value: JSON.stringify(''), updated_at: new Date() });
+
+    res.json({ message: 'Logo removed' });
+  } catch (error) {
+    errorResponse(res, error, 500, 'Failed to remove logo');
+  }
+});
+
+// Upload watermark logo
+router.post('/branding/watermark-logo', adminAuth, requirePermission('settings.edit'), upload.single('watermarkLogo'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    // Delete old watermark logo if exists
+    const oldWatermarkLogoSetting = await db('app_settings')
+      .where('setting_key', 'branding_watermark_logo_path')
+      .first();
+
+    if (oldWatermarkLogoSetting && oldWatermarkLogoSetting.setting_value) {
+      let oldPath;
+      try {
+        // Try to parse as JSON first (for JSON-stringified paths)
+        oldPath = JSON.parse(oldWatermarkLogoSetting.setting_value);
+      } catch (e) {
+        // If it's not valid JSON, use the raw value
+        oldPath = oldWatermarkLogoSetting.setting_value;
+      }
+
+      if (oldPath && typeof oldPath === 'string') {
+        try {
+          await fs.unlink(oldPath);
+        } catch (error) {
+          logger.error('Failed to delete old watermark logo:', error);
+        }
+      }
+    }
+
+    // Save new watermark logo path
+    const logoPath = req.file.path;
+    const publicPath = `/uploads/logos/${req.file.filename}`;
+
+    await db('app_settings')
+      .insert({
+        setting_key: 'branding_watermark_logo_path',
+        setting_value: JSON.stringify(logoPath),
+        setting_type: 'branding',
+        updated_at: new Date()
+      })
+      .onConflict('setting_key')
+      .merge({
+        setting_value: JSON.stringify(logoPath),
+        updated_at: new Date()
+      });
+
+    // Save public URL
+    await db('app_settings')
+      .insert({
+        setting_key: 'branding_watermark_logo_url',
+        setting_value: JSON.stringify(publicPath),
+        setting_type: 'branding',
+        updated_at: new Date()
+      })
+      .onConflict('setting_key')
+      .merge({
+        setting_value: JSON.stringify(publicPath),
+        updated_at: new Date()
+      });
+
+    // Trigger watermark regeneration since the logo changed
+    watermarkService.clearCache();
+    const currentSettings = await watermarkService.getWatermarkSettings();
+    let watermarkRegenerationStarted = false;
+
+    if (currentSettings && currentSettings.enabled) {
+      logger.info('Watermark logo changed, starting background regeneration');
+      watermarkGeneratorService.regenerateAll()
+        .then(result => {
+          logger.info(`Watermark regeneration completed: ${result.success}/${result.total} successful`);
+        })
+        .catch(err => {
+          logger.error('Watermark regeneration failed:', err);
+        });
+      watermarkRegenerationStarted = true;
+    }
+
+    res.json({
+      message: 'Watermark logo uploaded successfully',
+      watermarkLogoUrl: publicPath,
+      watermarkRegenerationStarted
+    });
+  } catch (error) {
+    errorResponse(res, error, 500, 'Failed to upload watermark logo');
+  }
+});
+
+// Update theme settings
+router.put('/theme', adminAuth, requirePermission('settings.edit'), async (req, res) => {
+  try {
+    const themeSettings = req.body;
+
+    // Save theme settings
+    await db('app_settings')
+      .insert({
+        setting_key: 'theme_config',
+        setting_value: JSON.stringify(themeSettings),
+        setting_type: 'theme',
+        updated_at: new Date()
+      })
+      .onConflict('setting_key')
+      .merge({
+        setting_value: JSON.stringify(themeSettings),
+        updated_at: new Date()
+      });
+
+    // Log activity
+    await db('activity_logs').insert({
+      activity_type: 'theme_updated',
+      actor_type: 'admin',
+      actor_id: req.admin.id,
+      actor_name: req.admin.username,
+      metadata: JSON.stringify({ theme_name: themeSettings.name || 'custom' })
+    });
+
+    clearPublicSiteCache();
+
+    res.json({ message: 'Theme settings updated successfully' });
+  } catch (error) {
+    errorResponse(res, error, 500, 'Failed to update theme settings');
+  }
+});
+
+// Update general settings
+router.put('/general', adminAuth, requirePermission('settings.edit'), async (req, res) => {
+  try {
+    const settings = stripReservedSettingKeys({ ...req.body });
+    if (rejectDedicatedRouteOwnedKeys(settings, res)) return;
+    let uploadLimitTouched = false;
+
+    // Migration 174: drop protected site and security keys.
+    // the caller isn't permitted to write, so the settings.edit bucket can't be
+    // used to repoint the install via this generic writer. See
+    // rejectUnauthorizedProtectedKeys (403s when a protected key is denied).
+    if (await rejectUnauthorizedProtectedKeys(settings, req, res)) return;
+
+    // The public origin feeds the CORS
+    // allowlist (server.js) and the Access-Control-Allow-Origin header
+    // (secureImageMiddleware) since #705. A schemeless value like
+    // "gallery.example.com" therefore produces both links that don't resolve
+    // AND an allowlist entry no browser origin can ever match, so validate it
+    // server-side rather than trusting the input type (#1104). require_tld is
+    // off on purpose: LAN and NAS installs legitimately run on http://nas:3000
+    // or a bare IP. URL syntax is validated before persistence.
+    if (Object.prototype.hasOwnProperty.call(settings, 'general_site_url')) {
+      const siteUrl = typeof settings.general_site_url === 'string'
+        ? settings.general_site_url.trim().replace(/\/+$/, '')
+        : '';
+      // allow_underscores for the same reason require_tld is off: this has to
+      // accept the addresses LAN and NAS installs actually run on. Browsers
+      // resolve http://my_nas.local happily and the client-side check accepts
+      // it, so rejecting it here only produced a mismatch between the two
+      // validators — and the wizard has no way to show a 400 it did not
+      // predict (#1104 review round 2).
+      const looksValid = validator.isURL(siteUrl, {
+        protocols: ['http', 'https'],
+        require_protocol: true,
+        require_tld: false,
+        allow_underscores: true,
+      });
+      if (siteUrl && !looksValid) {
+        return res.status(400).json({
+          error: 'general_site_url must be an absolute http(s) URL, for example https://gallery.example.com'
+        });
+      }
+      settings.general_site_url = siteUrl;
+    }
+
+    const publicSiteKeysTouched = Object.keys(settings).some((key) => key.startsWith('general_public_site_'));
+
+    if (Object.prototype.hasOwnProperty.call(settings, 'general_max_files_per_upload')) {
+      uploadLimitTouched = true;
+      const rawValue = Number(settings.general_max_files_per_upload);
+      const normalizedValue = Number.isFinite(rawValue) ? Math.floor(rawValue) : NaN;
+
+      if (!Number.isInteger(normalizedValue) || normalizedValue < 1 || normalizedValue > MAX_ALLOWED_FILES_PER_UPLOAD) {
+        return res.status(400).json({
+          error: `general_max_files_per_upload must be an integer between 1 and ${MAX_ALLOWED_FILES_PER_UPLOAD}`
+        });
+      }
+
+      settings.general_max_files_per_upload = normalizedValue;
+    }
+
+    // Per-file size limit (MB). Validate/clamp on save, mirroring the count
+    // above, so an out-of-range value can't be persisted — otherwise the public
+    // endpoint would advertise the raw value while getMaxFileSizeMb() normalizes
+    // it, and the guest UI would reject files the backend actually accepts.
+    if (Object.prototype.hasOwnProperty.call(settings, 'general_max_file_size_mb')) {
+      uploadLimitTouched = true;
+      const rawValue = Number(settings.general_max_file_size_mb);
+      const normalizedValue = Number.isFinite(rawValue) ? Math.floor(rawValue) : NaN;
+
+      if (!Number.isInteger(normalizedValue) || normalizedValue < 1 || normalizedValue > MAX_ALLOWED_FILE_SIZE_MB) {
+        return res.status(400).json({
+          error: `general_max_file_size_mb must be an integer between 1 and ${MAX_ALLOWED_FILE_SIZE_MB}`
+        });
+      }
+
+      settings.general_max_file_size_mb = normalizedValue;
+    }
+
+    // Per-file size limit for videos (MB). Same bounds and same reasoning as
+    // the photo cap above — videos just get their own value so a 50MB photo
+    // limit doesn't also block every clip.
+    if (Object.prototype.hasOwnProperty.call(settings, 'general_max_video_size_mb')) {
+      uploadLimitTouched = true;
+      const rawValue = Number(settings.general_max_video_size_mb);
+      const normalizedValue = Number.isFinite(rawValue) ? Math.floor(rawValue) : NaN;
+
+      if (!Number.isInteger(normalizedValue) || normalizedValue < 1 || normalizedValue > MAX_ALLOWED_FILE_SIZE_MB) {
+        return res.status(400).json({
+          error: `general_max_video_size_mb must be an integer between 1 and ${MAX_ALLOWED_FILE_SIZE_MB}`
+        });
+      }
+
+      settings.general_max_video_size_mb = normalizedValue;
+    }
+
+    if (publicSiteKeysTouched) {
+      if (Object.prototype.hasOwnProperty.call(settings, 'general_public_site_custom_css')) {
+        settings.general_public_site_custom_css = sanitizeCss(settings.general_public_site_custom_css || '');
+      }
+
+      if (Object.prototype.hasOwnProperty.call(settings, 'general_public_site_html') && typeof settings.general_public_site_html === 'string') {
+        settings.general_public_site_html = settings.general_public_site_html.trim();
+      }
+
+      if (Object.prototype.hasOwnProperty.call(settings, 'general_public_site_enabled')) {
+        settings.general_public_site_enabled = formatBoolean(settings.general_public_site_enabled);
+      }
+
+      const enableToggle = settings.general_public_site_enabled;
+      if (enableToggle === true) {
+        let htmlValue = settings.general_public_site_html;
+
+        if (htmlValue === undefined) {
+          const currentSettings = await getRawPublicSiteSettings();
+          htmlValue = currentSettings.general_public_site_html;
+        }
+
+        if (!htmlValue || !String(htmlValue).trim()) {
+          return res.status(400).json({
+            error: 'Public site HTML must be provided before enabling the public landing page.'
+          });
+        }
+      }
+    }
+
+    // Update or insert each setting
+    const galleryPasswordPurge = await galleryPasswordPurgePlan(settings);
+    if (galleryPasswordPurge.before) await purgeRecoverablePasswords();
+    for (const [key, value] of Object.entries(settings)) {
+      await db('app_settings')
+        .insert({
+          setting_key: key,
+          setting_value: JSON.stringify(value),
+          setting_type: 'general',
+          updated_at: new Date()
+        })
+        .onConflict('setting_key')
+        .merge({
+          setting_value: JSON.stringify(value),
+          updated_at: new Date()
+        });
+    }
+
+    if (galleryPasswordPurge.after) await purgeRecoverablePasswords();
+
+    // Clear maintenance mode cache if it was updated
+    if ('general_maintenance_mode' in settings) {
+      clearMaintenanceCache();
+    }
+
+    if (publicSiteKeysTouched) {
+      clearPublicSiteCache();
+    }
+    if (uploadLimitTouched) {
+      clearMaxFilesPerUploadCache();
+      clearMaxFileSizeCache();
+      clearMaxVideoSizeCache();
+    }
+    if (Object.prototype.hasOwnProperty.call(settings, 'general_short_gallery_urls')) {
+      clearShareLinkSettingsCache();
+    }
+    // The public origin is cached (it now sits in per-request CORS paths and
+    // in a synchronous accessor); drop it immediately on write so a corrected
+    // site URL takes effect without waiting out the TTL.
+    if (Object.prototype.hasOwnProperty.call(settings, 'general_site_url')) {
+      invalidateSiteUrlCache();
+    }
+    // Toggling the original-filenames setting (#493) requires busting the
+    // per-event pre-generated zips so the next download-all rebuilds with the
+    // new entry names. Single-photo downloads pick up the change as soon as
+    // the in-memory cache TTL in downloadFilenameService expires (cleared
+    // here for immediacy).
+    if (Object.prototype.hasOwnProperty.call(settings, 'general_use_original_filenames_for_downloads')) {
+      try {
+        require('../services/downloadFilenameService').clearCache();
+        require('../services/downloadZipService').invalidateAll();
+      } catch (e) {
+        logger.warn('Failed to invalidate download caches after filename setting change:', e.message);
+      }
+    }
+
+    // Log activity
+    await db('activity_logs').insert({
+      activity_type: 'general_settings_updated',
+      actor_type: 'admin',
+      actor_id: req.admin.id,
+      actor_name: req.admin.username,
+      metadata: JSON.stringify({ settings_count: Object.keys(settings).length })
+    });
+
+    res.json({ message: 'General settings updated successfully' });
+  } catch (error) {
+    errorResponse(res, error, 500, 'Failed to update general settings');
+  }
+});
+
+// Update security settings
+router.put('/security', adminAuth, requirePermission('settings.security'), async (req, res) => {
+  try {
+    const settings = stripReservedSettingKeys({ ...req.body });
+    if (rejectDedicatedRouteOwnedKeys(settings, res)) return;
+    // A settings.security holder still can't write domain keys here.
+    if (await rejectUnauthorizedProtectedKeys(settings, req, res)) return;
+
+    // Update or insert each setting
+    const galleryPasswordPurge = await galleryPasswordPurgePlan(settings);
+    if (galleryPasswordPurge.before) await purgeRecoverablePasswords();
+    for (const [key, value] of Object.entries(settings)) {
+      await db('app_settings')
+        .insert({
+          setting_key: key,
+          setting_value: JSON.stringify(value),
+          setting_type: 'security',
+          updated_at: new Date()
+        })
+        .onConflict('setting_key')
+        .merge({
+          setting_value: JSON.stringify(value),
+          updated_at: new Date()
+        });
+    }
+
+    resetSecurityConfigCache();
+    if (galleryPasswordPurge.after) await purgeRecoverablePasswords();
+
+    // Log activity
+    await db('activity_logs').insert({
+      activity_type: 'security_settings_updated',
+      actor_type: 'admin',
+      actor_id: req.admin.id,
+      actor_name: req.admin.username,
+      metadata: JSON.stringify({ settings_count: Object.keys(settings).length })
+    });
+
+    res.json({ message: 'Security settings updated successfully' });
+  } catch (error) {
+    errorResponse(res, error, 500, 'Failed to update security settings');
+  }
+});
+
+// Update SEO settings
+router.put('/seo', adminAuth, requirePermission('settings.edit'), async (req, res) => {
+  try {
+    const settings = stripReservedSettingKeys({ ...req.body });
+    if (rejectDedicatedRouteOwnedKeys(settings, res)) return;
+    if (await rejectUnauthorizedProtectedKeys(settings, req, res)) return;
+
+    // Validate seo_blocked_ai_agents is an array of strings
+    if (settings.seo_blocked_ai_agents !== undefined) {
+      if (!Array.isArray(settings.seo_blocked_ai_agents) ||
+          !settings.seo_blocked_ai_agents.every(a => typeof a === 'string')) {
+        return res.status(400).json({ error: 'seo_blocked_ai_agents must be an array of strings' });
+      }
+    }
+
+    // Validate seo_custom_rules structure
+    if (settings.seo_custom_rules !== undefined) {
+      if (!Array.isArray(settings.seo_custom_rules)) {
+        return res.status(400).json({ error: 'seo_custom_rules must be an array' });
+      }
+      for (const rule of settings.seo_custom_rules) {
+        if (!rule.userAgent || typeof rule.userAgent !== 'string') {
+          return res.status(400).json({ error: 'Each custom rule must have a userAgent string' });
+        }
+        if (!Array.isArray(rule.disallow) || !rule.disallow.every(d => typeof d === 'string')) {
+          return res.status(400).json({ error: 'Each custom rule must have a disallow array of strings' });
+        }
+      }
+    }
+
+    // Update or insert each setting
+    const galleryPasswordPurge = await galleryPasswordPurgePlan(settings);
+    if (galleryPasswordPurge.before) await purgeRecoverablePasswords();
+    for (const [key, value] of Object.entries(settings)) {
+      await db('app_settings')
+        .insert({
+          setting_key: key,
+          setting_value: JSON.stringify(value),
+          setting_type: 'seo',
+          updated_at: new Date()
+        })
+        .onConflict('setting_key')
+        .merge({
+          setting_value: JSON.stringify(value),
+          updated_at: new Date()
+        });
+    }
+
+    if (galleryPasswordPurge.after) await purgeRecoverablePasswords();
+
+    // Clear robots.txt cache
+    const { clearRobotsTxtCache } = require('../services/robotsTxtService');
+    clearRobotsTxtCache();
+
+    // Log activity
+    await db('activity_logs').insert({
+      activity_type: 'seo_settings_updated',
+      actor_type: 'admin',
+      actor_id: req.admin.id,
+      actor_name: req.admin.username,
+      metadata: JSON.stringify({ settings_count: Object.keys(settings).length })
+    });
+
+    res.json({ message: 'SEO settings updated successfully' });
+  } catch (error) {
+    errorResponse(res, error, 500, 'Failed to update SEO settings');
+  }
+});
+
+// Get storage info
+router.get('/storage/info', adminAuth, requirePermission('settings.view'), async (req, res) => {
+  try {
+    // Catalogued original bytes. Reported, but no longer as "used" (#1164) —
+    // in reference mode those files are on a NAS and none of them are here.
+    const totalStorage = await db('photos')
+      .sum('size_bytes as total')
+      .first();
+
+    // Get storage by event
+    const storageByEvent = await db('photos')
+      .select('events.event_name', 'events.id')
+      .sum('photos.size_bytes as size')
+      .join('events', 'photos.event_id', 'events.id')
+      .groupBy('events.id')
+      .orderBy('size', 'desc')
+      .limit(10);
+
+    // Get archive storage
+    const archives = await db('events')
+      .where('is_archived', formatBoolean(true))
+      .whereNotNull('archive_path')
+      .select('archive_path');
+
+    let archiveStorage = 0;
+    for (const archive of archives) {
+      if (archive.archive_path) {
+        try {
+          const storagePath = getStoragePath();
+          const fullArchivePath = path.join(storagePath, archive.archive_path);
+          const stats = await fs.stat(fullArchivePath);
+          archiveStorage += stats.size;
+        } catch (error) {
+          logger.error('Archive file not found:', archive.archive_path, error.message);
+        }
+      }
+    }
+
+    const DEFAULT_SOFT_LIMIT_BYTES = 10 * 1024 * 1024 * 1024; // 10GB fallback
+    const storagePath = getStoragePath();
+
+    let diskStats = null;
+    let rawDiskTotal = null;
+    let rawDiskFree = null;
+    let rawDiskAvailable = null;
+    try {
+      diskStats = await fs.statfs(storagePath);
+      rawDiskTotal = Number(diskStats.bsize) * Number(diskStats.blocks);
+      rawDiskFree = Number(diskStats.bsize) * Number(diskStats.bfree);
+      rawDiskAvailable = Number(diskStats.bsize) * Number(diskStats.bavail);
+    } catch (diskError) {
+      logger.error('Disk stats error:', diskError.message);
+    }
+
+    const clampDiskValue = (value) => {
+      if (!Number.isFinite(value) || value <= 0) {
+        return null;
+      }
+
+      // Treat unusually large virtualised values as unreliable (>50TB)
+      const MAX_REASONABLE_BYTES = 50 * 1024 * 1024 * 1024 * 1024;
+      if (value > MAX_REASONABLE_BYTES) {
+        return null;
+      }
+
+      return value;
+    };
+
+    let diskTotal = null;
+    let diskFree = null;
+    let diskAvailable = null;
+
+    if (diskStats) {
+      diskTotal = clampDiskValue(rawDiskTotal);
+      diskFree = clampDiskValue(rawDiskFree);
+      diskAvailable = clampDiskValue(rawDiskAvailable);
+
+      if (diskTotal && diskAvailable && diskAvailable > diskTotal) {
+        diskAvailable = null;
+      }
+      if (diskTotal && diskFree && diskFree > diskTotal) {
+        diskFree = null;
+      }
+    }
+
+    // What is actually on this disk. This is what the soft limit is compared
+    // against and what the recommendation below is derived from, so getting it
+    // from the catalogued originals was the load-bearing half of #1164: a
+    // reference-mode install got a disk-capacity recommendation computed from
+    // bytes that are not on the disk.
+    const catalogedBytes = Number(totalStorage?.total) || 0;
+    // Gated BEFORE the walk, not after. This endpoint is polled by the sidebar,
+    // and an S3 install that still has a large local tree from before the
+    // migration would otherwise pay a full stat-per-file traversal on every
+    // cold cache only to discard the result.
+    const usesLocalBackend = (process.env.STORAGE_BACKEND || 'local').toLowerCase() !== 's3';
+    let localUsage = null;
+    try {
+      if (usesLocalBackend) localUsage = await measureLocalStorageUsage();
+    } catch (err) {
+      logger.warn(`Storage measurement failed, falling back to catalogued bytes: ${err.message}`);
+    }
+    // On an S3 backend the originals, renditions, archives and download caches
+    // are all objects in the bucket, and STORAGE_PATH holds only incidental
+    // local files — so the walk would report near-zero and drag the soft-limit
+    // recommendation down with it. Those installs keep the catalogued figure,
+    // which is the approximation they had before #1164, and the response says
+    // which one this is so the UI can label it rather than implying a disk
+    // measurement it never made.
+    const measuredFromDisk = usesLocalBackend && !!localUsage;
+    const totalUsed = measuredFromDisk ? localUsage.total : catalogedBytes;
+
+    const parseBytesValue = (value) => {
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric) || numeric <= 0) {
+        return null;
+      }
+      return Math.floor(numeric);
+    };
+
+    const parseEnvOverride = (bytesVar, gbVar) => {
+      if (process.env[bytesVar]) {
+        return parseBytesValue(process.env[bytesVar]);
+      }
+      if (process.env[gbVar]) {
+        const value = parseBytesValue(process.env[gbVar]);
+        return value ? value * 1024 * 1024 * 1024 : null;
+      }
+      return null;
+    };
+
+    let configuredSoftLimit = null;
+    let capacityOverrideDb = null;
+    let availableOverrideDb = null;
+
+    try {
+      const storageSettings = await db('app_settings')
+        .whereIn('setting_key', [
+          'general_storage_soft_limit_bytes',
+          'general_storage_capacity_override_bytes',
+          'general_storage_available_override_bytes'
+        ])
+        .select('setting_key', 'setting_value');
+
+      storageSettings.forEach((setting) => {
+        let parsedValue = null;
+        if (setting.setting_value) {
+          try {
+            parsedValue = JSON.parse(setting.setting_value);
+          } catch (error) {
+            parsedValue = setting.setting_value;
+          }
+        }
+
+        switch (setting.setting_key) {
+        case 'general_storage_soft_limit_bytes':
+          if (typeof parsedValue === 'number' && !Number.isNaN(parsedValue)) {
+            configuredSoftLimit = parsedValue;
+          }
+          break;
+        case 'general_storage_capacity_override_bytes':
+          if (typeof parsedValue === 'number' && !Number.isNaN(parsedValue)) {
+            capacityOverrideDb = parsedValue;
+          }
+          break;
+        case 'general_storage_available_override_bytes':
+          if (typeof parsedValue === 'number' && !Number.isNaN(parsedValue)) {
+            availableOverrideDb = parsedValue;
+          }
+          break;
+        default:
+          break;
+        }
+      });
+    } catch (error) {
+      logger.error('Storage settings read error:', error.message);
+    }
+
+    const capacityOverrideEnv = parseEnvOverride('STORAGE_CAPACITY_OVERRIDE_BYTES', 'STORAGE_CAPACITY_OVERRIDE_GB');
+    const availableOverrideEnv = parseEnvOverride('STORAGE_AVAILABLE_OVERRIDE_BYTES', 'STORAGE_AVAILABLE_OVERRIDE_GB');
+
+    let capacityOverrideBytes = null;
+    let availableOverrideBytes = null;
+    let overrideSource = null;
+
+    if (capacityOverrideEnv != null || availableOverrideEnv != null) {
+      capacityOverrideBytes = capacityOverrideEnv;
+      availableOverrideBytes = availableOverrideEnv;
+      overrideSource = 'env';
+    } else if (capacityOverrideDb != null || availableOverrideDb != null) {
+      capacityOverrideBytes = capacityOverrideDb;
+      availableOverrideBytes = availableOverrideDb;
+      overrideSource = 'settings';
+    }
+
+    if (capacityOverrideBytes != null) {
+      diskTotal = capacityOverrideBytes;
+      if (availableOverrideBytes == null) {
+        diskAvailable = Math.max(capacityOverrideBytes - totalUsed, 0);
+      } else {
+        diskAvailable = Math.min(Math.max(availableOverrideBytes, 0), capacityOverrideBytes);
+      }
+      diskFree = diskAvailable;
+    } else if (availableOverrideBytes != null) {
+      diskAvailable = Math.max(availableOverrideBytes, 0);
+      diskFree = diskAvailable;
+    }
+
+    let recommendedSoftLimit = null;
+    if (diskTotal && diskAvailable) {
+      const projected = totalUsed + Math.floor(diskAvailable * 0.8);
+      recommendedSoftLimit = Math.min(diskTotal, Math.max(projected, Math.floor(diskTotal * 0.5)));
+    } else if (diskTotal) {
+      recommendedSoftLimit = Math.floor(diskTotal * 0.8);
+    } else if (diskAvailable) {
+      recommendedSoftLimit = Math.max(totalUsed, totalUsed + Math.floor(diskAvailable * 0.8));
+    }
+
+    if (recommendedSoftLimit && totalUsed > 0 && recommendedSoftLimit < totalUsed) {
+      recommendedSoftLimit = totalUsed;
+    }
+
+    const fallbackSoftLimit = recommendedSoftLimit || diskTotal || DEFAULT_SOFT_LIMIT_BYTES;
+    if (!recommendedSoftLimit && fallbackSoftLimit) {
+      recommendedSoftLimit = fallbackSoftLimit;
+    }
+    const effectiveSoftLimit = configuredSoftLimit || fallbackSoftLimit || DEFAULT_SOFT_LIMIT_BYTES;
+
+    const diskMetricsReliable = Boolean(diskTotal);
+
+    res.json({
+      total_used: totalUsed,
+      // What total_used used to be, kept so the UI can show both and the
+      // difference stops being invisible.
+      cataloged_bytes: catalogedBytes,
+      storage_measurement: measuredFromDisk ? 'disk' : (usesLocalBackend ? 'unavailable' : 'catalog'),
+      storage_breakdown: measuredFromDisk ? localUsage.breakdown : null,
+      storage_partial: measuredFromDisk ? localUsage.partial : false,
+      excluded_external_root: measuredFromDisk ? localUsage.excludedExternalRoot : null,
+      archive_storage: archiveStorage,
+      storage_by_event: storageByEvent,
+      storage_limit: effectiveSoftLimit,
+      storage_soft_limit: effectiveSoftLimit,
+      configured_soft_limit: configuredSoftLimit,
+      recommended_soft_limit: recommendedSoftLimit,
+      soft_limit_configured: Boolean(configuredSoftLimit),
+      disk_total: diskTotal,
+      disk_free: diskFree,
+      disk_available: diskAvailable,
+      disk_total_raw: rawDiskTotal,
+      disk_free_raw: rawDiskFree,
+      disk_available_raw: rawDiskAvailable,
+      disk_metrics_reliable: diskMetricsReliable,
+      disk_override_source: overrideSource
+    });
+  } catch (error) {
+    errorResponse(res, error, 500, 'Failed to fetch storage information');
+  }
+});
+
+// Upload favicon endpoint
+router.post('/favicon', adminAuth, requirePermission('settings.edit'), faviconUpload.single('favicon'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No favicon file provided' });
+    }
+
+    // The file is already in the correct location from multer
+    const faviconUrl = `/uploads/favicons/${req.file.filename}`;
+
+    // Save to database
+    await db('app_settings')
+      .insert({
+        setting_key: 'branding_favicon_url',
+        setting_value: JSON.stringify(faviconUrl),
+        setting_type: 'branding',
+        updated_at: new Date()
+      })
+      .onConflict('setting_key')
+      .merge({
+        setting_value: JSON.stringify(faviconUrl),
+        updated_at: new Date()
+      });
+
+    // Log activity
+    await logActivity('favicon_uploaded',
+      { faviconUrl },
+      null,
+      { type: 'admin', id: req.admin.id, name: req.admin.username }
+    );
+
+    res.json({ faviconUrl });
+  } catch (error) {
+    errorResponse(res, error, 500, 'Failed to upload favicon');
+  }
+});
+
+// Update rate limit settings
+router.put('/security/rate-limit', adminAuth, requirePermission('settings.security'), [
+  body('rate_limit_enabled').isBoolean().withMessage('Enabled must be a boolean'),
+  body('rate_limit_window_minutes').isInt({ min: 1, max: 60 }).withMessage('Window must be between 1 and 60 minutes'),
+  body('rate_limit_max_requests').isInt({ min: 10, max: 10000 }).withMessage('Max requests must be between 10 and 10000'),
+  body('rate_limit_auth_max_requests').isInt({ min: 1, max: 100 }).withMessage('Auth max requests must be between 1 and 100'),
+  body('rate_limit_skip_authenticated').isBoolean().withMessage('Skip authenticated must be a boolean'),
+  body('rate_limit_public_endpoints_only').isBoolean().withMessage('Public endpoints only must be a boolean')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: safeValidationErrors(errors) });
+    }
+
+    const {
+      rate_limit_enabled,
+      rate_limit_window_minutes,
+      rate_limit_max_requests,
+      rate_limit_auth_max_requests,
+      rate_limit_skip_authenticated,
+      rate_limit_public_endpoints_only
+    } = req.body;
+
+    // Update each setting
+    const settings = [
+      { key: 'rate_limit_enabled', value: rate_limit_enabled },
+      { key: 'rate_limit_window_minutes', value: rate_limit_window_minutes },
+      { key: 'rate_limit_max_requests', value: rate_limit_max_requests },
+      { key: 'rate_limit_auth_max_requests', value: rate_limit_auth_max_requests },
+      { key: 'rate_limit_skip_authenticated', value: rate_limit_skip_authenticated },
+      { key: 'rate_limit_public_endpoints_only', value: rate_limit_public_endpoints_only }
+    ];
+
+    // Upsert, not update: a fresh install has no rate_limit_* rows, and a
+    // plain update matched nothing there — the route answered 200 and
+    // changed nothing (#1337).
+    for (const { key, value } of settings) {
+      await db('app_settings')
+        .insert({
+          setting_key: key,
+          setting_value: JSON.stringify(value),
+          setting_type: 'security',
+          updated_at: new Date()
+        })
+        .onConflict('setting_key')
+        .merge({
+          setting_value: JSON.stringify(value),
+          updated_at: new Date()
+        });
+    }
+
+    // Clear the rate limit settings cache to apply changes immediately
+    clearSettingsCache();
+    // max and skip re-read the settings per request, the window is fixed
+    // per limiter instance: rebuild so a changed window applies now rather
+    // than after a restart (#1337). Counters start fresh.
+    await initializeRateLimiters();
+
+    // Log activity
+    await logActivity('settings_updated',
+      {
+        category: 'security',
+        subcategory: 'rate_limit',
+        changes: settings.length
+      },
+      null,
+      { type: 'admin', id: req.admin.id, name: req.admin.username }
+    );
+
+    res.json({ message: 'Rate limit settings updated successfully' });
+  } catch (error) {
+    errorResponse(res, error, 500, 'Failed to update rate limit settings');
+  }
+});
+
+// Get default public site template
+router.get('/public-site/default', adminAuth, requirePermission('settings.view'), async (req, res) => {
+  try {
+    const defaults = await getDefaultPublicSitePayload();
+
+    res.json({
+      enabled: false,
+      html: DEFAULT_PUBLIC_SITE_HTML.trim(),
+      css: '',
+      baseCss: DEFAULT_PUBLIC_SITE_CSS.trim(),
+      branding: defaults.branding,
+      meta: {
+        title: defaults.title,
+      }
+    });
+  } catch (error) {
+    errorResponse(res, error, 500, 'Failed to load defaults');
+  }
+});
+
+// Reset public site template to defaults
+router.post('/public-site/reset', adminAuth, requirePermission('settings.edit'), async (req, res) => {
+  try {
+    const entries = [
+      {
+        key: 'general_public_site_html',
+        value: DEFAULT_PUBLIC_SITE_HTML.trim()
+      },
+      {
+        key: 'general_public_site_custom_css',
+        value: ''
+      }
+    ];
+
+    for (const { key, value } of entries) {
+      await db('app_settings')
+        .insert({
+          setting_key: key,
+          setting_value: JSON.stringify(value),
+          setting_type: 'general',
+          updated_at: new Date()
+        })
+        .onConflict('setting_key')
+        .merge({
+          setting_value: JSON.stringify(value),
+          updated_at: new Date()
+        });
+    }
+
+    clearPublicSiteCache();
+
+    const defaults = await getDefaultPublicSitePayload();
+
+    await logActivity('public_site_reset_to_default',
+      {
+        template_length: DEFAULT_PUBLIC_SITE_HTML.length,
+      },
+      null,
+      { type: 'admin', id: req.admin.id, name: req.admin.username }
+    );
+
+    res.json({
+      message: 'Public site template reset to defaults',
+      html: DEFAULT_PUBLIC_SITE_HTML.trim(),
+      css: '',
+      baseCss: DEFAULT_PUBLIC_SITE_CSS.trim(),
+      branding: defaults.branding
+    });
+  } catch (error) {
+    errorResponse(res, error, 500, 'Failed to reset template');
+  }
+});
+
+module.exports = router;

@@ -1,0 +1,621 @@
+import React, { useState, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
+import { useEditor, EditorContent, type Editor } from '@tiptap/react';
+import StarterKit from '@tiptap/starter-kit';
+import Link from '@tiptap/extension-link';
+import HardBreak from '@tiptap/extension-hard-break';
+import Placeholder from '@tiptap/extension-placeholder';
+import CharacterCount from '@tiptap/extension-character-count';
+import TextAlign from '@tiptap/extension-text-align';
+import CodeBlockLowlight from '@tiptap/extension-code-block-lowlight';
+import { lowlight } from './cmsLowlight';
+import { 
+  Bold, 
+  Italic, 
+  List, 
+  ListOrdered,
+  Link as LinkIcon,
+  Heading1,
+  Heading2,
+  Heading3,
+  Heading4,
+  Heading5,
+  Heading6,
+  Quote,
+  Code,
+  Code2,
+  Minus,
+  Undo,
+  Redo,
+  RemoveFormatting,
+  AlignLeft,
+  AlignCenter,
+  AlignRight,
+  AlignJustify,
+  Eye,
+  Edit3,
+  Columns,
+  Maximize2,
+  HelpCircle,
+  Save
+} from 'lucide-react';
+import { Button } from '../common';
+import DOMPurify from 'dompurify';
+import '../../styles/prose-overrides.css';
+
+interface CMSEditorProps {
+  content: string;
+  onChange: (content: string) => void;
+  onSave?: () => void;
+  isSaving?: boolean;
+}
+
+type ViewMode = 'edit' | 'preview' | 'split';
+
+const MenuButton: React.FC<{
+  onClick: () => void;
+  active?: boolean;
+  children: React.ReactNode;
+  title: string;
+  disabled?: boolean;
+}> = ({ onClick, active, children, title, disabled }) => (
+  <button
+    onMouseDown={event => event.preventDefault()}
+    onClick={onClick}
+    disabled={disabled}
+    className={`p-2 rounded hover:bg-neutral-100 dark:hover:bg-neutral-700 transition-colors ${
+      active
+        ? 'bg-accent-dark/15 text-accent-dark'
+        : 'text-neutral-700 dark:text-neutral-200'
+    } ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+    title={title}
+    type="button"
+  >
+    {children}
+  </button>
+);
+
+export const CMSEditor: React.FC<CMSEditorProps> = ({ content, onChange, onSave, isSaving }) => {
+  const { t } = useTranslation();
+  const [linkUrl, setLinkUrl] = useState('');
+  const [showLinkDialog, setShowLinkDialog] = useState(false);
+  const [viewMode, setViewMode] = useState<ViewMode>('edit');
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
+  const [wordCount, setWordCount] = useState(0);
+  const [charCount, setCharCount] = useState(0);
+  const toolbarRef = React.useRef<HTMLDivElement | null>(null);
+
+  const editor = useEditor({
+    shouldRerenderOnTransaction: true,
+    extensions: [
+      StarterKit.configure({
+        link: false,
+        // v2 StarterKit had no TrailingNode; v3 would append an empty <p> to
+        // documents ending in a heading/list/code block and persist it.
+        trailingNode: false,
+        hardBreak: false, // We'll use the separate HardBreak extension
+        codeBlock: false, // We'll use CodeBlockLowlight instead
+      }),
+      HardBreak.configure({
+        keepMarks: true,
+        HTMLAttributes: {
+          class: 'hard-break',
+        },
+      }),
+      Link.configure({
+        openOnClick: false,
+        HTMLAttributes: {
+          target: '_blank',
+          rel: 'noopener noreferrer',
+        },
+      }),
+      TextAlign.configure({
+        types: ['heading', 'paragraph'],
+        alignments: ['left', 'center', 'right', 'justify'],
+        defaultAlignment: 'left',
+      }),
+      CodeBlockLowlight.configure({
+        lowlight,
+        HTMLAttributes: {
+          class: 'hljs',
+        },
+      }),
+      Placeholder.configure({
+        placeholder: t('cms.editor.placeholder', 'Start typing your content here...'),
+      }),
+      CharacterCount.configure({
+        limit: null,
+      }),
+    ],
+    content,
+    onUpdate: ({ editor }) => {
+      onChange(editor.getHTML());
+      updateCounts(editor);
+    },
+    onCreate: ({ editor }) => {
+      updateCounts(editor);
+    },
+  });
+
+  const updateCounts = useCallback((editorInstance: Editor) => {
+    const textContent = editorInstance.state.doc.textContent;
+    setCharCount(editorInstance.storage.characterCount.characters());
+    const words = textContent.trim().split(/\s+/).filter((word: string) => word.length > 0);
+    setWordCount(words.length);
+  }, []);
+
+  // Update editor content when prop changes
+  // With the toolbar pinned (#1289), ProseMirror's default scroll margin
+  // would treat a caret directly under it as visible, so arrowing upward
+  // through a long document could edit text behind the toolbar. The block's
+  // height is not a constant: the formatting row wraps to two rows at common
+  // desktop widths, and the link-entry row comes and goes. Measure it and
+  // hand ProseMirror the offsets through setOptions, which re-applies
+  // editorProps to the live view. Below md the toolbar is not sticky, so the
+  // offsets go back to zero rather than over-scrolling by a whole toolbar.
+  React.useEffect(() => {
+    const block = toolbarRef.current;
+    if (!editor || !block) return;
+    const apply = () => {
+      const pinned = typeof window.matchMedia === 'function' && window.matchMedia('(min-width: 768px)').matches;
+      const height = pinned ? Math.ceil(block.getBoundingClientRect().height) : 0;
+      editor.setOptions({
+        editorProps: {
+          scrollThreshold: { top: height + 8, right: 0, bottom: 0, left: 0 },
+          scrollMargin: { top: height + 16, right: 0, bottom: 0, left: 0 },
+        },
+      });
+    };
+    apply();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(apply);
+    observer.observe(block);
+    return () => observer.disconnect();
+  }, [editor, viewMode, showLinkDialog]);
+
+  React.useEffect(() => {
+    if (editor && content !== editor.getHTML()) {
+      editor.commands.setContent(content, { emitUpdate: false });
+      // The editor is mounted before CMS data finishes loading. setContent
+      // deliberately suppresses onUpdate, so refresh the status bar here or
+      // its word/character counts stay at the empty-document values.
+      updateCounts(editor);
+    }
+  }, [content, editor, updateCounts]);
+
+  if (!editor) {
+    return null;
+  }
+
+  const addLink = () => {
+    if (linkUrl) {
+      editor.chain().focus().setLink({ href: linkUrl }).run();
+      setLinkUrl('');
+      setShowLinkDialog(false);
+    }
+  };
+
+
+
+  const toggleFullscreen = () => {
+    setIsFullscreen(!isFullscreen);
+  };
+
+  const getPreviewContent = () => {
+    return DOMPurify.sanitize(editor?.getHTML() || '', {
+      ALLOWED_TAGS: [
+        'p', 'br', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+        'ul', 'ol', 'li', 'blockquote', 'a', 'em', 'strong',
+        'code', 'pre', 'hr', 'div', 'span'
+      ],
+      ALLOWED_ATTR: ['href', 'target', 'rel', 'class', 'style'],
+      ALLOW_DATA_ATTR: false,
+      KEEP_CONTENT: true,
+      ADD_TAGS: ['br'], // Explicitly allow br tags
+      ADD_ATTR: ['style'], // Allow style for text alignment
+    });
+  };
+
+  // Reusable view-mode chip — three states (edit/preview/split). Shared
+  // styling block extracted as a const so the dark variants stay in sync.
+  const viewModeChipClass = (mode: typeof viewMode) =>
+    `px-3 py-1.5 text-sm font-medium rounded transition-colors ${
+      viewMode === mode
+        ? 'bg-accent-dark/15 text-accent-dark'
+        : 'text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-700'
+    }`;
+
+  return (
+    <div className={`relative ${isFullscreen ? 'fixed inset-0 z-50 bg-white dark:bg-neutral-900' : ''}`}>
+      {/* overflow-clip, not overflow-hidden: both clip the rounded corners, but
+          hidden makes this box a scroll container, and the sticky toolbar
+          below would pin to it instead of to the admin page's scroller. */}
+      <div className="border border-neutral-300 dark:border-neutral-700 rounded-lg overflow-clip h-full flex flex-col bg-white dark:bg-neutral-900">
+        {/* Top Toolbar — sticky from md up (#1289). The editor pane has no
+            bounded height on the CMS page, so a long document scrolls the
+            whole admin content area and the toolbar used to leave with it;
+            editing a 16-section privacy policy meant scrolling back up for
+            every heading. Sticking it to the page's scroller keeps both rows
+            (mode/save and formatting) in reach. Not below md: there the
+            formatting row wraps to several lines and would permanently eat
+            most of a phone's editing area. */}
+        <div ref={toolbarRef} className="border-b border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800 md:sticky md:top-0 md:z-10">
+          {/* View Mode Controls */}
+          <div className="flex items-center justify-between p-2 border-b border-neutral-200 dark:border-neutral-700">
+            <div className="flex items-center gap-2">
+              <button onClick={() => setViewMode('edit')} className={viewModeChipClass('edit')}>
+                <Edit3 className="w-4 h-4 inline-block mr-1" />
+                {t('cms.editor.viewEdit', 'Edit')}
+              </button>
+              <button onClick={() => setViewMode('preview')} className={viewModeChipClass('preview')}>
+                <Eye className="w-4 h-4 inline-block mr-1" />
+                {t('cms.editor.viewPreview', 'Preview')}
+              </button>
+              <button onClick={() => setViewMode('split')} className={viewModeChipClass('split')}>
+                <Columns className="w-4 h-4 inline-block mr-1" />
+                {t('cms.editor.viewSplit', 'Split')}
+              </button>
+            </div>
+            
+            <div className="flex items-center gap-2">
+              {onSave && (
+                <Button
+                  size="sm"
+                  onClick={onSave}
+                  isLoading={isSaving}
+                  leftIcon={<Save className="w-4 h-4" />}
+                >
+                  {t('cms.editor.save', 'Save')}
+                </Button>
+              )}
+
+              <MenuButton
+                onClick={() => setShowHelp(true)}
+                title={t('cms.editor.help', 'Help & Keyboard Shortcuts')}
+              >
+                <HelpCircle className="w-4 h-4" />
+              </MenuButton>
+
+              <MenuButton
+                onClick={toggleFullscreen}
+                title={isFullscreen
+                  ? t('cms.editor.exitFullscreen', 'Exit Fullscreen')
+                  : t('cms.editor.enterFullscreen', 'Enter Fullscreen')}
+                active={isFullscreen}
+              >
+                <Maximize2 className="w-4 h-4" />
+              </MenuButton>
+            </div>
+          </div>
+
+          {/* Formatting Toolbar */}
+          {viewMode !== 'preview' && (
+            <div className="flex items-center gap-1 p-2 flex-wrap">
+              <MenuButton
+                onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}
+                active={editor.isActive('heading', { level: 1 })}
+                title={t('cms.editor.tool.heading1', "Heading 1 (Ctrl+Alt+1)")}
+              >
+                <Heading1 className="w-4 h-4" />
+              </MenuButton>
+              
+              <MenuButton
+                onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}
+                active={editor.isActive('heading', { level: 2 })}
+                title={t('cms.editor.tool.heading2', "Heading 2 (Ctrl+Alt+2)")}
+              >
+                <Heading2 className="w-4 h-4" />
+              </MenuButton>
+              
+              <MenuButton
+                onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()}
+                active={editor.isActive('heading', { level: 3 })}
+                title={t('cms.editor.tool.heading3', "Heading 3 (Ctrl+Alt+3)")}
+              >
+                <Heading3 className="w-4 h-4" />
+              </MenuButton>
+              
+              <MenuButton
+                onClick={() => editor.chain().focus().toggleHeading({ level: 4 }).run()}
+                active={editor.isActive('heading', { level: 4 })}
+                title={t('cms.editor.tool.heading4', "Heading 4 (Ctrl+Alt+4)")}
+              >
+                <Heading4 className="w-4 h-4" />
+              </MenuButton>
+              
+              <MenuButton
+                onClick={() => editor.chain().focus().toggleHeading({ level: 5 }).run()}
+                active={editor.isActive('heading', { level: 5 })}
+                title={t('cms.editor.tool.heading5', "Heading 5 (Ctrl+Alt+5)")}
+              >
+                <Heading5 className="w-4 h-4" />
+              </MenuButton>
+              
+              <MenuButton
+                onClick={() => editor.chain().focus().toggleHeading({ level: 6 }).run()}
+                active={editor.isActive('heading', { level: 6 })}
+                title={t('cms.editor.tool.heading6', "Heading 6 (Ctrl+Alt+6)")}
+              >
+                <Heading6 className="w-4 h-4" />
+              </MenuButton>
+
+              <div className="w-px h-6 bg-neutral-300 dark:bg-neutral-600 mx-1" />
+              
+              <MenuButton
+                onClick={() => editor.chain().focus().toggleBold().run()}
+                active={editor.isActive('bold')}
+                title={t('cms.editor.tool.bold', "Bold (Ctrl+B)")}
+              >
+                <Bold className="w-4 h-4" />
+              </MenuButton>
+              
+              <MenuButton
+                onClick={() => editor.chain().focus().toggleItalic().run()}
+                active={editor.isActive('italic')}
+                title={t('cms.editor.tool.italic', "Italic (Ctrl+I)")}
+              >
+                <Italic className="w-4 h-4" />
+              </MenuButton>
+              
+              <MenuButton
+                onClick={() => editor.chain().focus().toggleCode().run()}
+                active={editor.isActive('code')}
+                title={t('cms.editor.tool.inlineCode', "Inline Code (Ctrl+E)")}
+              >
+                <Code className="w-4 h-4" />
+              </MenuButton>
+              
+              <MenuButton
+                onClick={() => editor.chain().focus().toggleCodeBlock().run()}
+                active={editor.isActive('codeBlock')}
+                title={t('cms.editor.tool.codeBlock', "Code Block (Ctrl+Alt+C)")}
+              >
+                <Code2 className="w-4 h-4" />
+              </MenuButton>
+
+              <div className="w-px h-6 bg-neutral-300 dark:bg-neutral-600 mx-1" />
+              
+              <MenuButton
+                onClick={() => editor.chain().focus().toggleBulletList().run()}
+                active={editor.isActive('bulletList')}
+                title={t('cms.editor.tool.bulletList', "Bullet List (Ctrl+Shift+8)")}
+              >
+                <List className="w-4 h-4" />
+              </MenuButton>
+              
+              <MenuButton
+                onClick={() => editor.chain().focus().toggleOrderedList().run()}
+                active={editor.isActive('orderedList')}
+                title={t('cms.editor.tool.numberedList', "Numbered List (Ctrl+Shift+9)")}
+              >
+                <ListOrdered className="w-4 h-4" />
+              </MenuButton>
+              
+              <MenuButton
+                onClick={() => editor.chain().focus().toggleBlockquote().run()}
+                active={editor.isActive('blockquote')}
+                title={t('cms.editor.tool.blockquote', "Blockquote (Ctrl+Shift+B)")}
+              >
+                <Quote className="w-4 h-4" />
+              </MenuButton>
+
+              <div className="w-px h-6 bg-neutral-300 dark:bg-neutral-600 mx-1" />
+              
+              <MenuButton
+                onClick={() => setShowLinkDialog(true)}
+                active={editor.isActive('link')}
+                title={t('cms.editor.tool.addLink', "Add Link (Ctrl+K)")}
+              >
+                <LinkIcon className="w-4 h-4" />
+              </MenuButton>
+              
+              <MenuButton
+                onClick={() => editor.chain().focus().setHorizontalRule().run()}
+                title={t('cms.editor.tool.horizontalRule', "Horizontal Rule")}
+              >
+                <Minus className="w-4 h-4" />
+              </MenuButton>
+
+              <div className="w-px h-6 bg-neutral-300 dark:bg-neutral-600 mx-1" />
+              
+              <MenuButton
+                onClick={() => editor.chain().focus().setTextAlign('left').run()}
+                active={editor.isActive({ textAlign: 'left' })}
+                title={t('cms.editor.tool.alignLeft', "Align Left")}
+              >
+                <AlignLeft className="w-4 h-4" />
+              </MenuButton>
+              
+              <MenuButton
+                onClick={() => editor.chain().focus().setTextAlign('center').run()}
+                active={editor.isActive({ textAlign: 'center' })}
+                title={t('cms.editor.tool.alignCenter', "Align Center")}
+              >
+                <AlignCenter className="w-4 h-4" />
+              </MenuButton>
+              
+              <MenuButton
+                onClick={() => editor.chain().focus().setTextAlign('right').run()}
+                active={editor.isActive({ textAlign: 'right' })}
+                title={t('cms.editor.tool.alignRight', "Align Right")}
+              >
+                <AlignRight className="w-4 h-4" />
+              </MenuButton>
+              
+              <MenuButton
+                onClick={() => editor.chain().focus().setTextAlign('justify').run()}
+                active={editor.isActive({ textAlign: 'justify' })}
+                title={t('cms.editor.tool.justify', "Justify")}
+              >
+                <AlignJustify className="w-4 h-4" />
+              </MenuButton>
+
+              <div className="w-px h-6 bg-neutral-300 dark:bg-neutral-600 mx-1" />
+              
+              <MenuButton
+                onClick={() => editor.chain().focus().clearNodes().unsetAllMarks().run()}
+                title={t('cms.editor.tool.clearFormatting', "Clear Formatting")}
+              >
+                <RemoveFormatting className="w-4 h-4" />
+              </MenuButton>
+
+              <div className="w-px h-6 bg-neutral-300 dark:bg-neutral-600 mx-1" />
+              
+              <MenuButton
+                onClick={() => editor.chain().focus().undo().run()}
+                disabled={!editor.can().undo()}
+                title={t('cms.editor.tool.undo', "Undo (Ctrl+Z)")}
+              >
+                <Undo className="w-4 h-4" />
+              </MenuButton>
+              
+              <MenuButton
+                onClick={() => editor.chain().focus().redo().run()}
+                disabled={!editor.can().redo()}
+                title={t('cms.editor.tool.redo', "Redo (Ctrl+Y)")}
+              >
+                <Redo className="w-4 h-4" />
+              </MenuButton>
+            </div>
+          )}
+          {/* Link entry row — inside the sticky block on purpose (#1289):
+              rendered below it, the URL field ended up at the toolbar's
+              original document position, under the pinned toolbar. */}
+          {showLinkDialog && (
+            <div className="p-3 bg-accent-dark/15 border-b border-accent-dark/30 flex items-center gap-2">
+              <input
+                type="url"
+                value={linkUrl}
+                onChange={(e) => setLinkUrl(e.target.value)}
+                onKeyPress={(e) => e.key === 'Enter' && addLink()}
+                placeholder={t('cms.editor.linkUrlPlaceholder', 'Enter URL...')}
+                className="flex-1 px-3 py-1 border border-accent-dark/30 bg-white dark:bg-neutral-900 text-neutral-900 dark:text-neutral-100 rounded-md focus:ring-2 focus:ring-primary-500"
+                autoFocus
+              />
+              <Button size="sm" onClick={addLink}>{t('cms.editor.addLink', 'Add Link')}</Button>
+              <Button size="sm" variant="outline" onClick={() => {
+                setShowLinkDialog(false);
+                setLinkUrl('');
+              }}>
+                {t('common.cancel', 'Cancel')}
+              </Button>
+            </div>
+          )}
+        </div>
+
+        {/* Editor Content Area */}
+        <div className="flex-1 flex overflow-hidden">
+          {/* Editor — prose-invert in dark mode flips the prose typography
+              palette without us having to override every prose-* class. */}
+          {viewMode !== 'preview' && (
+            <div className={`${viewMode === 'split' ? 'w-1/2 border-r border-neutral-200 dark:border-neutral-700' : 'w-full'} overflow-auto bg-white dark:bg-neutral-900`}>
+              <EditorContent
+                editor={editor}
+                className="min-h-[400px] p-4 prose prose-neutral dark:prose-invert max-w-none focus:outline-none [&_.ProseMirror]:min-h-[400px] [&_.ProseMirror]:outline-none [&_.ProseMirror]:text-neutral-900 dark:[&_.ProseMirror]:text-neutral-100 [&_.ProseMirror_p.is-editor-empty:first-child::before]:content-[attr(data-placeholder)] [&_.ProseMirror_p.is-editor-empty:first-child::before]:text-neutral-400 dark:[&_.ProseMirror_p.is-editor-empty:first-child::before]:text-neutral-500 [&_.ProseMirror_p.is-editor-empty:first-child::before]:pointer-events-none [&_.ProseMirror_p.is-editor-empty:first-child::before]:float-left [&_.ProseMirror_p.is-editor-empty:first-child::before]:h-0 [&_.ProseMirror_br.hard-break]:display-block [&_.ProseMirror_br.hard-break]:content-[''] [&_.ProseMirror_br.hard-break]:margin-[0.5em_0] [&_.ProseMirror_pre]:bg-neutral-100 dark:[&_.ProseMirror_pre]:bg-neutral-800 [&_.ProseMirror_pre]:rounded-md [&_.ProseMirror_pre]:p-4 [&_.ProseMirror_pre]:overflow-x-auto [&_.ProseMirror_code]:bg-neutral-100 dark:[&_.ProseMirror_code]:bg-neutral-800 [&_.ProseMirror_code]:rounded [&_.ProseMirror_code]:px-1 [&_.ProseMirror_code]:py-0.5 [&_.ProseMirror_code]:text-sm [&_.ProseMirror_pre_code]:bg-transparent [&_.ProseMirror_pre_code]:p-0"
+              />
+            </div>
+          )}
+
+          {/* Preview */}
+          {viewMode !== 'edit' && (
+            <div className={`${viewMode === 'split' ? 'w-1/2' : 'w-full'} overflow-auto bg-neutral-50 dark:bg-neutral-800 p-4`}>
+              <div
+                className="prose prose-neutral dark:prose-invert max-w-none"
+                dangerouslySetInnerHTML={{ __html: getPreviewContent() }}
+              />
+            </div>
+          )}
+        </div>
+
+        {/* Status Bar */}
+        <div className="flex items-center justify-between px-4 py-2 bg-neutral-50 dark:bg-neutral-800 border-t border-neutral-200 dark:border-neutral-700 text-sm text-neutral-600 dark:text-neutral-300">
+          <div className="flex items-center gap-4">
+            <span>{t('cms.editor.wordCount', '{{count}} words', { count: wordCount })}</span>
+            <span>{t('cms.editor.charCount', '{{count}} characters', { count: charCount })}</span>
+          </div>
+          <div className="text-xs text-neutral-500 dark:text-neutral-400">
+            {t('cms.editor.lineBreakHint', 'Press Shift+Enter for line break, Enter for new paragraph')}
+          </div>
+        </div>
+      </div>
+
+      {/* Help Modal */}
+      {showHelp && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white dark:bg-neutral-900 text-neutral-900 dark:text-neutral-100 rounded-lg max-w-2xl w-full max-h-[80vh] overflow-auto">
+            <div className="p-6">
+              <h2 className="text-xl font-semibold mb-4">
+                {t('cms.editor.helpTitle', 'Editor Help & Keyboard Shortcuts')}
+              </h2>
+
+              <div className="space-y-4">
+                <div>
+                  <h3 className="font-semibold mb-2">{t('cms.editor.helpFormatting', 'Text Formatting')}</h3>
+                  <div className="grid grid-cols-2 gap-2 text-sm">
+                    <div><kbd>Ctrl+B</kbd> - {t('cms.editor.tool.boldShort', 'Bold')}</div>
+                    <div><kbd>Ctrl+I</kbd> - {t('cms.editor.tool.italicShort', 'Italic')}</div>
+                    <div><kbd>Ctrl+E</kbd> - {t('cms.editor.tool.inlineCodeShort', 'Inline code')}</div>
+                    <div><kbd>Ctrl+K</kbd> - {t('cms.editor.tool.addLinkShort', 'Add link')}</div>
+                  </div>
+                </div>
+
+                <div>
+                  <h3 className="font-semibold mb-2">{t('cms.editor.helpHeadings', 'Headings')}</h3>
+                  <div className="grid grid-cols-2 gap-2 text-sm">
+                    <div><kbd>Ctrl+Alt+1</kbd> - {t('cms.editor.tool.heading1Short', 'Heading 1')}</div>
+                    <div><kbd>Ctrl+Alt+2</kbd> - {t('cms.editor.tool.heading2Short', 'Heading 2')}</div>
+                    <div><kbd>Ctrl+Alt+3</kbd> - {t('cms.editor.tool.heading3Short', 'Heading 3')}</div>
+                    <div><kbd>Ctrl+Alt+4</kbd> - {t('cms.editor.tool.heading4Short', 'Heading 4')}</div>
+                    <div><kbd>Ctrl+Alt+5</kbd> - {t('cms.editor.tool.heading5Short', 'Heading 5')}</div>
+                    <div><kbd>Ctrl+Alt+6</kbd> - {t('cms.editor.tool.heading6Short', 'Heading 6')}</div>
+                  </div>
+                </div>
+
+                <div>
+                  <h3 className="font-semibold mb-2">{t('cms.editor.helpLists', 'Lists & Blocks')}</h3>
+                  <div className="grid grid-cols-2 gap-2 text-sm">
+                    <div><kbd>Ctrl+Shift+8</kbd> - {t('cms.editor.tool.bulletListShort', 'Bullet list')}</div>
+                    <div><kbd>Ctrl+Shift+9</kbd> - {t('cms.editor.tool.numberedListShort', 'Numbered list')}</div>
+                    <div><kbd>Ctrl+Shift+B</kbd> - {t('cms.editor.tool.blockquoteShort', 'Blockquote')}</div>
+                    <div><kbd>Ctrl+Alt+C</kbd> - {t('cms.editor.tool.codeBlockShort', 'Code block')}</div>
+                  </div>
+                </div>
+
+                <div>
+                  <h3 className="font-semibold mb-2">{t('cms.editor.helpAlignment', 'Text Alignment')}</h3>
+                  <div className="grid grid-cols-2 gap-2 text-sm">
+                    <div>{t('cms.editor.helpAlignmentClick', 'Click alignment buttons in toolbar')}</div>
+                    <div>{t('cms.editor.helpAlignmentScope', 'Works on paragraphs and headings')}</div>
+                  </div>
+                </div>
+
+                <div>
+                  <h3 className="font-semibold mb-2">{t('cms.editor.helpLineBreaks', 'Line Breaks')}</h3>
+                  <div className="space-y-1 text-sm">
+                    <div><kbd>Enter</kbd> - {t('cms.editor.helpNewParagraph', 'New paragraph')}</div>
+                    <div><kbd>Shift+Enter</kbd> - {t('cms.editor.helpLineBreak', 'Line break (preserves formatting)')}</div>
+                  </div>
+                </div>
+
+                <div>
+                  <h3 className="font-semibold mb-2">{t('cms.editor.helpNavigation', 'Navigation')}</h3>
+                  <div className="grid grid-cols-2 gap-2 text-sm">
+                    <div><kbd>Ctrl+Z</kbd> - {t('cms.editor.tool.undoShort', 'Undo')}</div>
+                    <div><kbd>Ctrl+Y</kbd> - {t('cms.editor.tool.redoShort', 'Redo')}</div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-6 flex justify-end">
+                <Button onClick={() => setShowHelp(false)}>{t('common.close', 'Close')}</Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+CMSEditor.displayName = 'CMSEditor';

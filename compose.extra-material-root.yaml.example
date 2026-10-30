@@ -1,0 +1,14 @@
+# Copy this file to compose.extra-material-root.yaml, set the host path in .env,
+# then include it after compose.yaml in Docker Compose commands.
+services:
+  picflow:
+    volumes:
+      # Each additional NAS source is explicitly mounted read-only at a stable
+      # alias below /external-media. Duplicate this block for more roots and use
+      # a distinct alias such as /external-media/Studio or /external-media/Archive.
+      - type: bind
+        source: ${NAS_MATERIAL_ROOT_STUDIO:?Set NAS_MATERIAL_ROOT_STUDIO in .env}
+        target: /external-media/Studio
+        read_only: true
+        bind:
+          create_host_path: false

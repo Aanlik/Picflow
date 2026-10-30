@@ -1,0 +1,647 @@
+import { useState, useEffect } from 'react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { toast } from 'react-toastify';
+import { useTranslation } from 'react-i18next';
+import { settingsService } from '../../../services/settings.service';
+import { adminService } from '../../../services/admin.service';
+import { useAdminAuth } from '../../../contexts';
+import { toBoolean, toNumber } from '../../../utils/parsers';
+import { STORAGE_INFO_QUERY_KEY } from './useStorageInfo';
+
+const BYTES_PER_GB = 1024 * 1024 * 1024;
+export const MAX_FILES_PER_UPLOAD_LIMIT = 2000;
+
+export interface GeneralSettings {
+  site_url: string;
+  // FRONTEND_URL in the environment overrides general_site_url at runtime
+  // (#705). Surfaced so the field can say so instead of accepting edits
+  // that never take effect.
+  site_url_env_pinned: boolean;
+  // The value as stored, so the tab can tell an edit from an untouched load.
+  // `general_site_url` was free-text before #1104 added validation, so an
+  // upgraded install can hold something schemeless — and blocking Save on a
+  // value the admin never touched strands anyone without settings.domains,
+  // who cannot correct it either (the write 403s on the protected key).
+  site_url_stored: string;
+  default_expiration_days: number;
+  max_file_size_mb: number;
+  /** Videos get their own per-file cap — the photo cap would otherwise
+   *  block every normal clip. */
+  max_video_size_mb: number;
+  max_files_per_upload: number;
+  allowed_file_types: string;
+  // #509 — re-added after the main-into-beta merge dropped it.
+  max_upload_batch_size_mb: number;
+  maintenance_mode: boolean;
+  short_gallery_urls: boolean;
+  use_original_filenames_for_downloads: boolean;
+  default_language: string;
+  date_format: { format: string; locale: string };
+  /** '12h' or '24h' — controls how times are RENDERED across admin
+   *  + customer-facing views (formatDateTime / formatTime). The
+   *  underlying storage is always HH:mm (24h); only the visual
+   *  presentation toggles. Default '24h' (operator's locale). */
+  time_format: '12h' | '24h';
+}
+
+export interface SecuritySettings {
+  password_min_length: number;
+  password_complexity: string;
+  session_timeout_minutes: number;
+  max_login_attempts: number;
+  attempt_window_minutes: number;
+  lockout_duration_minutes: number;
+  // #1271 — opt-in reversible storage of gallery passwords and client PINs
+  gallery_password_recoverable: boolean;
+}
+
+/** The general per-IP API rate limiter (#1337). Keys match app_settings. */
+export interface RateLimitSettings {
+  rate_limit_enabled: boolean;
+  rate_limit_window_minutes: number;
+  rate_limit_max_requests: number;
+  rate_limit_auth_max_requests: number;
+  rate_limit_skip_authenticated: boolean;
+  rate_limit_public_endpoints_only: boolean;
+}
+
+/** The ranges the backend route enforces; checked before anything is written. */
+export const RATE_LIMIT_RANGES: Record<'rate_limit_window_minutes' | 'rate_limit_max_requests' | 'rate_limit_auth_max_requests', [number, number]> = {
+  rate_limit_window_minutes: [1, 60],
+  rate_limit_max_requests: [10, 10000],
+  rate_limit_auth_max_requests: [1, 100]
+};
+
+/** Returns the first out-of-range field, or null when everything is valid. */
+export function validateRateLimitSettings(settings: RateLimitSettings): keyof typeof RATE_LIMIT_RANGES | null {
+  for (const [key, [min, max]] of Object.entries(RATE_LIMIT_RANGES) as Array<[keyof typeof RATE_LIMIT_RANGES, [number, number]]>) {
+    const value = settings[key];
+    if (!Number.isInteger(value) || value < min || value > max) return key;
+  }
+  return null;
+}
+
+export interface EventSettings {
+  event_require_customer_name: boolean;
+  event_require_event_date: boolean;
+  event_require_expiration: boolean;
+  event_default_require_password: boolean;
+  event_default_feedback_enabled: boolean;
+  // Per-type guest-feedback defaults for new galleries (#1044). These are
+  // DEFAULTS: changing one never touches a gallery that already exists.
+  event_default_allow_ratings: boolean;
+  event_default_allow_likes: boolean;
+  event_default_allow_favorites: boolean;
+  event_default_allow_comments: boolean;
+  event_default_allow_reactions: boolean;
+  event_default_allow_color_labels: boolean;
+  event_default_keybind_mode: 'colors' | 'lightroom';
+  gallery_show_filter_bar: boolean;
+  event_phone_field_enabled: boolean;
+}
+
+export interface SeoSettings {
+  allow_indexing: boolean;
+  block_ai_crawlers: boolean;
+  block_social_bots: boolean;
+  blocked_ai_agents: string[];
+  custom_rules: Array<{ userAgent: string; disallow: string[] }>;
+  meta_noindex: boolean;
+  meta_nofollow: boolean;
+  meta_noai: boolean;
+  sitemap_url: string;
+}
+
+export function useSettingsState(enabled = true) {
+  const queryClient = useQueryClient();
+  const { t } = useTranslation();
+  const { updateUserProfile } = useAdminAuth();
+
+  // Fetch settings
+  const { data: settings, isLoading } = useQuery({
+    queryKey: ['admin-settings'],
+    queryFn: () => settingsService.getAllSettings(),
+    enabled,
+  });
+
+  const { data: adminProfile, isLoading: adminProfileLoading } = useQuery({
+    queryKey: ['admin-profile'],
+    queryFn: () => adminService.getAdminProfile(),
+    enabled,
+  });
+
+  // General settings state
+  const [generalSettings, setGeneralSettings] = useState<GeneralSettings>({
+    site_url: '',
+    site_url_env_pinned: false,
+    site_url_stored: '',
+    default_expiration_days: 30,
+    max_file_size_mb: 50,
+    max_video_size_mb: 500,
+    max_files_per_upload: 500,
+    allowed_file_types: 'jpg,jpeg,png,gif,webp',
+    max_upload_batch_size_mb: 95,
+    maintenance_mode: false,
+    short_gallery_urls: false,
+    use_original_filenames_for_downloads: true,
+    default_language: 'en',
+    date_format: { format: 'yyyy-MM-dd', locale: 'en-CA' },
+    time_format: '24h'
+  });
+
+  // Security settings state
+  const [securitySettings, setSecuritySettings] = useState<SecuritySettings>({
+    password_min_length: 8,
+    password_complexity: 'moderate',
+    session_timeout_minutes: 60,
+    max_login_attempts: 5,
+    attempt_window_minutes: 15,
+    lockout_duration_minutes: 30,
+    gallery_password_recoverable: false
+  });
+
+  // Rate limiter state. The fallbacks mirror the backend's defaults, but the
+  // settings read fills every key, so they only matter before the first load.
+  const [rateLimitSettings, setRateLimitSettings] = useState<RateLimitSettings>({
+    rate_limit_enabled: true,
+    rate_limit_window_minutes: 15,
+    rate_limit_max_requests: 300,
+    rate_limit_auth_max_requests: 5,
+    rate_limit_skip_authenticated: true,
+    rate_limit_public_endpoints_only: false
+  });
+
+  // Event creation settings state
+  const [eventSettings, setEventSettings] = useState<EventSettings>({
+    event_require_customer_name: true,
+    event_require_event_date: true,
+    event_require_expiration: true,
+    event_default_require_password: true,
+    event_default_feedback_enabled: false,
+    event_default_allow_ratings: true,
+    event_default_allow_likes: true,
+    event_default_allow_favorites: true,
+    event_default_allow_comments: true,
+    event_default_allow_reactions: true,
+    event_default_allow_color_labels: false,
+    event_default_keybind_mode: 'colors',
+    gallery_show_filter_bar: true,
+    event_phone_field_enabled: false
+  });
+
+  // SEO settings state
+  const [seoSettings, setSeoSettings] = useState<SeoSettings>({
+    allow_indexing: false,
+    block_ai_crawlers: true,
+    block_social_bots: false,
+    blocked_ai_agents: [],
+    custom_rules: [],
+    meta_noindex: true,
+    meta_nofollow: false,
+    meta_noai: true,
+    sitemap_url: ''
+  });
+
+  // Account form state
+  const [accountForm, setAccountForm] = useState({
+    username: ''
+  });
+  const [accountErrors, setAccountErrors] = useState<Record<string, string>>({});
+
+  // Storage state
+  const [softLimitGb, setSoftLimitGb] = useState<number | ''>('');
+  const [softLimitDirty, setSoftLimitDirty] = useState(false);
+  const [capacityOverrideGb, setCapacityOverrideGb] = useState<number | ''>('');
+  const [availableOverrideGb, setAvailableOverrideGb] = useState<number | ''>('');
+  const [overrideDirty, setOverrideDirty] = useState(false);
+
+  // Initialize settings from API
+  useEffect(() => {
+    if (settings) {
+      setGeneralSettings({
+        site_url: settings.general_site_url_env_pinned
+          ? (settings.general_site_url_effective || '')
+          : (settings.general_site_url || ''),
+        site_url_env_pinned: Boolean(settings.general_site_url_env_pinned),
+        site_url_stored: settings.general_site_url || '',
+        default_expiration_days: toNumber(settings.general_default_expiration_days, 30),
+        max_file_size_mb: toNumber(settings.general_max_file_size_mb, 50),
+        max_video_size_mb: toNumber(settings.general_max_video_size_mb, 500),
+        max_files_per_upload: Math.min(
+          MAX_FILES_PER_UPLOAD_LIMIT,
+          Math.max(1, toNumber(settings.general_max_files_per_upload, 500))
+        ),
+        allowed_file_types: settings.general_allowed_file_types || 'jpg,jpeg,png,gif,webp',
+        max_upload_batch_size_mb: toNumber(settings.general_max_upload_batch_size_mb, 95),
+        maintenance_mode: toBoolean(settings.general_maintenance_mode, false),
+        short_gallery_urls: toBoolean(settings.general_short_gallery_urls, false),
+        use_original_filenames_for_downloads: toBoolean(
+          settings.general_use_original_filenames_for_downloads,
+          true
+        ),
+        default_language: /^zh(?:-|$)/i.test(String(settings.general_default_language || import.meta.env.VITE_DEFAULT_LANGUAGE || ''))
+          ? 'zh-CN'
+          : 'en',
+        date_format: settings.general_date_format
+          ? (typeof settings.general_date_format === 'string'
+              ? {
+                  format: settings.general_date_format,
+                  locale: settings.general_date_format.startsWith('yyyy') || settings.general_date_format.startsWith('YYYY')
+                    ? 'en-CA'
+                    : settings.general_date_format.includes('MM/dd') || settings.general_date_format.includes('MM/DD')
+                      ? 'en-US'
+                      : 'en-GB',
+                }
+              : settings.general_date_format)
+          : { format: 'yyyy-MM-dd', locale: 'en-CA' },
+        time_format: settings.general_time_format === '12h' ? '12h' : '24h'
+      });
+
+      setSecuritySettings({
+        password_min_length: toNumber(settings.security_password_min_length, 8),
+        password_complexity: settings.security_password_complexity ?? 'moderate',
+        session_timeout_minutes: toNumber(settings.security_session_timeout_minutes, 60),
+        max_login_attempts: toNumber(settings.security_max_login_attempts, 5),
+        attempt_window_minutes: toNumber(settings.security_attempt_window_minutes, 15),
+        lockout_duration_minutes: toNumber(settings.security_lockout_duration_minutes, 30),
+        gallery_password_recoverable: toBoolean(settings.security_gallery_password_recoverable, false)
+      });
+
+      setRateLimitSettings({
+        rate_limit_enabled: toBoolean(settings.rate_limit_enabled, true),
+        rate_limit_window_minutes: toNumber(settings.rate_limit_window_minutes, 15),
+        rate_limit_max_requests: toNumber(settings.rate_limit_max_requests, 300),
+        rate_limit_auth_max_requests: toNumber(settings.rate_limit_auth_max_requests, 5),
+        rate_limit_skip_authenticated: toBoolean(settings.rate_limit_skip_authenticated, true),
+        rate_limit_public_endpoints_only: toBoolean(settings.rate_limit_public_endpoints_only, false)
+      });
+
+      setEventSettings({
+        event_require_customer_name: toBoolean(settings.event_require_customer_name, true),
+        event_require_event_date: toBoolean(settings.event_require_event_date, true),
+        event_require_expiration: toBoolean(settings.event_require_expiration, true),
+        event_default_require_password: toBoolean(settings.event_default_require_password, true),
+        event_default_feedback_enabled: toBoolean(settings.event_default_feedback_enabled, false),
+        // Fallbacks mirror FEEDBACK_TOGGLES in backend
+        // services/feedbackDefaults.js — keep the two in step.
+        event_default_allow_ratings: toBoolean(settings.event_default_allow_ratings, true),
+        event_default_allow_likes: toBoolean(settings.event_default_allow_likes, true),
+        event_default_allow_favorites: toBoolean(settings.event_default_allow_favorites, true),
+        event_default_allow_comments: toBoolean(settings.event_default_allow_comments, true),
+        event_default_allow_reactions: toBoolean(settings.event_default_allow_reactions, true),
+        event_default_allow_color_labels: toBoolean(settings.event_default_allow_color_labels, false),
+        event_default_keybind_mode: settings.event_default_keybind_mode === 'lightroom' ? 'lightroom' : 'colors',
+        gallery_show_filter_bar: toBoolean(settings.gallery_show_filter_bar, true),
+        event_phone_field_enabled: toBoolean(settings.event_phone_field_enabled, false)
+      });
+
+      setSeoSettings({
+        allow_indexing: toBoolean(settings.seo_allow_indexing, false),
+        block_ai_crawlers: toBoolean(settings.seo_block_ai_crawlers, true),
+        block_social_bots: toBoolean(settings.seo_block_social_bots, false),
+        blocked_ai_agents: Array.isArray(settings.seo_blocked_ai_agents) ? settings.seo_blocked_ai_agents : [],
+        custom_rules: Array.isArray(settings.seo_custom_rules) ? settings.seo_custom_rules : [],
+        meta_noindex: toBoolean(settings.seo_meta_noindex, true),
+        meta_nofollow: toBoolean(settings.seo_meta_nofollow, false),
+        meta_noai: toBoolean(settings.seo_meta_noai, true),
+        sitemap_url: settings.seo_sitemap_url || ''
+      });
+    }
+  }, [settings]);
+
+  useEffect(() => {
+    if (adminProfile) {
+      setAccountForm({
+        username: adminProfile.username || ''
+      });
+    }
+  }, [adminProfile]);
+
+  useEffect(() => {
+    if (!settings || overrideDirty) return;
+
+    const capacityOverrideBytes = settings.general_storage_capacity_override_bytes ?? null;
+    const availableOverrideBytes = settings.general_storage_available_override_bytes ?? null;
+
+    setCapacityOverrideGb(
+      capacityOverrideBytes != null
+        ? Number((capacityOverrideBytes / BYTES_PER_GB).toFixed(2))
+        : ''
+    );
+
+    setAvailableOverrideGb(
+      availableOverrideBytes != null
+        ? Number((availableOverrideBytes / BYTES_PER_GB).toFixed(2))
+        : ''
+    );
+  }, [settings, overrideDirty]);
+
+  // Mutations
+  const saveGeneralMutation = useMutation({
+    mutationFn: async () => {
+      const settingsData: Record<string, unknown> = {};
+      Object.entries(generalSettings).forEach(([key, value]) => {
+        // `site_url_env_pinned` is derived server-side and stripped there, and
+        // while it IS pinned the field shows the *effective* env value rather
+        // than the stored setting — reposting that would look like a genuine
+        // change to a protected key and 403 an admin who holds settings.edit
+        // but not settings.domains, even though they changed nothing. The
+        // backend's no-op round-trip allowance only covers the stored value,
+        // so don't send the key at all while it's read-only (#1104).
+        if (key === 'site_url_env_pinned' || key === 'site_url_stored') return;
+        if (key === 'site_url' && generalSettings.site_url_env_pinned) return;
+        // Unchanged is a no-op, so don't send it. The backend allows a no-op
+        // round-trip of a protected key precisely so a settings.edit admin
+        // without settings.domains can save unrelated General settings — but
+        // that only helps if the request gets made, and an untouched value
+        // that predates the #1104 validation would otherwise be blocked in
+        // the tab before it ever left the browser.
+        if (key === 'site_url' && value === generalSettings.site_url_stored) return;
+        settingsData[`general_${key}`] = value;
+      });
+      return settingsService.updateSettings(settingsData);
+    },
+    onSuccess: () => {
+      toast.success(t('toast.settingsSaved'));
+      queryClient.invalidateQueries({ queryKey: ['admin-settings'] });
+      // Project links are returned with the current customer-facing origin.
+      // Refresh cached event data immediately when that origin changes so
+      // copy/open actions do not keep using the old address until navigation.
+      if (!generalSettings.site_url_env_pinned
+        && generalSettings.site_url !== generalSettings.site_url_stored) {
+        queryClient.invalidateQueries({ queryKey: ['admin-events'] });
+        queryClient.invalidateQueries({ queryKey: ['admin-event'] });
+      }
+    },
+    onError: () => {
+      toast.error(t('toast.saveError'));
+    }
+  });
+
+  const saveSecurityMutation = useMutation({
+    mutationFn: async () => {
+      const settingsData: Record<string, unknown> = {};
+      Object.entries(securitySettings).forEach(([key, value]) => {
+        settingsData[`security_${key}`] = value;
+      });
+      // Nothing is written until the limiter values pass the same ranges the
+      // route enforces, and the limiter goes first: a 400 from its route
+      // would otherwise land after the password/session settings were
+      // already persisted, a half-applied save reported as failed (#1337).
+      if (validateRateLimitSettings(rateLimitSettings)) throw new Error('RATE_LIMIT_INVALID');
+      await settingsService.updateRateLimit(rateLimitSettings);
+      await settingsService.updateSettings(settingsData);
+    },
+    onSuccess: () => {
+      toast.success(t('toast.settingsSaved'));
+      queryClient.invalidateQueries({ queryKey: ['admin-settings'] });
+      // the event page's "Show password" availability follows this tab (#1271)
+      queryClient.invalidateQueries({ queryKey: ['admin-event-password-status'] });
+    },
+    onError: (error: unknown) => {
+      toast.error(t(error instanceof Error && error.message === 'RATE_LIMIT_INVALID'
+        ? 'settings.security.rateLimitInvalid'
+        : 'toast.saveError'));
+    }
+  });
+
+  const saveSeoMutation = useMutation({
+    mutationFn: async () => {
+      const settingsData: Record<string, unknown> = {};
+      Object.entries(seoSettings).forEach(([key, value]) => {
+        settingsData[`seo_${key}`] = value;
+      });
+      return settingsService.updateSettings(settingsData);
+    },
+    onSuccess: () => {
+      toast.success(t('toast.settingsSaved'));
+      queryClient.invalidateQueries({ queryKey: ['admin-settings'] });
+      queryClient.invalidateQueries({ queryKey: ['public-settings'] });
+    },
+    onError: () => {
+      toast.error(t('toast.saveError'));
+    }
+  });
+
+  const saveEventSettingsMutation = useMutation({
+    mutationFn: async () => {
+      const settingsData: Record<string, unknown> = {};
+      Object.entries(eventSettings).forEach(([key, value]) => {
+        settingsData[key] = value;
+      });
+      return settingsService.updateSettings(settingsData);
+    },
+    onSuccess: () => {
+      toast.success(t('toast.settingsSaved'));
+      queryClient.invalidateQueries({ queryKey: ['admin-settings'] });
+      queryClient.invalidateQueries({ queryKey: ['public-settings'] });
+    },
+    onError: () => {
+      toast.error(t('toast.saveError'));
+    }
+  });
+
+  const updateAdminProfileMutation = useMutation({
+    mutationFn: (payload: { username: string }) => adminService.updateAdminProfile(payload),
+    onSuccess: (updatedUser) => {
+      toast.success(t('settings.general.accountSaveSuccess'));
+      setAccountErrors({});
+      setAccountForm({
+        username: updatedUser.username
+      });
+      updateUserProfile(updatedUser);
+      queryClient.invalidateQueries({ queryKey: ['admin-profile'] });
+    },
+    onError: (error: { response?: { data?: { errors?: Array<{ path: string; msg: string }>; error?: string } } }) => {
+      if (error.response?.data?.errors) {
+        const fieldErrors: Record<string, string> = {};
+        for (const err of error.response.data.errors) {
+          if (err.path === 'username') {
+            fieldErrors.username = err.msg;
+          }
+        }
+        setAccountErrors(fieldErrors);
+        return;
+      }
+
+      if (error.response?.data?.error) {
+        toast.error(error.response.data.error);
+      } else {
+        toast.error(t('toast.saveError'));
+      }
+    }
+  });
+
+  const saveSoftLimitMutation = useMutation({
+    mutationFn: async (limitBytes: number | null) => {
+      return settingsService.updateSettings({
+        general_storage_soft_limit_bytes: limitBytes,
+      });
+    },
+    onSuccess: () => {
+      toast.success(t('toast.settingsSaved'));
+      setSoftLimitDirty(false);
+      queryClient.invalidateQueries({ queryKey: ['admin-settings'] });
+      queryClient.invalidateQueries({ queryKey: STORAGE_INFO_QUERY_KEY });
+    },
+    onError: () => {
+      toast.error(t('toast.saveError'));
+    }
+  });
+
+  const saveCapacityOverrideMutation = useMutation({
+    mutationFn: async (payload: { capacity: number | null; available: number | null }) => {
+      return settingsService.updateSettings({
+        general_storage_capacity_override_bytes: payload.capacity,
+        general_storage_available_override_bytes: payload.available,
+      });
+    },
+    onSuccess: () => {
+      toast.success(t('toast.settingsSaved'));
+      setOverrideDirty(false);
+      queryClient.invalidateQueries({ queryKey: ['admin-settings'] });
+      queryClient.invalidateQueries({ queryKey: STORAGE_INFO_QUERY_KEY });
+    },
+    onError: () => {
+      toast.error(t('toast.saveError'));
+    }
+  });
+
+  // Handlers
+  const handleAccountChange = (field: 'username') => (event: React.ChangeEvent<HTMLInputElement>) => {
+    const value = event.target.value;
+    setAccountForm((prev) => ({ ...prev, [field]: value }));
+    if (accountErrors[field]) {
+      setAccountErrors((prev) => ({ ...prev, [field]: '' }));
+    }
+  };
+
+  const handleAccountSubmit = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    if (updateAdminProfileMutation.isPending) return;
+
+    const trimmedUsername = accountForm.username.trim();
+    const errors: Record<string, string> = {};
+
+    if (!trimmedUsername) {
+      errors.username = t('settings.general.accountUsernameRequired');
+    } else if (trimmedUsername.length < 3) {
+      errors.username = t('settings.general.accountUsernameLength');
+    }
+
+    if (Object.keys(errors).length > 0) {
+      setAccountErrors(errors);
+      return;
+    }
+
+    updateAdminProfileMutation.mutate({ username: trimmedUsername });
+  };
+
+  const handleSaveSoftLimit = () => {
+    if (saveSoftLimitMutation.isPending) return;
+
+    if (softLimitGb === '') {
+      saveSoftLimitMutation.mutate(null);
+      return;
+    }
+
+    const numericValue = Number(softLimitGb);
+
+    if (!Number.isFinite(numericValue) || numericValue < 0) {
+      toast.error(t('settings.storage.invalidSoftLimit'));
+      return;
+    }
+
+    const limitBytes = Math.max(0, Math.round(numericValue * BYTES_PER_GB));
+    saveSoftLimitMutation.mutate(limitBytes);
+  };
+
+  const handleSaveCapacityOverride = () => {
+    if (saveCapacityOverrideMutation.isPending) return;
+
+    if (capacityOverrideGb === '' && availableOverrideGb !== '') {
+      toast.error(t('settings.storage.capacityRequiredForAvailable'));
+      return;
+    }
+
+    const capacityValue = capacityOverrideGb === '' ? null : Number(capacityOverrideGb);
+    const availableValue = availableOverrideGb === '' ? null : Number(availableOverrideGb);
+
+    if ((capacityValue !== null && !Number.isFinite(capacityValue)) || (availableValue !== null && !Number.isFinite(availableValue))) {
+      toast.error(t('settings.storage.invalidSoftLimit'));
+      return;
+    }
+
+    if (capacityValue !== null && capacityValue < 0) {
+      toast.error(t('settings.storage.invalidSoftLimit'));
+      return;
+    }
+
+    if (availableValue !== null && availableValue < 0) {
+      toast.error(t('settings.storage.invalidSoftLimit'));
+      return;
+    }
+
+    const capacityBytes = capacityValue === null ? null : Math.max(0, Math.round(capacityValue * BYTES_PER_GB));
+    const availableBytes = availableValue === null ? null : Math.max(0, Math.round(availableValue * BYTES_PER_GB));
+
+    if (capacityBytes !== null && availableBytes !== null && availableBytes > capacityBytes) {
+      toast.error(t('settings.storage.availableExceedsCapacity'));
+      return;
+    }
+
+    saveCapacityOverrideMutation.mutate({ capacity: capacityBytes, available: availableBytes });
+  };
+
+  return {
+    // Loading states
+    isLoading,
+    adminProfileLoading,
+
+    // Settings data
+    settings,
+    generalSettings,
+    setGeneralSettings,
+    securitySettings,
+    setSecuritySettings,
+    rateLimitSettings,
+    setRateLimitSettings,
+    eventSettings,
+    setEventSettings,
+    seoSettings,
+    setSeoSettings,
+
+    // Account form
+    accountForm,
+    accountErrors,
+    handleAccountChange,
+    handleAccountSubmit,
+    updateAdminProfileMutation,
+
+    // Storage settings
+    softLimitGb,
+    setSoftLimitGb,
+    softLimitDirty,
+    setSoftLimitDirty,
+    capacityOverrideGb,
+    setCapacityOverrideGb,
+    availableOverrideGb,
+    setAvailableOverrideGb,
+    overrideDirty,
+    setOverrideDirty,
+    handleSaveSoftLimit,
+    handleSaveCapacityOverride,
+    saveSoftLimitMutation,
+    saveCapacityOverrideMutation,
+
+    // Save mutations
+    saveGeneralMutation,
+    saveSecurityMutation,
+    saveEventSettingsMutation,
+    saveSeoMutation,
+
+    // Translation
+    t,
+  };
+}

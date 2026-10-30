@@ -1,0 +1,615 @@
+/**
+ * Import the files under an external-media folder into an event.
+ *
+ * This used to live inline in POST /events/:id/import-external. It moved here
+ * because the folder watcher (issue 1187) needs to run the exact same pass
+ * the Import button runs — same walk, same dedupe, same insert, same
+ * thumbnail generation — without going through HTTP.
+ *
+ * Mutual exclusion is the database claim from maintenanceJobState, keyed per
+ * event. It replaces the in-process Set the route used to keep (#1162): that
+ * Set stopped a double-click in ONE process, but a watcher on a second
+ * replica, or an admin clicking Import while the watcher is mid-run on
+ * another, would still walk the same tree twice. The unique index from
+ * migration 186 keeps that from duplicating rows; the claim keeps it from
+ * wasting the walk. The run heartbeats as it goes so a claim from a process
+ * that died is taken over rather than held forever.
+ */
+
+const path = require('path');
+const fs = require('fs').promises;
+const sharp = require('sharp');
+const { db, logActivity } = require('../database/db');
+const logger = require('../utils/logger');
+const { getExternalMediaRoot } = require('./externalMediaService');
+const { assertRealpathUnder } = require('../utils/fileSecurityUtils');
+const { generateThumbnail, extractCaptureDate, orientedDimensions } = require('./imageProcessor');
+const { isUniqueViolation } = require('../utils/dbErrors');
+const { photoCapOf, insertPhotoWithinCap } = require('./photoCap');
+const jobState = require('./maintenanceJobState');
+const materialSources = require('./externalMediaSources');
+
+const IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.webp'];
+
+class ImportInProgressError extends Error {
+  constructor(eventId) {
+    super('An import is already running for this event. Wait for it to finish before starting another.');
+    this.name = 'ImportInProgressError';
+    this.eventId = eventId;
+  }
+}
+
+class EventNotFoundError extends Error {
+  constructor(eventId) {
+    super('Event not found');
+    this.name = 'EventNotFoundError';
+    this.eventId = eventId;
+  }
+}
+
+const jobNameFor = (sourceId) => `external_import_source:${sourceId}`;
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Remember that an admin deleted these photos, so an automatic pass does not
+ * bring them back (migration 209). Called from the photo delete routes.
+ *
+ * Keyed on external_relpath alone, not on source_origin: a replaced external
+ * photo (photoReplacementService) becomes `managed` but deliberately keeps
+ * its relpath, and deleting that replacement must not republish the NAS
+ * original either. Rows without a relpath were never imported from the
+ * folder and are skipped. Insert failures are swallowed on purpose: a
+ * duplicate means the row is already there, and anything else must not turn
+ * a successful delete into a 500.
+ */
+async function recordExclusions(eventId, photos) {
+  for (const photo of photos) {
+    if (!photo.external_relpath) continue;
+    try {
+      await db('external_import_exclusions').insert({ event_id: eventId, external_relpath: photo.external_relpath });
+    } catch (err) {
+      if (!isUniqueViolation(err)) {
+        logger.warn(`Could not record import exclusion for photo ${photo.id}: ${err.message}`);
+      }
+    }
+  }
+}
+
+/**
+ * Root-relative paths of the rows an event already has, for a set of
+ * candidates. Chunked for SQLite's bound-parameter cap.
+ */
+async function existingRelpaths(eventId, relpaths) {
+  const found = new Set();
+  for (let i = 0; i < relpaths.length; i += 500) {
+    const rows = await db('photos')
+      .where({ event_id: eventId })
+      .whereIn('external_relpath', relpaths.slice(i, i + 500))
+      .select('external_relpath');
+    for (const r of rows) found.add(r.external_relpath);
+  }
+  return found;
+}
+
+function dedupeByRootRelativePath(files, toRootRelative) {
+  let skipped = 0;
+  const deduped = new Map();
+  for (const file of files) {
+    const key = toRootRelative(file.rel);
+    const existing = deduped.get(key);
+    if (!existing || file.size > existing.size) {
+      if (existing) skipped++;
+      deduped.set(key, file);
+    } else {
+      skipped++;
+    }
+  }
+  return { files: [...deduped.values()], skipped };
+}
+
+// Bounds on the recursive walk. An event owner with photos.upload chooses the
+// subtree, and a mount can be arbitrarily deep and wide; the walk stops at
+// these, reports that it did, and imports what it found.
+const MAX_WALK_DEPTH = 16;
+const MAX_WALK_ENTRIES = 100000;
+
+// Helper to recursively collect files under a directory, filtered by image
+// extensions. `budget` is shared across the recursion: entries left to look
+// at, and whether a bound was hit.
+async function walkDir(dir, baseDir, budget = { entries: MAX_WALK_ENTRIES, truncated: false }, depth = 0) {
+  const results = [];
+  if (depth > MAX_WALK_DEPTH) {
+    budget.truncated = true;
+    return results;
+  }
+  const entries = await fs.readdir(dir, { withFileTypes: true });
+  for (const e of entries) {
+    if (budget.entries <= 0) {
+      budget.truncated = true;
+      break;
+    }
+    budget.entries -= 1;
+    if (e.name.startsWith('.')) continue;
+    // Never follow a link, to a directory or a file: the walk stays inside
+    // the base it was given.
+    if (e.isSymbolicLink()) continue;
+    const full = path.join(dir, e.name);
+    if (e.isDirectory()) {
+      // Project finals and selected RAW copies live beside the referenced
+      // camera files. They are delivered through Bridge replacement and must
+      // never be re-imported as new proofs when the folder watcher rescans.
+      if (e.name.toLocaleLowerCase() === 'pixcakedelivery') continue;
+      results.push(...await walkDir(full, baseDir, budget, depth + 1));
+    } else if (e.isFile()) {
+      const ext = path.extname(e.name).toLowerCase();
+      if (IMAGE_EXTENSIONS.includes(ext)) {
+        const rel = path.relative(baseDir, full);
+        results.push({ full, rel, name: e.name });
+      }
+    }
+  }
+  return results;
+}
+
+/**
+ * Run one import pass.
+ *
+ * @param {object} opts
+ * @param {number} opts.eventId
+ * @param {string} opts.externalPath  folder relative to EXTERNAL_MEDIA_ROOT
+ * @param {boolean} [opts.recursive=true]
+ * @param {{individual?: string, collages?: string}} [opts.map]
+ * @param {object|null} [opts.actor]  passed through to logActivity
+ * @param {boolean} [opts.automatic=false]  the watcher's pass, as opposed to
+ *   the Import button. An automatic pass never rewrites the event's source
+ *   configuration (it follows the row, and stops if the row moved under it),
+ *   skips files an admin deleted from this event (migration 209), and defers
+ *   files that are still changing. The manual Import uses the selected source
+ *   association, ignores the exclusion list and clears it for what it imports.
+ * @param {number} [opts.settleMs=0]  automatic passes: a new file modified
+ *   within the last settleMs, or whose size moves during a wait of settleMs,
+ *   is left for the next pass instead of being imported half-copied
+ * @returns {Promise<{imported:number, skipped:number, deferred:number, excluded:number, thumbnailsGenerated:number, thumbnailsFailed:number, truncated:boolean, capReached:boolean}>}
+ *   `truncated`: the recursive walk hit its depth or entry bound and the
+ *   folder was not read in full. `capReached`: the event's photo cap stopped
+ *   the import; what was not imported is counted in `skipped`.
+ * @throws {EventNotFoundError} when the event does not exist
+ * @throws {ImportInProgressError} when another run holds the claim for this event
+ */
+async function importExternalFolder({
+  eventId,
+  externalPath,
+  sourceId,
+  recursive = true,
+  map = { individual: 'individual', collages: 'collages' },
+  actor = null,
+  automatic = false,
+  settleMs = 0,
+}) {
+  // Load event
+  const event = await db('events').where('id', eventId).first();
+  if (!event) throw new EventNotFoundError(eventId);
+
+  // Compatibility callers may still submit a path. Treat it as an
+  // idempotent source association; never replace the event's legacy pointer.
+  let source = sourceId
+    ? await materialSources.getSource(eventId, sourceId)
+    : null;
+  if (!source && externalPath !== undefined) {
+    source = await materialSources.addSource({
+      eventId,
+      relativePath: externalPath,
+      purpose: 'gallery',
+      watchEnabled: false,
+    });
+  }
+  if (!source) throw Object.assign(new Error('Material source not found'), { code: 'MATERIAL_SOURCE_NOT_FOUND' });
+  const external_path = source.relative_path;
+  if (source.purpose === 'raw') {
+    await materialSources.validateFolder(source.root_id, source.relative_path);
+    const result = { imported: 0, skipped: 0, deferred: 0, excluded: 0, thumbnailsGenerated: 0, thumbnailsFailed: 0, truncated: false, capReached: false };
+    const scannedAt = new Date().toISOString();
+    await materialSources.setScanState(source.id, { status: source.watch_enabled ? 'watching' : 'ready', error: null, scannedAt });
+    return result;
+  }
+
+  // The claim comes AFTER the event lookup and BEFORE anything touches the
+  // filesystem: a large tree takes long enough that a run looks hung and
+  // admins click again, and letting that second run walk the whole tree only
+  // to bounce every insert off the unique index wastes minutes of CPU and
+  // reports a nonsense `skipped: 6012` back. Failing fast says what happened.
+  const jobName = jobNameFor(source.id);
+  await jobState.ensure(jobName);
+  const token = await jobState.claim(jobName);
+  if (!token) throw new ImportInProgressError(eventId);
+
+  // Renew the lease on a clock for the WHOLE run, walk included. A large tree
+  // on a slow mount can take longer than the stale window just to list, and
+  // a runner declared stale during that phase would hand the folder to a
+  // second runner while this one is about to start inserting. `lost` is
+  // checked before the event is touched and on every loop iteration.
+  let lost = false;
+
+  // Automatic passes follow the row. The watcher decided to run this pass
+  // from a snapshot of the event that may be a minute old by the time the
+  // walk and the settle wait are done — and a long pass over a slow mount
+  // can outlive several admin saves. The pass stops as soon as the event no
+  // longer qualifies: watcher off, archived, deactivated, switched to
+  // managed, or pointed at another folder.
+  const stillEligible = async () => {
+    const [nowSource, nowEvent] = await Promise.all([
+      materialSources.getSource(eventId, source.id),
+      db('events').where('id', eventId).select('is_active', 'is_archived').first(),
+    ]);
+    return Boolean(nowSource?.watch_enabled && nowSource?.is_active)
+      && Boolean(nowEvent?.is_active)
+      && !nowEvent?.is_archived;
+  };
+
+  const heartbeatTimer = setInterval(() => {
+    jobState.heartbeat(jobName, token).then((ok) => { if (!ok) lost = true; });
+    if (automatic) {
+      stillEligible().then((ok) => { if (!ok) lost = true; }).catch(() => {});
+    }
+  }, jobState.HEARTBEAT_INTERVAL_MS);
+  heartbeatTimer.unref?.();
+
+  try {
+    await materialSources.setScanState(source.id, { status: 'scanning', error: null });
+    const baseAbs = await materialSources.validateFolder(source.root_id, source.relative_path);
+    // resolveExternalPath checks the string; this checks the filesystem. A
+    // symlink inside EXTERNAL_MEDIA_ROOT chosen as the folder would otherwise
+    // import whatever it points at and persist paths that lead back there.
+    await assertRealpathUnder(getExternalMediaRoot(), baseAbs);
+
+    // What gets STORED on the row (#1163). `f.rel` stays relative to the
+    // imported folder because the type inference below reads its first segment
+    // ('individual' / 'collages'); external_relpath is written relative to
+    // EXTERNAL_MEDIA_ROOT so the row does not depend on a column this very
+    // function is about to overwrite.
+    const basePrefix = String(external_path).replace(/^\/+|\/+$/g, '');
+    const toRootRelative = (rel) => (basePrefix ? path.join(basePrefix, rel) : rel);
+
+    // Collect files
+    const walkBudget = { entries: MAX_WALK_ENTRIES, truncated: false };
+    const files = recursive ? await walkDir(baseAbs, baseAbs, walkBudget) : (await fs.readdir(baseAbs, { withFileTypes: true }))
+      .filter(e => e.isFile())
+      .map(e => ({ full: path.join(baseAbs, e.name), rel: e.name, name: e.name }))
+      .filter(f => IMAGE_EXTENSIONS.includes(path.extname(f.name).toLowerCase()));
+
+    // Prepare file metadata. Distinct source paths are distinct images even
+    // when their basenames match; duplicate paths keep the largest candidate.
+    let skipped = 0;
+    const preparedFiles = [];
+    for (const f of files) {
+      try {
+        const stats = await fs.stat(f.full);
+        const segs = f.rel.split(path.sep);
+        let type = 'individual';
+        if (segs[0] === map.collages) type = 'collage';
+        if (segs[0] === map.individual) type = 'individual';
+        preparedFiles.push({ ...f, type, size: stats.size });
+      } catch (err) {
+        skipped++;
+      }
+    }
+
+    const deduped = dedupeByRootRelativePath(preparedFiles, toRootRelative);
+    skipped += deduped.skipped;
+    const dedupeMap = new Map(deduped.files.map((file) => [toRootRelative(file.rel), file]));
+
+    let deferred = 0;
+    let excluded = 0;
+
+    // Automatic passes: a file still being copied onto the mount is left for
+    // the next pass. chokidar's awaitWriteFinish settles only the file that
+    // fired the event, not its siblings, and the sweep sees no events at all
+    // — so the check is done here, on the candidates that would actually be
+    // inserted: anything modified within settleMs, or whose size moves across
+    // a wait of settleMs, is deferred. One wait per pass, not per file. The
+    // manual Import does not need it: an admin presses it when the copy is
+    // done.
+    if (automatic && settleMs > 0) {
+      const candidates = [...dedupeMap.values()];
+      const known = await existingRelpaths(eventId, candidates.map((f) => toRootRelative(f.rel)));
+      const fresh = candidates.filter((f) => !known.has(toRootRelative(f.rel)));
+
+      {
+        const unsettled = [];
+        const before = new Map();
+        for (const f of fresh) {
+          if (!dedupeMap.has(toRootRelative(f.rel))) continue;
+          try {
+            const st = await fs.stat(f.full);
+            if (Date.now() - st.mtimeMs < settleMs) unsettled.push(f);
+            else before.set(f.full, st.size);
+          } catch (_) {
+            unsettled.push(f);
+          }
+        }
+        if (before.size) {
+          await sleep(settleMs);
+          for (const f of fresh) {
+            if (!before.has(f.full)) continue;
+            try {
+              const st = await fs.stat(f.full);
+              if (st.size !== before.get(f.full) || Date.now() - st.mtimeMs < settleMs) unsettled.push(f);
+            } catch (_) {
+              unsettled.push(f);
+            }
+          }
+        }
+        for (const f of unsettled) {
+          deferred++;
+          dedupeMap.delete(toRootRelative(f.rel));
+        }
+        if (deferred) logger.info(`External import for event ${eventId}: ${deferred} file(s) still changing, left for the next pass`);
+      }
+    }
+
+    if (lost) throw new ImportInProgressError(eventId);
+
+    if (automatic) {
+      // Follow the row, never write it. Writing source_mode/external_path
+      // here would silently undo a save made while the tree was being walked
+      // or the settle wait was running; and importing into an event that no
+      // longer qualifies is wrong too. Re-read and stop if the row moved.
+      // The heartbeat tick keeps re-checking during the loop.
+      if (!(await stillEligible())) {
+        logger.info(`External import for event ${eventId}: event no longer eligible, nothing imported`);
+        const empty = { imported: 0, skipped, deferred, excluded, thumbnailsGenerated: 0, thumbnailsFailed: 0, truncated: walkBudget.truncated, capReached: false };
+        await jobState.release(jobName, token, null);
+        return empty;
+      }
+    } else {
+      // The source association is authoritative. Legacy event.external_path is
+      // intentionally left untouched so adding another folder cannot rebase
+      // or hide existing source relationships.
+    }
+
+    let imported = 0;
+    let thumbnailsGenerated = 0;
+    let thumbnailsFailed = 0;
+
+    let superseded = false;
+
+    // The event's photo cap (events.photo_cap). The upload routes enforce it;
+    // this path inserted straight into `photos` and never looked. Checked and
+    // inserted in one transaction per row by insertPhotoWithinCap, the same
+    // as every other ingest, so a concurrent upload cannot overshoot with it.
+    const photoCap = photoCapOf(event);
+    let capReached = false;
+    let considered = 0;
+
+    // Insert photos
+    for (const f of dedupeMap.values()) {
+      considered += 1;
+      if (lost) {
+        // Either another process took the claim over — it is walking this
+        // same folder now, and the unique index makes anything we insert from
+        // here a wasted stat + decode — or (automatic passes) the event
+        // stopped qualifying. Stop and let whoever owns it now finish.
+        superseded = true;
+        logger.warn(`External import for event ${eventId} stopped mid-run (claim lost or event no longer eligible) after ${imported} imported`);
+        break;
+      }
+
+      // Infer type by subfolder names
+      const segs = f.rel.split(path.sep);
+      let type = 'individual';
+      if (segs[0] === map.collages) type = 'collage';
+      if (segs[0] === map.individual) type = 'individual';
+
+      const relFromRoot = toRootRelative(f.rel);
+
+      try {
+        // Fast path only. This SELECT settles the common case — a re-import of
+        // a folder already in the event — without paying for a stat and a
+        // Sharp metadata read per file. It is NOT the guard: those two calls
+        // sit between here and the INSERT below, which is exactly the window
+        // two overlapping imports both walked through (#1162). The unique
+        // index from migration 186 is the guard, and the catch below is how
+        // this loop converges when it fires.
+        const exists = await db('photos')
+          .where({ event_id: eventId, external_relpath: relFromRoot })
+          .select('id', 'external_source_id')
+          .first();
+        if (exists) {
+          // A pre-migration photo may keep its root-relative path while its
+          // old source folder was not recoverable. Re-adding that exact path
+          // is an explicit opportunity to restore the source association; it
+          // does not create a second tile or move the NAS file.
+          if (exists.external_source_id == null) {
+            await db('photos').where({ id: exists.id, event_id: eventId }).whereNull('external_source_id')
+              .update({ external_source_id: source.id });
+          }
+          skipped++;
+          continue;
+        }
+
+        // Automatic passes: checked HERE, per file, not against a snapshot
+        // taken before the loop — an admin can delete a photo (which records
+        // the exclusion) while this pass is walking or settling, and a
+        // snapshot would let the loop re-insert it moments later.
+        if (automatic) {
+          const excludedRow = await db('external_import_exclusions')
+            .where({ event_id: eventId, external_relpath: relFromRoot })
+            .first();
+          if (excludedRow) { excluded++; continue; }
+        }
+        const stats = await fs.stat(f.full);
+
+        // Extract dimensions via Sharp
+        let width = null;
+        let height = null;
+        try {
+          const metadata = await sharp(f.full).metadata();
+          // Oriented, not raw: a portrait shot from a body that tags rather
+          // than rotates reports landscape dimensions, and the grid would size
+          // its tile from those (#1185).
+          ({ width, height } = orientedDimensions(metadata));
+        } catch (dimErr) {
+          logger.warn(`Could not extract dimensions for ${f.rel}: ${dimErr.message}`);
+        }
+
+        // Capture date from EXIF (#1172). Managed uploads get this from
+        // photoProcessor, which external media never goes through — so
+        // captured_at stayed NULL for every externally imported photo, and the
+        // gallery's "Date Taken" sort silently degraded into import order via
+        // its COALESCE fallback. On a library imported in two batches that put
+        // the first days of a trip after the last ones.
+        //
+        // Read here because the file is already open a few lines above for the
+        // dimensions, so this costs one more read of the same source rather
+        // than a second pass over the mount.
+        //
+        // Best-effort, exactly like the dimensions: a source without EXIF, or
+        // one Sharp/exifr cannot parse, imports with captured_at NULL and
+        // falls back to uploaded_at as before.
+        let capturedAt = null;
+        try {
+          capturedAt = await extractCaptureDate(f.full);
+        } catch (dateErr) {
+          logger.warn(`Could not extract capture date for ${f.rel}: ${dateErr.message}`);
+        }
+
+        let inserted;
+        try {
+          inserted = await insertPhotoWithinCap({
+            event_id: eventId,
+            filename: f.name,
+            // The camera-original name (#745). External ingest never sets
+            // original_filename, and NAS-mounted galleries are among the
+            // most likely to be driven from Lightroom — without this the
+            // round-trip has nothing to match a RAW against.
+            source_filename: f.name,
+            // Keep path as a hint for legacy code but not used for resolution in external mode
+            path: path.join(event.slug, f.name),
+            thumbnail_path: null,
+            type,
+            size_bytes: stats.size,
+            width,
+            height,
+            source_origin: 'external',
+            download_source_kind: 'original',
+            external_relpath: relFromRoot,
+            external_source_id: source.id,
+            // Store a normalized ISO string so SQLite and PostgreSQL use the
+            // same timestamp representation.
+            captured_at: capturedAt ? capturedAt.toISOString() : null
+          }, photoCap);
+        } catch (insertErr) {
+          // Another writer inserted this exact path while we were reading
+          // metadata. That is the outcome the index exists to produce, and it
+          // is a skip rather than a failure — the row is there, it just isn't
+          // ours. Counting it as `skipped` keeps the reported totals honest;
+          // before the index this landed in the outer catch as a nameless
+          // failure, or (more often) never fired at all and duplicated the row.
+          if (isUniqueViolation(insertErr)) { skipped++; continue; }
+          throw insertErr;
+        }
+
+        if (inserted === null) {
+          // The cap is reached. Nothing after this file can be inserted
+          // either, so stop here rather than stat and decode the rest; the
+          // files left over are reported as skipped.
+          capReached = true;
+          skipped += dedupeMap.size - considered + 1;
+          logger.info(`External import for event ${eventId}: photo cap of ${photoCap} reached after ${imported} imported`);
+          break;
+        }
+
+        const photoId = Array.isArray(inserted) && inserted.length
+          ? (typeof inserted[0] === 'object' ? inserted[0].id : inserted[0])
+          : null;
+
+        // Generate the thumbnail right away so the gallery grid can use the
+        // managed thumbnail endpoint instead of falling back to the full
+        // NAS-streamed original (#423). Best-effort: a single failure logs
+        // a warning and leaves thumbnail_path=null — the gallery's
+        // ensureThumbnail will retry lazily on first view. The cost of
+        // doing this synchronously is ~100-300ms per image; for the
+        // worst-case 1000-photo import that's still under the 5-minute
+        // request timeout typical of the import flow.
+        if (photoId != null) {
+          try {
+            const outputBasename = `ext${photoId}_${path.basename(f.rel)}`;
+            const thumbnailPath = await generateThumbnail(f.full, { outputBasename });
+            if (thumbnailPath) {
+              await db('photos').where({ id: photoId }).update({ thumbnail_path: thumbnailPath });
+              thumbnailsGenerated++;
+            } else {
+              thumbnailsFailed++;
+            }
+          } catch (thumbErr) {
+            thumbnailsFailed++;
+            logger.warn(`Thumbnail generation failed for external photo ${photoId} (${f.rel}): ${thumbErr.message}`);
+          }
+
+          void require('./cloudGalleryAssetService').queuePhotoIfEnabled(eventId, photoId)
+            .catch((syncError) => logger.warn(`Could not queue external photo ${photoId} for cloud sync`, { error: syncError.message }));
+        }
+
+        imported += (inserted?.length ? 1 : 0);
+
+        // The manual Import is the explicit intent the exclusion list exists
+        // to protect: what it brings back is no longer excluded.
+        if (!automatic && photoId != null) {
+          await db('external_import_exclusions').where({ event_id: eventId, external_relpath: relFromRoot }).delete();
+        }
+      } catch (e) {
+        skipped++;
+      }
+    }
+
+    const result = {
+      imported, skipped, deferred, excluded, thumbnailsGenerated, thumbnailsFailed,
+      truncated: walkBudget.truncated, capReached,
+    };
+
+    // Only a run that changed something goes into the activity log. The
+    // watcher re-runs this pass on a timer for every watched event, and a
+    // "0 imported, 6012 skipped" row every fifteen minutes per event would
+    // bury the entries an admin is actually looking for.
+    if (imported > 0 || actor?.type !== 'system') {
+      await logActivity(
+        'external_import_completed',
+        { event_id: eventId, external_source_id: source.id, ...result, external_path },
+        eventId,
+        actor || { type: 'admin' }
+      );
+    }
+
+    if (!superseded) await jobState.release(jobName, token, result);
+    await materialSources.setScanState(source.id, {
+      status: source.watch_enabled ? 'watching' : 'ready',
+      error: null,
+      scannedAt: new Date().toISOString(),
+    });
+    return result;
+  } catch (error) {
+    await materialSources.setScanState(source.id, {
+      status: 'error',
+      error: String(error.message || 'Scan failed').slice(0, 2000),
+    }).catch(() => {});
+    // Release without a result so the last real outcome is kept, and in the
+    // catch rather than a finally so a run that lost its claim does not clear
+    // the new owner's flag — release() is token-scoped and refuses that anyway,
+    // but there is no reason to make the call.
+    await jobState.release(jobName, token, null);
+    throw error;
+  } finally {
+    clearInterval(heartbeatTimer);
+  }
+}
+
+module.exports = {
+  importExternalFolder,
+  recordExclusions,
+  ImportInProgressError,
+  EventNotFoundError,
+  jobNameFor,
+  IMAGE_EXTENSIONS,
+  dedupeByRootRelativePath,
+};

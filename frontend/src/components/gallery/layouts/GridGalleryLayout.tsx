@@ -1,0 +1,312 @@
+import React from 'react';
+import { MessageSquare, Star, Heart, Video, Eye, EyeOff } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
+import { useTheme } from '../../../contexts/ThemeContext';
+import { PhotoCard } from '../PhotoCard';
+import { FeedbackIdentityModal } from '../../gallery/FeedbackIdentityModal';
+import { feedbackService } from '../../../services/feedback.service';
+import { useViewerLikeIds } from '../../../hooks/useViewerLikeIds';
+import type { BaseGalleryLayoutProps } from './BaseGalleryLayout';
+import type { Photo } from '../../../types';
+
+interface GridPhotoProps {
+  photo: Photo;
+  isSelected: boolean;
+  isSelectionMode: boolean;
+  onClick: () => void;
+  onDownload: (e: React.MouseEvent) => void;
+  onToggleSelect: () => void;
+  animationType?: string;
+  allowDownloads?: boolean;
+  slug?: string;
+  useEnhancedProtection?: boolean;
+  feedbackEnabled?: boolean;
+  feedbackOptions?: {
+    allowLikes?: boolean;
+    allowRatings?: boolean;
+    allowComments?: boolean;
+    requireGuestName?: boolean;
+  };
+  savedIdentity?: { name: string } | null;
+  onRequireIdentity?: (action: 'like', photoId: number) => void;
+  onQuickComment?: () => void;
+  onFeedbackChange?: () => void;
+  // Immediate UI like state and callback
+  liked?: boolean;
+  onLikeSuccess?: () => void;
+}
+
+const GridPhoto: React.FC<GridPhotoProps> = ({
+  photo,
+  isSelected,
+  isSelectionMode,
+  onClick,
+  onDownload,
+  onToggleSelect,
+  animationType = 'fade',
+  allowDownloads = true,
+  slug,
+  feedbackEnabled = false,
+  feedbackOptions,
+  savedIdentity,
+  onRequireIdentity,
+  onQuickComment,
+  onFeedbackChange,
+  liked = false,
+  onLikeSuccess
+}) => {
+  const { t: tAudit } = useTranslation();
+  const { t } = useTranslation();
+
+  const animationClass = animationType === 'scale'
+    ? 'transition-transform duration-300 hover:scale-105'
+    : animationType === 'fade'
+    ? 'transition-opacity duration-300'
+    : '';
+  const likeCount = photo.like_count ?? 0;
+  const averageRating = photo.average_rating ?? 0;
+  const commentCount = photo.comment_count ?? 0;
+
+  const isVideo = (photo.media_type === 'video') ||
+    (photo.mime_type && photo.mime_type.startsWith('video/')) ||
+    photo.type === 'video';
+
+  return (
+    <PhotoCard
+      photo={photo}
+      isSelected={isSelected}
+      isSelectionMode={isSelectionMode}
+      onClick={onClick}
+      onDownload={onDownload}
+      onToggleSelect={onToggleSelect}
+      className={`photo-card relative group cursor-pointer aspect-square ${animationClass}`}
+      lazy
+      /*
+       * Pre-load band (#1287). A viewport-relative lead lets the next row
+       * start loading before it reaches the screen; a fixed 100px band is too
+       * short on larger screens and while scrolling quickly.
+       *
+       * Viewport-relative rather than a fixed 100px like Justified: a phone
+       * and a 4K desktop scroll past very different amounts of grid per
+       * gesture, and a band tuned to one is wrong for the other.
+       *
+       * `%`, not `vh` — rootMargin only accepts px and percentages, and an
+       * IntersectionObserver constructed with a vh value throws. A percentage
+       * resolves against the root's own box, so 100% is one viewport height
+       * of lead in each direction, which is what vh would have meant.
+       */
+      inViewRootMargin="100% 0px"
+      /*
+       * Release band (#1287). The pre-load band above fixed tiles arriving
+       * late; it did nothing about tiles never leaving. Every tile scrolled
+       * past kept its object URL — and, where image protection is on, a
+       * full-resolution canvas that the browser is not allowed to evict — for
+       * the life of the page. On a several-hundred-photo gallery that grows
+       * monotonically, which is the shape a memory-constrained browser
+       * discards the tab over.
+       *
+       * Three viewport heights, against a one-viewport load band: a tile has
+       * to travel two further viewport heights after it stops loading before
+       * it is released, so ordinary scrolling never crosses both edges.
+       * Thumbnails are served `private, max-age=1800`, so coming back costs a
+       * cache hit rather than a round trip.
+       *
+       * Only layouts with a box that survives the skeleton use this band:
+       * Grid and Timeline use `aspect-square`, Mosaic sets `aspectRatio`, and
+       * Masonry supplies measured dimensions. Releasing a tile in those
+       * layouts leaves the geometry unchanged.
+       */
+      releaseRootMargin="300% 0px"
+      fadeInWhenVisible={animationType === 'fade'}
+      skeletonClassName="skeleton aspect-square w-full rounded-lg"
+      imageProps={{
+        src: photo.thumbnail_url || photo.url,
+        alt: photo.filename,
+        className: 'w-full h-full object-cover rounded-lg',
+        loading: 'lazy',
+        isGallery: true,
+        slug,
+        onProtectionViolation: (violationType: string) => {
+          console.warn(`Protection violation on grid photo ${photo.id}: ${violationType}`);
+        },
+      }}
+      overlayBaseClassName="absolute inset-0 bg-black/40 transition-opacity duration-200 rounded-lg flex items-center justify-center gap-2"
+      allowDownloads={allowDownloads}
+      feedbackEnabled={feedbackEnabled}
+      feedbackOptions={feedbackOptions}
+      slug={slug}
+      onQuickComment={onQuickComment}
+      onFeedbackChange={onFeedbackChange}
+      liked={liked}
+      onLikeSuccess={onLikeSuccess}
+      savedIdentity={savedIdentity}
+      onRequireIdentity={onRequireIdentity}
+      checkboxTestId
+    >
+      {/* Feedback Indicators (always visible, bottom-left). Show like immediately when user liked */}
+      {(commentCount > 0 || averageRating > 0 || likeCount > 0 || liked) && (
+        <div className={`absolute ${photo.type === 'collage' ? 'bottom-8' : 'bottom-2'} left-2 flex items-center gap-1 z-10`}>
+          {(likeCount > 0 || liked) && (
+            <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-white/90 backdrop-blur-sm" title={tAudit("ui.liked")}>
+              <Heart className="w-3.5 h-3.5 text-red-500" fill="currentColor" />
+            </span>
+          )}
+          {averageRating > 0 && (
+            <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-white/90 backdrop-blur-sm" title={tAudit("ui.rated")}>
+              <Star className="w-3.5 h-3.5 text-yellow-500" fill="currentColor" />
+            </span>
+          )}
+          {commentCount > 0 && (
+            <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-white/90 backdrop-blur-sm" title={tAudit("ui.commented")}>
+              <MessageSquare className="w-3.5 h-3.5 text-accent" fill="currentColor" />
+            </span>
+          )}
+        </div>
+      )}
+
+      {isVideo && (
+        <div className="absolute bottom-2 right-2">
+          <span className="px-2 py-1 bg-black/60 text-white text-xs rounded flex items-center gap-1">
+            <Video className="w-3 h-3" />
+            {t('common.video', 'Video')}
+          </span>
+        </div>
+      )}
+
+      {photo.type === 'collage' && (
+        <div className="absolute bottom-2 right-2">
+          <span className="px-2 py-1 bg-black/60 text-white text-xs rounded">
+            {tAudit("ui.collage")}</span>
+        </div>
+      )}
+    </PhotoCard>
+  );
+};
+
+export const GridGalleryLayout: React.FC<BaseGalleryLayoutProps> = ({
+  photos,
+  slug,
+  onPhotoClick,
+  onOpenPhotoWithFeedback,
+  onFeedbackChange,
+  onDownload,
+  selectedPhotos = new Set(),
+  isSelectionMode = false,
+  onPhotoSelect,
+  allowDownloads = true,
+  useEnhancedProtection = false,
+  feedbackEnabled = false,
+  feedbackOptions,
+  isClient = false,
+  onToggleVisibility
+}) => {
+  const { t: tAudit } = useTranslation();
+  const { theme } = useTheme();
+  const gallerySettings = theme.gallerySettings || {};
+  const columns = gallerySettings.gridColumns || { mobile: 2, tablet: 3, desktop: 4 };
+  const spacing = gallerySettings.spacing || 'normal';
+  const animation = gallerySettings.photoAnimation || 'fade';
+  const scale = gallerySettings.thumbnailScale || 'md';
+
+  const scaleOffsets: Record<string, number> = { xs: 3, sm: 1, md: 0, lg: -1, xl: -2 };
+  const applyScale = (cols: number) => Math.max(1, cols + (scaleOffsets[scale] ?? 0));
+
+  const [showIdentityModal, setShowIdentityModal] = React.useState(false);
+  const [pendingAction, setPendingAction] = React.useState<null | { type: 'like'; photoId: number }>(null);
+  const [likedPhotoIds, setLikedPhotoIds] = useViewerLikeIds(photos);
+  const [savedIdentity, setSavedIdentity] = React.useState<{ name: string } | null>(null);
+
+  const spacingClass = spacing === 'tight' ? 'gap-2' : spacing === 'relaxed' ? 'gap-6' : 'gap-4';
+
+  const gridClass = `photo-grid grid ${spacingClass}
+    grid-cols-${applyScale(columns.mobile)}
+    sm:grid-cols-${applyScale(columns.tablet)}
+    lg:grid-cols-${applyScale(columns.desktop)}
+    xl:grid-cols-${applyScale(columns.desktop + 1)}`;
+
+  return (
+    <div className={gridClass}>
+      {photos.map((photo, index) => {
+        const isHidden = photo.visibility === 'hidden';
+        return (
+          <div key={photo.id} className={`relative ${isClient && isHidden ? 'opacity-40' : ''}`}>
+            <GridPhoto
+              photo={photo}
+              isSelected={selectedPhotos.has(photo.id)}
+              isSelectionMode={isSelectionMode}
+              onClick={() => onPhotoClick(index)}
+              onToggleSelect={() => onPhotoSelect && onPhotoSelect(photo.id)}
+              onDownload={(e) => onDownload(photo, e)}
+              animationType={animation}
+              allowDownloads={allowDownloads}
+              slug={slug}
+              useEnhancedProtection={useEnhancedProtection}
+              feedbackEnabled={feedbackEnabled}
+              feedbackOptions={feedbackOptions}
+              savedIdentity={savedIdentity}
+              onRequireIdentity={(action, photoId) => {
+                setPendingAction({ type: action, photoId });
+                setShowIdentityModal(true);
+              }}
+              onQuickComment={() => onOpenPhotoWithFeedback && onOpenPhotoWithFeedback(index)}
+              onFeedbackChange={onFeedbackChange}
+              liked={likedPhotoIds.has(photo.id)}
+              onLikeSuccess={() => {
+                // Toggle, not add — like endpoint toggles server-side,
+                // so the optimistic UI has to follow suit on click 2 (#590).
+                setLikedPhotoIds((prev) => {
+                  const next = new Set(prev);
+                  if (next.has(photo.id)) next.delete(photo.id);
+                  else next.add(photo.id);
+                  return next;
+                });
+              }}
+            />
+            {/* Client visibility toggle overlay (#172) */}
+            {isClient && onToggleVisibility && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onToggleVisibility(photo.id, photo.visibility || 'visible');
+                }}
+                className={`absolute top-2 left-2 z-10 p-1.5 rounded-full shadow-md transition-colors ${
+                  isHidden
+                    ? 'bg-red-500/90 text-white hover:bg-red-600'
+                    : 'bg-white/90 text-neutral-700 hover:bg-white dark:bg-neutral-800/90 dark:text-neutral-200 dark:hover:bg-neutral-700'
+                }`}
+                title={isHidden ? tAudit('ui.hiddenFromGuests') : tAudit('ui.visibleToGuests')}
+              >
+                {isHidden ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            )}
+          </div>
+        );
+      })}
+      <FeedbackIdentityModal
+        isOpen={showIdentityModal}
+        onClose={() => { setShowIdentityModal(false); setPendingAction(null); }}
+        onSubmit={async (name) => {
+          setSavedIdentity({ name });
+          setShowIdentityModal(false);
+          if (pendingAction) {
+            await feedbackService.submitFeedback(slug, String(pendingAction.photoId), {
+              feedback_type: pendingAction.type,
+              guest_name: name,
+            });
+            // Immediately reflect like UI — toggle for consistency (#590).
+            if (pendingAction.type === 'like') {
+              setLikedPhotoIds((prev) => {
+                const next = new Set(prev);
+                if (next.has(pendingAction.photoId)) next.delete(pendingAction.photoId);
+                else next.add(pendingAction.photoId);
+                return next;
+              });
+            }
+            setPendingAction(null);
+          }
+        }}
+        feedbackType="like"
+      />
+    </div>
+  );
+};

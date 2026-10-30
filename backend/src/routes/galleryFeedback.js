@@ -1,0 +1,604 @@
+const express = require('express');
+const router = express.Router();
+const { verifyGalleryAccess, denySlideshowToken } = require('../middleware/gallery');
+const { guestBlockedByReveal, blockHiddenGallery } = require('../utils/revealMode');
+const { feedbackRateLimit, generateGuestIdentifier } = require('../middleware/feedbackRateLimit');
+const { resolveGuest } = require('../middleware/guestAuth');
+const feedbackService = require('../services/feedbackService');
+const { db, logActivity } = require('../database/db');
+const logger = require('../utils/logger');
+const { isPhotoHiddenFromViewer, applyPhotoVisibilityFilter } = require('../utils/photoVisibility');
+const {
+  validatePhotoId,
+  validateFeedbackSubmission,
+  checkValidation,
+  validateGuestRequirements,
+  sanitizeComment
+} = require('../utils/feedbackValidation');
+const { isValidColorLabel } = require('../constants/colorLabels');
+
+// Batch feedback is one user action and shares the same access, identity,
+// visibility and rate-limit rules as the single-photo endpoint.
+// The caps keep a single request bounded while making ordinary selections
+// practical; comments are append-only, so their smaller cap is deliberate.
+router.post('/:slug/photos/batch-feedback',
+  verifyGalleryAccess,
+  denySlideshowToken,
+  blockHiddenGallery,
+  resolveGuest,
+  async (req, res) => {
+    try {
+      const event = req.event;
+      const settings = await feedbackService.getEventFeedbackSettings(event.id);
+      const { photo_ids: photoIds, feedback_type: feedbackType } = req.body || {};
+      const maxPhotos = feedbackType === 'comment' ? 20 : 100;
+      if (!Array.isArray(photoIds) || photoIds.length < 1 || photoIds.length > maxPhotos ||
+          photoIds.some(id => !Number.isSafeInteger(id) || id < 1) ||
+          new Set(photoIds).size !== photoIds.length) {
+        return res.status(400).json({ error: 'Invalid photo selection' });
+      }
+      if (!['comment', 'color_label'].includes(feedbackType)) {
+        return res.status(400).json({ error: 'Invalid batch feedback type' });
+      }
+      if (feedbackType === 'color_label' && !isValidColorLabel(req.body.color_label)) {
+        return res.status(400).json({ error: 'Invalid color label' });
+      }
+      if (!settings.feedback_enabled) {
+        return res.status(403).json({ error: 'Feedback is not enabled for this event' });
+      }
+      if (feedbackType === 'comment') {
+        const comment = sanitizeComment(typeof req.body.comment_text === 'string' ? req.body.comment_text : '');
+        if (!comment || comment.length > 1000) {
+          return res.status(400).json({ error: 'Comment must be between 1 and 1000 characters' });
+        }
+        req.body.comment_text = comment;
+        if (req.body.guest_name != null) {
+          const guestName = String(req.body.guest_name).trim();
+          if (guestName.length > 100 || (guestName && !/^[\p{L}\p{M}\p{N} \-'.·]+$/u.test(guestName))) {
+            return res.status(400).json({ error: 'Guest name is invalid' });
+          }
+        }
+      }
+
+      if (settings.identity_mode === 'guest' && (!req.guest || req.guest.eventId !== event.id)) {
+        return res.status(401).json({ error: 'Guest identity required', code: 'GUEST_IDENTITY_REQUIRED' });
+      }
+      const guestIdentifier = await generateGuestIdentifier(req);
+      const typeAllowed = feedbackType === 'comment' ? settings.allow_comments : settings.allow_color_labels;
+      if (!typeAllowed) return res.status(403).json({ error: `${feedbackType} feedback is not enabled` });
+      if (settings.identity_mode !== 'guest') {
+        const guestValidation = await validateGuestRequirements(settings, req.body);
+        if (!guestValidation.valid) {
+          return res.status(400).json({ error: 'Guest information required', errors: guestValidation.errors });
+        }
+      }
+
+      const photos = await db('photos').where({ event_id: event.id }).whereIn('id', photoIds);
+      if (photos.length !== photoIds.length || photos.some(photo => isPhotoHiddenFromViewer(photo, req.accessLevel))) {
+        return res.status(404).json({ error: 'Photo not found' });
+      }
+
+      req.feedbackRateLimitCost = photoIds.length;
+      const limiter = feedbackRateLimit(feedbackType);
+      await limiter(req, res, (err) => { if (err) throw err; });
+      if (res.headersSent) return;
+
+      const payload = {
+        feedback_type: feedbackType,
+        color_label: feedbackType === 'color_label' ? req.body.color_label : undefined,
+        ensure_color_label: feedbackType === 'color_label',
+        comment_text: feedbackType === 'comment' ? req.body.comment_text : undefined,
+        identity_mode: settings.identity_mode,
+        guest_name: req.guest?.name ?? req.body.guest_name,
+        guest_id: req.guest?.id ?? null,
+        ip_address: req.ip || req.connection.remoteAddress,
+        user_agent: (req.headers['user-agent'] || '').replace(/[<>&"']/g, '').substring(0, 255),
+      };
+      const applied = [];
+      const failed = [];
+      for (const photoId of photoIds) {
+        try {
+          const result = await feedbackService.submitFeedback(photoId, event.id, payload, guestIdentifier);
+          if (result?.guest_missing) failed.push(photoId);
+          else if (!result?.exists) applied.push(photoId);
+        } catch (error) {
+          logger.error('Batch photo feedback failed', { eventId: event.id, photoId, error: error.message });
+          failed.push(photoId);
+        }
+      }
+      if (applied.length > 0) {
+        await logActivity(`guest_feedback_batch_${feedbackType}`, {
+          photo_ids: applied,
+          count: applied.length,
+          failed_photo_ids: failed,
+          action: 'updated',
+        }, event.id, { type: 'guest', id: guestIdentifier.substring(0, 16), name: req.guest?.name || req.body.guest_name || 'Anonymous' });
+      }
+
+      res.json({
+        success: failed.length === 0,
+        applied_count: applied.length,
+        failed_photo_ids: failed,
+      });
+    } catch (error) {
+      if (error.code === 'WITHDRAW_PENDING') return res.status(409).json({ error: error.message, code: error.code });
+      logger.error('Error submitting batch photo feedback:', error);
+      res.status(500).json({ error: 'Failed to submit batch feedback' });
+    }
+  }
+);
+
+// Get feedback settings for a gallery
+router.get('/:slug/feedback-settings',
+  verifyGalleryAccess,
+  async (req, res) => {
+    try {
+      const event = req.event;
+      const settings = await feedbackService.getEventFeedbackSettings(event.id);
+
+      // Only send relevant settings to guests
+      // Convert SQLite boolean values (0/1) to proper booleans
+      const guestSettings = {
+        feedback_enabled: Boolean(settings.feedback_enabled),
+        allow_ratings: Boolean(settings.allow_ratings),
+        allow_likes: Boolean(settings.allow_likes),
+        allow_comments: Boolean(settings.allow_comments),
+        allow_favorites: Boolean(settings.allow_favorites),
+        allow_reactions: Boolean(settings.allow_reactions),
+        allow_color_labels: Boolean(settings.allow_color_labels),
+        // Which lightbox shortcut scheme this gallery uses (#1044).
+        keybind_mode: settings.keybind_mode || 'colors',
+        show_feedback_to_guests: Boolean(settings.show_feedback_to_guests),
+        identity_mode: settings.identity_mode || 'simple',
+        // Per-guest caps (#655). The UI uses these to disable the heart /
+        // thumbs-up at the limit and render an "8 / 10" counter. null = no
+        // cap; positive integer = enforced.
+        max_favorites_per_guest: settings.max_favorites_per_guest || null,
+        max_likes_per_guest: settings.max_likes_per_guest || null,
+      };
+
+      res.json(guestSettings);
+    } catch (error) {
+      if (error.code === 'WITHDRAW_PENDING') return res.status(409).json({ error: error.message, code: error.code });
+      logger.error('Error getting feedback settings:', error);
+      res.status(500).json({ error: 'Failed to get feedback settings' });
+    }
+  }
+);
+
+// Get feedback for a specific photo
+router.get('/:slug/photos/:photoId/feedback',
+  verifyGalleryAccess,
+  // Reveal-gated (#838): sequential photo ids would let hidden-gallery
+  // guests enumerate comments/stats.
+  blockHiddenGallery,
+  resolveGuest,
+  validatePhotoId,
+  checkValidation,
+  async (req, res) => {
+    try {
+      const { photoId } = req.params;
+      const event = req.event;
+      const guestIdentifier = await generateGuestIdentifier(req);
+
+      // Get feedback settings
+      const settings = await feedbackService.getEventFeedbackSettings(event.id);
+
+      if (!settings.feedback_enabled) {
+        return res.status(403).json({ error: 'Feedback is not enabled for this event' });
+      }
+
+      // Verify photo belongs to event
+      const photo = await db('photos')
+        .where({ id: photoId, event_id: event.id })
+        .first();
+
+      // A client-hidden photo does not exist for a viewer who cannot see it:
+      // no reading its comments and counts, no adding to them.
+      if (!photo || isPhotoHiddenFromViewer(photo, req.accessLevel)) {
+        return res.status(404).json({ error: 'Photo not found' });
+      }
+
+      // Get feedback based on settings
+      const options = {
+        include_hidden: false,
+        // Only the colour-label set this event is actually using (#1197).
+        identity_mode: settings.identity_mode,
+      };
+
+      // Include the guest's own feedback in the response, alongside any feedback
+      // shared with the gallery.
+      const feedback = await feedbackService.getPhotoFeedback(photoId, options);
+
+      // Get guest's own feedback separately
+      const guestFeedback = await feedbackService.getPhotoFeedback(photoId, {
+        // Older merges updated guest_id without rewriting guest_identifier.
+        // Use the verified identity, as /my-feedback and submissions do.
+        guest_id: req.guest?.id,
+        guest_identifier: guestIdentifier,
+        identity_mode: settings.identity_mode,
+      });
+
+      // The photo's shared tag (#1197), when the event is in that mode.
+      const sharedColorLabel = settings.identity_mode === 'shared'
+        ? (await feedbackService.getSharedColorLabels(event.id, [photoId]))[photoId] || null
+        : null;
+
+      // Combine and deduplicate
+      const allFeedback = [...feedback];
+      guestFeedback.forEach(gf => {
+        if (!feedback.find(f => f.id === gf.id)) {
+          allFeedback.push({ ...gf, is_mine: true });
+        } else {
+          const index = allFeedback.findIndex(f => f.id === gf.id);
+          allFeedback[index].is_mine = true;
+        }
+      });
+
+      // Filter based on what guests should see
+      const visibleFeedback = settings.show_feedback_to_guests ? allFeedback :
+        allFeedback.filter(f => f.is_mine);
+
+      // Every aggregate is other guests' feedback, so all of them are gated
+      // on show_feedback_to_guests — the photo list already hides like_count
+      // this way. The viewer's own choices stay in my_feedback below.
+      const shareAggregates = Boolean(settings.show_feedback_to_guests);
+      res.json({
+        feedback: visibleFeedback,
+        summary: {
+          average_rating: shareAggregates ? (photo.average_rating || 0) : 0,
+          total_ratings: shareAggregates
+            ? await db('photo_feedback')
+              .where({ photo_id: photoId, feedback_type: 'rating', is_hidden: false })
+              .count('id as count')
+              .first()
+              .then(r => r.count)
+            : 0,
+          like_count: shareAggregates ? (photo.like_count || 0) : 0,
+          favorite_count: shareAggregates ? (photo.favorite_count || 0) : 0,
+          reaction_count: shareAggregates ? (photo.reaction_count || 0) : 0,
+          color_label_count: shareAggregates ? (photo.color_label_count || 0) : 0,
+          comment_count: shareAggregates
+            ? await db('photo_feedback')
+              .where({
+                photo_id: photoId,
+                feedback_type: 'comment',
+                is_hidden: false
+              })
+              .count('id as count')
+              .first()
+              .then(r => r.count)
+            : 0
+        },
+        // Per-emoji tallies for the reaction bar (#839). Gated on
+        // show_feedback_to_guests: with sharing off a guest sees only their
+        // own selection (my_feedback.reaction below), no aggregate counts.
+        reactions: settings.show_feedback_to_guests
+          ? await feedbackService.getPhotoReactionCounts(photoId)
+          : {},
+        // Per-colour tallies (#1044), gated exactly like `reactions` above:
+        // with sharing off the guest sees only their own label.
+        color_labels: settings.show_feedback_to_guests
+          ? await feedbackService.getPhotoColorLabelCounts(photoId)
+          : {},
+        my_feedback: {
+          rating: guestFeedback.find(f => f.feedback_type === 'rating')?.rating,
+          liked: !!guestFeedback.find(f => f.feedback_type === 'like'),
+          favorited: !!guestFeedback.find(f => f.feedback_type === 'favorite'),
+          reaction: guestFeedback.find(f => f.feedback_type === 'reaction')?.reaction || null,
+          // In shared mode the photo's one tag IS this viewer's tag (#1197):
+          // there is no per-guest row to find, and returning null here would
+          // leave the lightbox swatch unselected while the photo plainly
+          // carries a colour. Delivered through my_feedback rather than the
+          // gated `color_labels` map above on purpose — the shared tag is the
+          // photo's own state, so it stays visible even with
+          // show_feedback_to_guests off, while the per-colour tallies (which
+          // are other people's data) stay hidden.
+          color_label: settings.identity_mode === 'shared'
+            ? sharedColorLabel
+            : (guestFeedback.find(f => f.feedback_type === 'color_label')?.color_label || null)
+        }
+      });
+    } catch (error) {
+      if (error.code === 'WITHDRAW_PENDING') return res.status(409).json({ error: error.message, code: error.code });
+      logger.error('Error getting photo feedback:', error);
+      res.status(500).json({ error: 'Failed to get feedback' });
+    }
+  }
+);
+
+// Submit feedback for a photo
+router.post('/:slug/photos/:photoId/feedback',
+  verifyGalleryAccess,
+  denySlideshowToken,
+  // Reveal-gated (#838): no interacting with photos you cannot see.
+  blockHiddenGallery,
+  resolveGuest,
+  validatePhotoId,
+  validateFeedbackSubmission,
+  checkValidation,
+  async (req, res) => {
+    try {
+      const { photoId } = req.params;
+      const event = req.event;
+
+      // Get feedback settings first so we can enforce identity_mode.
+      const settings = await feedbackService.getEventFeedbackSettings(event.id);
+      const feedbackType = req.body.feedback_type;
+      if (!settings.feedback_enabled) {
+        return res.status(403).json({ error: 'Feedback is not enabled for this event' });
+      }
+
+      // In guest identity mode, a valid guest token is required. The server
+      // never trusts guest_name from the body in this mode — it
+      // reads them from the verified token via req.guest.
+      if (settings.identity_mode === 'guest') {
+        if (!req.guest || req.guest.eventId !== event.id) {
+          return res.status(401).json({
+            error: 'Guest identity required',
+            code: 'GUEST_IDENTITY_REQUIRED'
+          });
+        }
+      }
+
+      const guestIdentifier = await generateGuestIdentifier(req);
+
+      // Check if specific feedback type is allowed
+      const typeAllowed = {
+        rating: settings.allow_ratings,
+        like: settings.allow_likes,
+        comment: settings.allow_comments,
+        favorite: settings.allow_favorites,
+        reaction: settings.allow_reactions,
+        color_label: settings.allow_color_labels
+      };
+
+      if (!typeAllowed[feedbackType]) {
+        return res.status(403).json({ error: `${feedbackType} feedback is not enabled` });
+      }
+
+      // Verify photo belongs to event
+      const photo = await db('photos')
+        .where({ id: photoId, event_id: event.id })
+        .first();
+
+      // A client-hidden photo does not exist for a viewer who cannot see it:
+      // no reading its comments and counts, no adding to them.
+      if (!photo || isPhotoHiddenFromViewer(photo, req.accessLevel)) {
+        return res.status(404).json({ error: 'Photo not found' });
+      }
+
+      // Validate guest requirements only in simple mode. In guest mode, the
+      // identity is already provided via the token and verified above.
+      if (settings.identity_mode !== 'guest') {
+        const guestValidation = await validateGuestRequirements(settings, req.body);
+        if (!guestValidation.valid) {
+          return res.status(400).json({
+            error: 'Guest information required',
+            errors: guestValidation.errors
+          });
+        }
+      }
+
+      // Apply rate limiting based on feedback type
+      const rateLimitMiddleware = feedbackRateLimit(feedbackType);
+      // Await the middleware itself: a rejected response does not call next().
+      await rateLimitMiddleware(req, res, (err) => { if (err) throw err; });
+
+      // If we got here and response was sent (rate limited), return
+      if (res.headersSent) return;
+
+      // Prepare feedback data. In guest mode, use the verified token as the
+      // source of truth for the name — never the body.
+      const feedbackData = {
+        feedback_type: feedbackType,
+        rating: req.body.rating,
+        comment_text: req.body.comment_text,
+        reaction: req.body.reaction,
+        color_label: req.body.color_label,
+        // Read by the service to route a colour label to the photo's one
+        // shared slot instead of the guest's own row (#1197). Passed rather
+        // than re-fetched: the settings are already in hand here.
+        identity_mode: settings.identity_mode,
+        guest_name: req.guest?.name ?? req.body.guest_name,
+        guest_id: req.guest?.id ?? null,
+        ip_address: req.ip || req.connection.remoteAddress,
+        user_agent: (req.headers['user-agent'] || '').replace(/[<>&"']/g, '').substring(0, 255),
+      };
+      // Submit feedback
+      const result = await feedbackService.submitFeedback(
+        photoId,
+        event.id,
+        feedbackData,
+        guestIdentifier
+      );
+
+      // The guest was merged away or deleted while this request was running.
+      // Same answer resolveGuest gives the next request from that token.
+      if (result && result.guest_missing) {
+        return res.status(401).json({
+          error: 'Guest identity required',
+          code: 'GUEST_IDENTITY_REQUIRED'
+        });
+      }
+
+      // Per-guest cap reached (#655). Surface as a structured 403 so the
+      // frontend can show an explicit popup with the actual cap value and
+      // remaining-slots count, rather than a generic toast. Code is the
+      // stable contract the UI listens for.
+      if (result && result.limit_reached) {
+        const code = result.feedback_type === 'favorite'
+          ? 'FAVORITE_LIMIT_REACHED'
+          : 'LIKE_LIMIT_REACHED';
+        return res.status(403).json({
+          error: `${result.feedback_type === 'favorite' ? 'Favorite' : 'Like'} limit reached`,
+          code,
+          limit: result.limit,
+          current_count: result.current_count,
+          feedback_type: result.feedback_type,
+        });
+      }
+
+      // Log activity
+      if (!result?.exists) {
+        await logActivity(`guest_feedback_${feedbackType}`, {
+          photo_id: photoId,
+          result,
+          action: result?.removed ? 'removed' : result?.updated ? 'updated' : 'added',
+        }, event.id, {
+          type: 'guest',
+          id: guestIdentifier.substring(0, 16),
+          name: req.guest?.name || req.body.guest_name || 'Anonymous'
+        });
+      }
+
+      res.json({
+        success: true,
+        ...result,
+        // The UI owns the localized message. Returning a structured status
+        // instead of English copy prevents API text from bypassing i18n.
+      });
+    } catch (error) {
+      if (error.code === 'WITHDRAW_PENDING') return res.status(409).json({ error: error.message, code: error.code });
+      logger.error('Error submitting feedback:', error);
+      res.status(500).json({ error: 'Failed to submit feedback' });
+    }
+  }
+);
+
+// Get feedback summary for entire gallery
+router.get('/:slug/feedback-summary',
+  verifyGalleryAccess,
+  async (req, res) => {
+    try {
+      const event = req.event;
+
+      // Reveal mode (#838): the summary lists top photos by filename —
+      // hidden along with the gallery for plain guests.
+      if (guestBlockedByReveal(req)) {
+        return res.json({ enabled: false, summary: null });
+      }
+
+      // Get feedback settings
+      const settings = await feedbackService.getEventFeedbackSettings(event.id);
+
+      if (!settings.feedback_enabled || !settings.show_feedback_to_guests) {
+        return res.json({
+          enabled: false,
+          summary: null
+        });
+      }
+
+      // Totals scoped like the list below: feedback on photos this viewer
+      // cannot see is not counted either.
+      const summary = await feedbackService.getEventFeedbackSummary(event.id, { viewerAccessLevel: req.accessLevel });
+
+      // Filter data based on what guests should see
+      const guestSummary = {
+        stats: summary.stats,
+        top_rated: summary.photos
+          // No filenames or ratings of photos this viewer cannot see.
+          .filter(p => !isPhotoHiddenFromViewer(p, req.accessLevel))
+          .filter(p => p.average_rating > 0)
+          .slice(0, 5)
+          .map(p => ({
+            id: p.id,
+            filename: p.filename,
+            average_rating: p.average_rating,
+            like_count: p.like_count
+          }))
+      };
+
+      res.json({
+        enabled: true,
+        settings: {
+          allow_ratings: settings.allow_ratings,
+          allow_likes: settings.allow_likes,
+          allow_comments: settings.allow_comments,
+          allow_favorites: settings.allow_favorites,
+          allow_reactions: settings.allow_reactions,
+          allow_color_labels: settings.allow_color_labels,
+          keybind_mode: settings.keybind_mode || 'colors'
+        },
+        summary: guestSummary
+      });
+    } catch (error) {
+      if (error.code === 'WITHDRAW_PENDING') return res.status(409).json({ error: error.message, code: error.code });
+      logger.error('Error getting feedback summary:', error);
+      res.status(500).json({ error: 'Failed to get feedback summary' });
+    }
+  }
+);
+
+// Get user's own feedback for all photos
+router.get('/:slug/my-feedback',
+  verifyGalleryAccess,
+  resolveGuest,
+  async (req, res) => {
+    try {
+      const event = req.event;
+
+      // Reveal mode (#838): rows join photos (filename + storage path) —
+      // return the empty back-compat shape rather than a 403 so the gallery
+      // shell loading in parallel doesn't surface error toasts.
+      if (guestBlockedByReveal(req)) {
+        return res.json([]);
+      }
+
+      const query = applyPhotoVisibilityFilter(
+        db('photo_feedback')
+          .join('photos', 'photo_feedback.photo_id', 'photos.id')
+          .where('photo_feedback.event_id', event.id)
+          // Hidden rows are absent for the guest who left them too (#1150). In
+          // guest identity mode GalleryView builds its Liked/Favorited/Rated
+          // chips and their filters from THIS array rather than from is_liked,
+          // so without this a hidden like left an empty heart while the Liked
+          // chip still counted it and still surfaced the photo.
+          .where('photo_feedback.is_hidden', false),
+        // A photo the client has since hidden is gone for this viewer, its id
+        // and filename included.
+        req.accessLevel
+      );
+
+      // Prefer guest_id lookup when a verified guest token is present
+      // (per-person identity). Fall back to the device hash otherwise.
+      if (req.guest?.id) {
+        query.where('photo_feedback.guest_id', req.guest.id);
+      } else {
+        const guestIdentifier = await generateGuestIdentifier(req);
+        query.where('photo_feedback.guest_identifier', guestIdentifier);
+      }
+
+      // Name the columns rather than photo_feedback.*: the row also carries
+      // guest_name, ip_address and user_agent. After an admin merges two guest
+      // identities those still describe the source guest.
+      // GalleryView reads photo_id and feedback_type from this list.
+      const myFeedback = await query
+        .select(
+          'photo_feedback.id',
+          'photo_feedback.photo_id',
+          'photo_feedback.feedback_type',
+          'photo_feedback.rating',
+          'photo_feedback.comment_text',
+          'photo_feedback.reaction',
+          'photo_feedback.color_label',
+          'photo_feedback.created_at',
+          'photo_feedback.updated_at',
+          'photos.filename'
+        )
+        .orderBy('photo_feedback.created_at', 'desc');
+
+      // Array-shaped response preserved for back-compat with existing
+      // consumers (`GalleryView` iterates the array directly). The per-event
+      // caps for #655 are exposed via the `/feedback-settings` endpoint;
+      // the running counts can be derived client-side from this array.
+      res.json(myFeedback);
+    } catch (error) {
+      if (error.code === 'WITHDRAW_PENDING') return res.status(409).json({ error: error.message, code: error.code });
+      logger.error('Error getting user feedback:', error);
+      res.status(500).json({ error: 'Failed to get your feedback' });
+    }
+  }
+);
+
+module.exports = router;

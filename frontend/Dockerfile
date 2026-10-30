@@ -1,0 +1,99 @@
+# Build stage — node:22-alpine drops npm-bundled CVEs in older Node 20
+# (picomatch, ip-address, brace-expansion, @sigstore/core, tar) since the
+# bundled npm version is newer in 22. Matches the backend Dockerfile base.
+FROM node:22-alpine AS builder
+
+# Add build arguments
+ARG CACHEBUST=1
+ARG VITE_DEFAULT_LANGUAGE=zh-CN
+ENV VITE_DEFAULT_LANGUAGE=${VITE_DEFAULT_LANGUAGE}
+ARG BUILD_DATE
+ARG VCS_REF
+ARG VERSION
+
+# Add labels for GitHub Container Registry
+LABEL org.opencontainers.image.source="https://github.com/Aanlik/Picflow"
+LABEL org.opencontainers.image.description="Picflow Frontend Application"
+LABEL org.opencontainers.image.licenses="MIT"
+
+# Set working directory
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+
+# Install dependencies
+RUN npm ci --legacy-peer-deps
+
+# Copy source files
+COPY . .
+
+# Build the application
+RUN npm run build
+
+# Production stage (nginx stable 1.30 on Alpine 3.24). The 1.28 base is a
+# dead end for the nginx HTTP/2 + rewrite/charset CVEs (CVE-2026-42055 /
+# -49975 / -9256 / -48142): nginx.org's nginx-module-* packages pin the exact
+# nginx version, so `apk upgrade` can never pull Alpine's patched 1.28.3-r4 —
+# nginx fixes have to come via the base image tag, not apk.
+FROM nginx:1.30-alpine
+
+# Redeclare CACHEBUST — ARGs don't cross stage boundaries, so the builder
+# stage's declaration never reached this stage. Consuming it in the RUN below
+# busts that layer's cache every CI run (CACHEBUST=github.run_number), so the
+# image always picks up current Alpine security updates. Without this, the
+# upgrade layer was cached indefinitely and builds kept shipping curl 8.19.0 /
+# c-ares 1.34.6 for weeks after fixed packages landed in the Alpine repo.
+ARG CACHEBUST=1
+
+# Upgrade all Alpine packages for security fixes (nginx itself is version-
+# pinned by its module packages — see the FROM comment above).
+RUN echo "cachebust=${CACHEBUST}" && apk upgrade --no-cache
+
+# Install runtime dependencies. `gettext` provides envsubst, used by
+# docker-entrypoint.sh for the BRAND_TITLE / BRAND_DESCRIPTION runtime
+# substitution into index.html (#521 — runtime fix for self-hosters
+# on the pre-built GHCR image who can't override at build time).
+RUN apk add --no-cache curl gettext
+
+# Remove default nginx config
+RUN rm -rf /etc/nginx/conf.d/*
+
+# Copy custom nginx config
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+
+# Copy built application from builder stage
+COPY --from=builder /app/dist /usr/share/nginx/html
+
+# Snapshot index.html as a template so the entrypoint always renders
+# from a known-good source — not from its own previous substitution.
+# Container restarts can change BRAND_TITLE freely; the rendered file
+# is recomputed from the .tpl each time.
+RUN mv /usr/share/nginx/html/index.html /usr/share/nginx/html/index.html.tpl
+
+# Runtime entrypoint that envsubsts the template and execs nginx
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+# Set permissions (nginx user already exists in nginx:alpine)
+RUN chown -R nginx:nginx /usr/share/nginx/html && \
+    chown -R nginx:nginx /var/cache/nginx && \
+    chown -R nginx:nginx /var/log/nginx && \
+    touch /var/run/nginx.pid && \
+    chown -R nginx:nginx /var/run/nginx.pid
+
+# Expose port
+EXPOSE 80
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost/health || exit 1
+
+# Switch to non-root user
+USER nginx
+
+# Start nginx via the entrypoint so each container start re-renders
+# index.html from the template against the current BRAND_TITLE /
+# BRAND_DESCRIPTION env vars (defaults applied when unset).
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+CMD ["nginx", "-g", "daemon off;"]

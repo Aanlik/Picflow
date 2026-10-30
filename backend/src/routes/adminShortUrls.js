@@ -1,0 +1,139 @@
+/**
+ * Admin CRUD for the branded URL shortener (#699).
+ *
+ * - GET    /api/admin/events/:eventId/short-urls   — list per event
+ * - POST   /api/admin/events/:eventId/short-urls   — create (custom or auto-generated slug)
+ * - DELETE /api/admin/short-urls/:id               — soft-delete
+ *
+ * All paths require admin auth + `settings.view` permission (read) /
+ * `events.edit` permission (mutate) — short URLs are a per-event admin
+ * concern, gated by the same permission as editing the event itself.
+ */
+const express = require('express');
+const { body, param, validationResult } = require('express-validator');
+const { safeValidationErrors } = require('../utils/routeHelpers');
+const { adminAuth } = require('../middleware/auth');
+const { requirePermission } = require('../middleware/permissions');
+const { requireEventOwnership, canAccessEvent } = require('../middleware/ownership');
+const { db } = require('../database/db');
+const galleryShortUrlService = require('../services/galleryShortUrlService');
+const logger = require('../utils/logger');
+
+const router = express.Router();
+
+router.use(adminAuth);
+
+/**
+ * GET /api/admin/events/:eventId/short-urls
+ * List live short URLs for an event.
+ */
+router.get(
+  '/events/:eventId/short-urls',
+  requirePermission('events.view'),
+  param('eventId').isInt({ min: 1 }),
+  requireEventOwnership,
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ errors: safeValidationErrors(errors) });
+    try {
+      const rows = await galleryShortUrlService.listForEvent(parseInt(req.params.eventId, 10));
+      res.json({ shortUrls: rows });
+    } catch (err) {
+      logger.error('adminShortUrls.list failed', { error: err.message, eventId: req.params.eventId });
+      res.status(500).json({ error: 'Failed to list short URLs' });
+    }
+  },
+);
+
+/**
+ * POST /api/admin/events/:eventId/short-urls
+ * Body: { customSlug?: string }   — omit for auto-generated slug.
+ */
+router.post(
+  '/events/:eventId/short-urls',
+  requirePermission('events.edit'),
+  param('eventId').isInt({ min: 1 }),
+  body('customSlug').optional({ nullable: true })
+    .isString().isLength({ min: 1, max: 64 }),
+  requireEventOwnership,
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ errors: safeValidationErrors(errors) });
+    try {
+      const row = await galleryShortUrlService.createShortUrl({
+        eventId: parseInt(req.params.eventId, 10),
+        customSlug: req.body.customSlug || null,
+        createdBy: req.admin?.id || null,
+      });
+      res.status(201).json(row);
+    } catch (err) {
+      // Structured-error fallthrough — the service tags collisions and
+      // validation failures with a `code` so the UI can surface a
+      // useful message + a suggested alternative slug.
+      if (err.code === 'INVALID_SLUG') {
+        return res.status(400).json({ error: err.message, code: err.code });
+      }
+      if (err.code === 'SLUG_TAKEN') {
+        return res.status(409).json({
+          error: err.message, code: err.code, suggested: err.suggested,
+        });
+      }
+      if (err.code === 'EVENT_NOT_FOUND') {
+        return res.status(404).json({ error: err.message, code: err.code });
+      }
+      logger.error('adminShortUrls.create failed', { error: err.message });
+      res.status(500).json({ error: 'Failed to create short URL' });
+    }
+  },
+);
+
+/**
+ * Ownership guard for the by-short-url-id DELETE route (GHSA-9h7q-2jpf-vj85).
+ * GET/POST take :eventId directly so requireEventOwnership applies as-is;
+ * DELETE takes the short URL row's own :id, so resolve its event first and
+ * apply the same ownership predicate requireEventOwnership uses. Sends the
+ * response and returns false when the caller may not act on it (404 if the
+ * row doesn't exist, 403 if it exists but belongs to another admin).
+ */
+async function assertOwnsShortUrl(req, res, id) {
+  const row = await db('gallery_short_urls').where({ id }).first('event_id');
+  if (!row) {
+    res.status(404).json({ error: 'Short URL not found' });
+    return false;
+  }
+  if (req.admin.roleName !== 'super_admin') {
+    const event = await db('events').where({ id: row.event_id }).first('created_by');
+    if (!canAccessEvent(req.admin, event)) {
+      res.status(403).json({ error: 'Access denied' });
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * DELETE /api/admin/short-urls/:id
+ * Soft-delete. The public route serves 410 Gone on a deleted row so the
+ * admin can tell their delete worked (vs. 404 for an unknown slug).
+ */
+router.delete(
+  '/short-urls/:id',
+  requirePermission('events.edit'),
+  param('id').isInt({ min: 1 }),
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ errors: safeValidationErrors(errors) });
+    try {
+      const id = parseInt(req.params.id, 10);
+      if (!(await assertOwnsShortUrl(req, res, id))) return;
+      const ok = await galleryShortUrlService.softDelete(id, req.admin?.id || null);
+      if (!ok) return res.status(404).json({ error: 'Short URL not found' });
+      res.status(204).end();
+    } catch (err) {
+      logger.error('adminShortUrls.delete failed', { error: err.message });
+      res.status(500).json({ error: 'Failed to delete short URL' });
+    }
+  },
+);
+
+module.exports = router;

@@ -1,0 +1,81 @@
+{
+  "name": "picflow-backend",
+  "version": "1.6.7",
+  "description": "Backend for Picflow photography platform",
+  "main": "server.js",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "migrate": "node migrations/run-migrations.js",
+    "migrate:safe": "node migrations/run-migrations-safe.js",
+    "generate:watermarks": "node scripts/generate-watermarks.js",
+    "lint": "eslint src/"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.850.0",
+    "@aws-sdk/lib-storage": "^3.850.0",
+    "@aws-sdk/s3-request-presigner": "^3.850.0",
+    "archiver": "^5.3.1",
+    "axios": "1.20.0",
+    "bcrypt": "6.0.0",
+    "chokidar": "4.0.3",
+    "compression": "^1.7.5",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.5",
+    "cron-parser": "^4.9.0",
+    "dotenv": "^16.0.3",
+    "exifr": "^7.1.3",
+    "express": "^4.18.2",
+    "express-rate-limit": "^6.7.0",
+    "express-validator": "^7.0.1",
+    "fluent-ffmpeg": "^2.1.3",
+    "helmet": "^7.0.0",
+    "ipaddr.js": "^2.3.0",
+    "joi": "^17.13.4",
+    "js-yaml": "^4.2.0",
+    "jsonwebtoken": "^9.0.0",
+    "knex": "^2.4.2",
+    "mime-types": "^3.0.1",
+    "multer": "2.5.0",
+    "node-cron": "^3.0.2",
+    "node-stream-zip": "^1.15.0",
+    "p-limit": "^3.1.0",
+    "pdfkit": "^0.17.2",
+    "pg": "^8.16.3",
+    "qrcode": "^1.5.4",
+    "sanitize-html": "2.18.1",
+    "sharp": "0.35.5",
+    "sqlite3": "^5.1.6",
+    "validator": "^13.15.35",
+    "winston": "^3.8.2",
+    "zxcvbn": "^4.4.2"
+  },
+  "devDependencies": {
+    "eslint": "^8.40.0"
+  },
+  "overrides": {
+    "prebuild-install": {
+      "tar-fs": "2.1.4"
+    },
+    "sqlite3": {
+      "node-gyp": "^11.2.0"
+    },
+    "glob": "^11.1.0",
+    "js-yaml": "^4.2.0",
+    "fast-xml-parser": ">=5.7.0",
+    "qs": ">=6.17.0",
+    "tar": ">=7.5.21",
+    "brace-expansion": ">=5.0.9",
+    "minimatch": ">=9.0.7",
+    "path-to-regexp": "0.1.13",
+    "lodash": ">=4.18.1",
+    "follow-redirects": ">=1.16.2",
+    "@tootallnate/once": ">=3.0.1",
+    "ip-address": ">=10.5.1",
+    "uuid": "^11.1.1",
+    "deepmerge-ts": ">=8.0.1"
+  }
+}

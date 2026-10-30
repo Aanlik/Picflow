@@ -1,0 +1,247 @@
+const { URL } = require('url');
+const net = require('net');
+const dns = require('dns').promises;
+const ipaddr = require('ipaddr.js');
+
+/**
+ * Check if a hostname or IP resolves to a private/internal network address.
+ * Blocks SSRF attempts targeting internal infrastructure.
+ */
+function isPrivateIP(hostname) {
+  if (!hostname || typeof hostname !== 'string') return true;
+
+  const lower = hostname.toLowerCase().trim();
+
+  // Block known metadata / loopback hostnames
+  const blockedHostnames = [
+    'localhost',
+    'metadata.google.internal',
+    'metadata.google',
+    '169.254.169.254',
+    '0.0.0.0',
+    '::1',
+    '[::1]',
+  ];
+  if (blockedHostnames.includes(lower)) return true;
+
+  // If it's an IP address, check ranges directly
+  if (net.isIPv4(lower)) {
+    return isPrivateIPv4(lower);
+  }
+
+  // IPv6 checks
+  if (net.isIPv6(lower) || lower.startsWith('[')) {
+    const cleanIp = lower.replace(/^\[|\]$/g, '');
+    return isPrivateIPv6(cleanIp);
+  }
+
+  // Hostname patterns that resolve to internal services
+  if (lower.endsWith('.internal') || lower.endsWith('.local') || lower.endsWith('.localhost')) {
+    return true;
+  }
+
+  return false;
+}
+
+function isPrivateIPv4(ip) {
+  // ipaddr.js carries the full IANA special-purpose table, so every range
+  // that is not plain public unicast is refused: loopback, RFC 1918, link-local,
+  // 0/8, carrier-grade NAT (100.64/10 — cloud metadata on some providers sits
+  // at 100.100.100.200), the IETF protocol block 192.0.0/24, the benchmarking
+  // block 198.18/15, documentation nets, multicast, reserved and broadcast.
+  // The hand-written table it replaces knew five of those and let the rest
+  // through (security review 2026-09-29).
+  // Fail closed: anything that is not a dotted quad (ipaddr.js would accept
+  // shorter forms), or that ipaddr cannot parse, we treat as private.
+  if (!net.isIPv4(ip)) return true;
+  let parsed;
+  try {
+    parsed = ipaddr.IPv4.parse(ip);
+  } catch {
+    return true;
+  }
+  return parsed.range() !== 'unicast';
+}
+
+/**
+ * Expand an IPv6 address (including mixed dotted-quad notation) into its
+ * canonical 8-group form, each group a 4-char lowercase hex string. Returns
+ * null on any parse failure so callers can fail closed.
+ */
+function expandIPv6(ip) {
+  if (typeof ip !== 'string' || !net.isIPv6(ip)) return null;
+  let normalized = ip.toLowerCase();
+
+  // Mixed notation: trailing dotted-quad (e.g. ::ffff:192.0.2.1, 64:ff9b::169.254.169.254)
+  if (normalized.includes('.')) {
+    const lastColon = normalized.lastIndexOf(':');
+    const tail = normalized.slice(lastColon + 1);
+    const parts = tail.split('.').map(p => Number(p));
+    if (parts.length !== 4 || parts.some(p => !Number.isInteger(p) || p < 0 || p > 255)) {
+      return null;
+    }
+    const hex1 = ((parts[0] << 8) | parts[1]).toString(16).padStart(4, '0');
+    const hex2 = ((parts[2] << 8) | parts[3]).toString(16).padStart(4, '0');
+    normalized = normalized.slice(0, lastColon + 1) + hex1 + ':' + hex2;
+  }
+
+  let groups;
+  const dcIdx = normalized.indexOf('::');
+  if (dcIdx === -1) {
+    groups = normalized.split(':');
+    if (groups.length !== 8) return null;
+  } else {
+    const left = normalized.slice(0, dcIdx);
+    const right = normalized.slice(dcIdx + 2);
+    const leftGroups = left === '' ? [] : left.split(':');
+    const rightGroups = right === '' ? [] : right.split(':');
+    const missing = 8 - leftGroups.length - rightGroups.length;
+    if (missing < 0) return null;
+    groups = [...leftGroups, ...Array(missing).fill('0'), ...rightGroups];
+  }
+
+  const padded = groups.map(g => (/^[0-9a-f]{1,4}$/.test(g) ? g.padStart(4, '0') : null));
+  if (padded.some(g => g === null)) return null;
+  return padded;
+}
+
+function ipv4FromLow32(g6, g7) {
+  const hi = parseInt(g6, 16);
+  const lo = parseInt(g7, 16);
+  return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+}
+
+function isPrivateIPv6(ip) {
+  const groups = expandIPv6(ip);
+  // Fail closed: anything we cannot parse, we treat as private.
+  if (!groups) return true;
+  const [g0, g1, g2, g3, g4, g5, g6, g7] = groups;
+
+  // :: unspecified
+  if (groups.every(g => g === '0000')) return true;
+  // ::1 loopback
+  if (g0 === '0000' && g1 === '0000' && g2 === '0000' && g3 === '0000'
+    && g4 === '0000' && g5 === '0000' && g6 === '0000' && g7 === '0001') return true;
+
+  // fc00::/7 — unique-local (first byte 0xFC or 0xFD)
+  const firstByte = parseInt(g0.slice(0, 2), 16);
+  if (firstByte === 0xfc || firstByte === 0xfd) return true;
+
+  // fe80::/10 — link-local (first 10 bits cover fe80..febf)
+  const firstShort = parseInt(g0, 16);
+  if (firstShort >= 0xfe80 && firstShort <= 0xfebf) return true;
+
+  // 64:ff9b::/96 — NAT64 well-known prefix (RFC 6052). Translated to IPv4 at
+  // the NAT64 gateway, so a URL like http://[64:ff9b::a9fe:a9fe]/ reaches
+  // 169.254.169.254. Block the whole prefix — no legitimate outbound use.
+  if (g0 === '0064' && g1 === 'ff9b'
+    && g2 === '0000' && g3 === '0000' && g4 === '0000' && g5 === '0000') {
+    return true;
+  }
+
+  // 64:ff9b:1::/48 — NAT64 local-use prefix (RFC 8215). Same reasoning.
+  if (g0 === '0064' && g1 === 'ff9b' && g2 === '0001') return true;
+
+  // ::ffff:0:0/96 — IPv4-mapped IPv6 (RFC 4291). Decode the embedded IPv4
+  // and re-run through the v4 check so `::ffff:127.0.0.1` and the literal
+  // hex form `::ffff:7f00:1` both get caught.
+  if (g0 === '0000' && g1 === '0000' && g2 === '0000' && g3 === '0000'
+    && g4 === '0000' && g5 === 'ffff') {
+    return isPrivateIPv4(ipv4FromLow32(g6, g7));
+  }
+
+  // ::/96 — deprecated IPv4-compatible IPv6. Excludes the all-zero
+  // unspecified address (handled above). Decode + re-check.
+  if (g0 === '0000' && g1 === '0000' && g2 === '0000' && g3 === '0000'
+    && g4 === '0000' && g5 === '0000' && !(g6 === '0000' && g7 === '0000')) {
+    return isPrivateIPv4(ipv4FromLow32(g6, g7));
+  }
+
+  return false;
+}
+
+/**
+ * Validate a URL string, rejecting private/internal targets.
+ *
+ * NOTE: literal-only. For a hostname (not an IP), this checks the string but
+ * NOT what it resolves to — `evil.example` with an A record of 10.0.0.5
+ * passes. Prefer isHostAllowed / validateExternalUrlAsync at any call site
+ * that then actually connects; kept for synchronous callers and fast checks.
+ * @param {string} urlString - URL to validate
+ * @returns {{ valid: boolean, error?: string }}
+ */
+function validateExternalUrl(urlString) {
+  try {
+    const parsed = new URL(urlString);
+    if (isPrivateIP(parsed.hostname)) {
+      return { valid: false, error: 'URL points to a private or internal network address' };
+    }
+    return { valid: true };
+  } catch {
+    return { valid: false, error: 'Invalid URL format' };
+  }
+}
+
+/**
+ * Resolve a hostname and reject if it (or ANY of its A/AAAA records) points
+ * at a private/internal address. Closes the SSRF hole where a public-looking
+ * hostname resolves to an internal IP or the cloud metadata endpoint — the
+ * literal isPrivateIP check alone can't see that. Fails closed on resolution
+ * failure. IP literals are decided by isPrivateIP without a lookup.
+ *
+ * HTTP clients for admin-configured destinations must use the returned
+ * addresses from validateExternalUrlAsync with pinnedRequestOptions; a
+ * separate preflight alone cannot stop rebinding.
+ *
+ * @param {string} hostname
+ * @returns {Promise<boolean>} true when safe to connect
+ */
+async function resolveHost(hostname) {
+  if (!hostname || typeof hostname !== 'string') return { reason: 'invalid' };
+  if (isPrivateIP(hostname)) return { reason: 'private' };
+  const bare = hostname.replace(/^\[|\]$/g, '');
+  if (net.isIP(bare)) return { reason: 'ok', addresses: [{ address: bare, family: net.isIP(bare) }] };
+  let addresses;
+  try { addresses = await dns.lookup(hostname, { all: true }); }
+  catch { return { reason: 'unresolved' }; }
+  if (!addresses.length) return { reason: 'unresolved' };
+  if (addresses.some(a => !net.isIP(a.address) || isPrivateIP(a.address))) return { reason: 'private' };
+  return { reason: 'ok', addresses };
+}
+
+async function classifyHost(hostname) {
+  return (await resolveHost(hostname)).reason;
+}
+
+async function isHostAllowed(hostname) {
+  // Fail-closed boolean for save/test call sites: anything not clearly 'ok'
+  // (including a transient lookup failure) is rejected.
+  return (await classifyHost(hostname)) === 'ok';
+}
+
+/**
+ * Async, DNS-resolving counterpart to validateExternalUrl. Returns a `reason`
+ * so callers with retry semantics can distinguish a
+ * policy rejection ('private'/'invalid') from a transient lookup failure
+ * ('unresolved') that should be retried rather than permanently failed.
+ * @param {string} urlString
+ * @returns {Promise<{ valid: boolean, error?: string, reason: string }>}
+ */
+async function validateExternalUrlAsync(urlString) {
+  let parsed;
+  try {
+    parsed = new URL(urlString);
+  } catch {
+    return { valid: false, error: 'Invalid URL format', reason: 'invalid' };
+  }
+  if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) {
+    return { valid: false, error: 'HTTP(S) URL without credentials required', reason: 'invalid' };
+  }
+  const { reason, addresses } = await resolveHost(parsed.hostname);
+  if (reason !== 'ok') {
+    return { valid: false, error: 'URL points to a private or internal network address', reason };
+  }
+  return { valid: true, reason: 'ok', hostname: parsed.hostname.replace(/^\[|\]$/g, ''), addresses };
+}
+
+module.exports = { isPrivateIP, validateExternalUrl, isHostAllowed, validateExternalUrlAsync, classifyHost };

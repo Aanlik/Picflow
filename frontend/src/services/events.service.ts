@@ -1,0 +1,350 @@
+import { api } from '../config/api';
+import type { Event } from '../types';
+import { normalizeRequirePassword } from '../utils/accessControl';
+import { toBoolean } from '../utils/parsers';
+
+const normalizeEvent = (event: Event): Event => {
+  const raw = event as Event & Record<string, unknown>;
+  const rawId = raw.id ?? raw.event_id ?? raw.eventId;
+  const id = typeof rawId === 'number' ? rawId : Number(rawId);
+  const rawName = raw.event_name ?? raw.eventName ?? raw.name ?? raw.title;
+  if (!Number.isInteger(id) || id <= 0 || typeof rawName !== 'string' || !rawName.trim()) {
+    throw new Error('The project list returned an incomplete project record.');
+  }
+
+  const legacyHostName = raw.host_name as string | undefined;
+  const customerName = (raw.customer_name as string | undefined) ?? legacyHostName;
+
+  return {
+    ...raw,
+    id,
+    event_name: rawName.trim(),
+    photo_count: Number(raw.photo_count ?? raw.photoCount ?? 0) || 0,
+    customer_name: customerName,
+    require_password: normalizeRequirePassword(raw.require_password, true),
+    // SQLite hands these back as 0/1, so a strict `=== false` consumer reads
+    // an inactive gallery as active (the #1028 class). Coerced once here with
+    // the same default the backend's parseBooleanInput uses.
+    is_active: toBoolean(raw.is_active, true),
+  };
+};
+
+interface CreateEventData {
+  event_name: string;
+  event_date?: string;
+  customer_name?: string;
+  require_password?: boolean;
+  password?: string;
+  color_theme?: string;
+  expiration_days?: number;
+  allow_user_uploads?: boolean;
+  upload_category_id?: number | null;
+  feedback_enabled?: boolean;
+  allow_ratings?: boolean;
+  allow_likes?: boolean;
+  allow_comments?: boolean;
+  allow_favorites?: boolean;
+  allow_reactions?: boolean;
+  show_feedback_to_guests?: boolean;
+  photo_cap?: number | null;
+  default_photo_sort?: string;
+  cloud_sync_enabled?: boolean;
+  force_cloud_downloads?: boolean;
+  cloud_thumbnail_sync_enabled?: boolean;
+  cloud_preview_sync_enabled?: boolean;
+}
+
+interface UpdateEventData {
+  event_name?: string;
+  event_date?: string;
+  customer_name?: string;
+  require_password?: boolean;
+  password?: string;
+  // Client (photographer's customer) access to the gallery. The plaintext
+  // PIN is hashed server-side; `regenerate_client_token` mints a fresh
+  // share token. Validated in adminEvents/crud.js on the update route.
+  client_access_enabled?: boolean;
+  client_password?: string;
+  regenerate_client_token?: boolean;
+  color_theme?: string;
+  expires_at?: string;
+  is_active?: boolean;
+  allow_user_uploads?: boolean;
+  // Reveal mode (#838)
+  reveal_mode?: boolean;
+  reveal_at?: string | null;
+  upload_category_id?: number | null;
+  hero_photo_id?: number | null;
+  source_mode?: 'managed' | 'reference';
+  external_path?: string | null;
+  external_watch?: boolean;
+  photo_cap?: number | null;
+  default_photo_sort?: string;
+  // Per-event opt-in for hero photo as social-share preview (#474).
+  og_image_share_enabled?: boolean;
+}
+
+export type EventStatusFilter = 'active' | 'inactive' | 'archived' | 'draft' | 'expiring';
+
+interface EventsListResponse {
+  events: Event[];
+  pagination: {
+    page: number;
+    limit: number;
+    total: number;
+    totalPages: number;
+  };
+}
+
+export const eventsService = {
+  // Get all events (admin)
+  async getEvents(
+    page: number = 1,
+    limit: number = 20,
+    status?: EventStatusFilter,
+    search?: string,
+    sortBy?: string,
+    sortOrder?: 'asc' | 'desc'
+  ): Promise<EventsListResponse> {
+    const params = new URLSearchParams({
+      page: page.toString(),
+      limit: limit.toString(),
+    });
+
+    if (status) {
+      params.append('status', status);
+    }
+    if (search) {
+      params.append('search', search);
+    }
+    if (sortBy) {
+      params.append('sortBy', sortBy);
+    }
+    if (sortOrder) {
+      params.append('sortOrder', sortOrder);
+    }
+
+    const response = await api.get<EventsListResponse>(`/admin/events?${params}`);
+    const data: any = response.data;
+    if (Array.isArray(data?.events)) {
+      data.events = data.events.map((event: Event) => normalizeEvent(event));
+    } else if (Array.isArray(data)) {
+      return data.map((event: Event) => normalizeEvent(event)) as any;
+    }
+    return data;
+  },
+
+  // Get single event details (admin)
+  async getEvent(id: number): Promise<Event> {
+    const response = await api.get<Event>(`/admin/events/${id}`);
+    return normalizeEvent(response.data as Event);
+  },
+
+  // Create new event (admin)
+  async createEvent(data: CreateEventData): Promise<Event> {
+    const response = await api.post<Event>('/admin/events', data);
+    return normalizeEvent(response.data as Event);
+  },
+
+  // Update event (admin)
+  // Reveal now (#838): stamps revealed_at so the gallery opens for guests.
+  async revealEvent(id: number): Promise<{ revealed_at: string }> {
+    const response = await api.post(`/admin/events/${id}/reveal`);
+    return response.data;
+  },
+
+  async updateEvent(id: number, data: UpdateEventData): Promise<Event> {
+    const response = await api.put<Event>(`/admin/events/${id}`, data);
+    return response.data;
+  },
+
+  // Delete/deactivate event (admin)
+  async deleteEvent(id: number, options: { deleteCloudCopies?: boolean } = {}): Promise<void> {
+    await api.delete(`/admin/events/${id}`, { data: { deleteCloudCopies: options.deleteCloudCopies === true } });
+  },
+
+  // Live Slideshow ("Diashow") — mint/rotate the share token (admin)
+  async generateSlideshowLink(id: number): Promise<{ show_share_token: string; slideshow_url: string }> {
+    const response = await api.post(`/admin/events/${id}/slideshow/generate`);
+    return response.data;
+  },
+
+  // Disable the slideshow link (null the token) (admin)
+  async disableSlideshowLink(id: number): Promise<void> {
+    await api.post(`/admin/events/${id}/slideshow/disable`);
+  },
+
+  // Update live slideshow settings (display time / transition / style) (admin)
+  async updateSlideshowSettings(
+    id: number,
+    settings: {
+      show_interval_ms?: number;
+      show_transition?: string;
+      show_transition_ms?: number;
+      show_watermark?: boolean | null;
+      show_qr?: boolean | null;
+      show_colorfilter?: string;
+      show_order?: string;
+      show_category_id?: number | null;
+    }
+  ): Promise<Record<string, unknown>> {
+    const response = await api.patch(`/admin/events/${id}/slideshow`, settings);
+    return response.data;
+  },
+
+  // Force archive event (admin)
+  async archiveEvent(id: number): Promise<{ cloudCopiesAvailable: boolean }> {
+    const response = await api.post(`/admin/events/${id}/archive`);
+    return response.data;
+  },
+
+  // Bulk archive events (admin)
+  async bulkArchiveEvents(eventIds: number[]): Promise<{
+    message: string;
+    results: {
+      successful: Array<{ id: number; name: string; cloudCopiesAvailable?: boolean }>;
+      failed: Array<{ id: number; name: string; error: string }>;
+    };
+  }> {
+    const response = await api.post('/admin/events/bulk-archive', {
+      eventIds,
+    });
+    return response.data;
+  },
+
+  // Bulk delete events (admin) — destructive. The client-side confirmation
+  // gate is a typed-literal pattern in the modal (issue #417); no password
+  // is sent because passkey/autofill flows on a password input could
+  // auto-submit the form. The admin session JWT remains the auth boundary,
+  // matching DELETE /admin/events/:id which has never required a password.
+  async bulkDeleteEvents(eventIds: number[], options: { deleteCloudCopies?: boolean } = {}): Promise<{
+    message: string;
+    results: {
+      successful: Array<{ id: number; name: string }>;
+      failed: Array<{ id: number; name: string | null; error: string }>;
+    };
+  }> {
+    const response = await api.post('/admin/events/bulk-delete', {
+      eventIds,
+      deleteCloudCopies: options.deleteCloudCopies === true,
+    });
+    return response.data;
+  },
+
+  // Extend event expiration (admin). Uses the canonical, ownership-guarded
+  // route; the old /events/:id/extend legacy endpoint was removed (GHSA-4j34).
+  async extendExpiration(id: number, days: number): Promise<Event> {
+    const response = await api.post<Event>(`/admin/events/${id}/extend`, {
+      days,
+    });
+    return response.data;
+  },
+
+  // Get event categories
+  async getEventCategories(eventId: number): Promise<Array<{ id: number; name: string; slug: string; is_folder?: boolean }>> {
+    const response = await api.get(`/admin/categories/event/${eventId}`);
+    return response.data || [];
+  },
+
+  // Reset event password. Pass `password` to set a specific value (validated
+  // server-side with the same rules as create-event); omit it to have the
+  // server auto-generate one.
+  async resetPassword(
+    eventId: number,
+    password?: string
+  ): Promise<{ message: string; newPassword: string }> {
+    const body: { password?: string } = {};
+    if (password) body.password = password;
+    const response = await api.post(`/admin/events/${eventId}/reset-password`, body);
+    return response.data;
+  },
+
+  // Whether recoverable gallery passwords (#1271) are switched on. Answered
+  // per event so editors without settings access can ask too.
+  async getGalleryPasswordStatus(eventId: number): Promise<{ enabled: boolean }> {
+    const response = await api.get(`/admin/events/${eventId}/password-status`);
+    return response.data;
+  },
+
+  // Stored gallery password / client PIN (#1271). Only populated when the
+  // security setting "gallery_password_recoverable" is on; `enabled: false`
+  // means the feature is off and there is nothing to show.
+  async getGalleryPassword(eventId: number): Promise<{
+    enabled: boolean;
+    password: string | null;
+    client_password: string | null;
+  }> {
+    const response = await api.get(`/admin/events/${eventId}/password`);
+    return response.data;
+  },
+
+  // Validate rename
+  async validateRename(eventId: number, newEventName: string): Promise<{
+    valid: boolean;
+    newSlug?: string;
+    error?: string;
+  }> {
+    const response = await api.post(`/admin/events/${eventId}/validate-rename`, { newEventName });
+    return response.data;
+  },
+
+  async publishEvent(eventId: number): Promise<{ message: string; is_draft: boolean }> {
+    const response = await api.post(`/admin/events/${eventId}/publish`);
+    return response.data;
+  },
+
+  // Duplicate an event (#626). Creates a new draft gallery that inherits the
+  // source event's branding + behaviour + feedback + categories. Photos are
+  // NOT carried over. The returned id/slug are the new draft event.
+  async duplicateEvent(
+    eventId: number,
+    data: {
+      event_name: string;
+      event_date?: string;
+      customer_name?: string;
+    },
+  ): Promise<{ message: string; id: number; slug: string; is_draft: boolean }> {
+    const response = await api.post(`/admin/events/${eventId}/duplicate`, data);
+    return response.data;
+  },
+
+  // Rename event
+  async renameEvent(eventId: number, newEventName: string): Promise<{
+    success: boolean;
+    message?: string;
+    data?: {
+      eventId: number;
+      oldName: string;
+      newName: string;
+      oldSlug: string;
+      newSlug: string;
+      newShareLink: string;
+      filesRenamed: number;
+    };
+    error?: string;
+  }> {
+    const response = await api.post(`/admin/events/${eventId}/rename`, { newEventName });
+    return response.data;
+  },
+
+  // Gallery QR code (#836). Admin API uses Bearer auth, so images are fetched
+  // as blobs — an <img src> would not carry the token. `origin` is passed so
+  // the backend can fall back to the admin browser's origin when the
+  // configured FRONTEND_URL is missing/localhost — the QR must encode the
+  // same URL the share-link card displays.
+  async getQrBlob(eventId: number, format: 'png' | 'svg', size?: number): Promise<Blob> {
+    const { data } = await api.get(`/admin/events/${eventId}/qr`, {
+      params: { format, size, origin: window.location.origin },
+      responseType: 'blob',
+    });
+    return data;
+  },
+
+  async getQrPrintBlob(eventId: number, template: 'table-card' | 'poster', lang: string): Promise<Blob> {
+    const { data } = await api.get(`/admin/events/${eventId}/qr-print`, {
+      params: { template, lang, origin: window.location.origin },
+      responseType: 'blob',
+    });
+    return data;
+  },
+};

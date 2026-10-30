@@ -1,0 +1,348 @@
+import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
+import { Search, Heart, LogOut } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
+
+import type { BaseGalleryLayoutProps } from './BaseGalleryLayout';
+import type { Photo } from '../../../types';
+import { feedbackService } from '../../../services/feedback.service';
+import { galleryService } from '../../../services/gallery.service';
+import { toast } from 'react-toastify';
+import { useGuestIdentityOptional } from '../../../contexts/GuestIdentityContext';
+
+import {
+  StoryHero,
+  StoryScene,
+  StoryPhotoCard,
+  StoryCarousel,
+  StoryScrollToTop
+} from './story';
+import { PhotoLightbox } from '../PhotoLightbox';
+import { photoMatchesFilenameSearch } from '../../../utils/photoFilename';
+import { useViewerLikeIds } from '../../../hooks/useViewerLikeIds';
+
+import './GalleryStoryLayout.css';
+
+interface PhotosByCategory {
+  [categoryName: string]: Photo[];
+}
+
+interface CategoryScene {
+  id: string;
+  title: string;
+  subtitle?: string;
+  type: 'grid' | 'carousel';
+  photos: Photo[];
+}
+
+interface GalleryStoryLayoutProps extends BaseGalleryLayoutProps {
+  heroPhotoOverride?: Photo | null;
+}
+
+export const GalleryStoryLayout: React.FC<GalleryStoryLayoutProps> = ({
+  photos,
+  slug,
+  onPhotoClick: _onPhotoClick,
+  onOpenPhotoWithFeedback: _onOpenPhotoWithFeedback,
+  onFeedbackChange,
+  onDownload: _onDownload,
+  selectedPhotos = new Set(),
+  isSelectionMode = false,
+  onPhotoSelect,
+  eventName,
+  eventDate,
+  allowDownloads = true,
+  suppressEmptyState = false,
+  eventPhotoCount,
+  onDownloadEverything,
+  downloadChoices,
+  onPickResolution,
+  protectionLevel = 'standard',
+  useEnhancedProtection = false,
+  useCanvasRendering = false,
+  feedbackEnabled = false,
+  feedbackOptions,
+  heroPhotoOverride,
+  onLogout,
+  showOriginalFilename = false,
+}) => {
+  // Story owns its like/lightbox surface but shares the gallery selection state.
+  void _onPhotoClick;
+  void _onOpenPhotoWithFeedback;
+  void _onDownload;
+  const { t } = useTranslation();
+  const [scrolled, setScrolled] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [favorites, setFavorites] = useViewerLikeIds(photos);
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+  const favoriteRequests = useRef(new Set<number>());
+  const guestIdentity = useGuestIdentityOptional();
+
+  // Track scroll for nav background
+  useEffect(() => {
+    const handleScroll = () => {
+      setScrolled(window.scrollY > 50);
+    };
+    window.addEventListener('scroll', handleScroll);
+    return () => window.removeEventListener('scroll', handleScroll);
+  }, []);
+
+  // Get hero photo
+  const heroPhoto = heroPhotoOverride || photos[0];
+
+  // Group photos by category into scenes
+  const scenes = useMemo<CategoryScene[]>(() => {
+    const photosByCategory: PhotosByCategory = {};
+
+    // Filter by search query. `original_filename` is in here because that is
+    // the camera name the guest actually sees on the card/lightbox — matching
+    // only the internal renamed `filename` gave "no results" for a substring
+    // the guest could read on screen (QA P4-B.02).
+    const filteredPhotos = searchQuery
+      ? photos.filter(p => {
+          const term = searchQuery.toLowerCase();
+          return photoMatchesFilenameSearch(p, searchQuery) ||
+            (p.category_name && p.category_name.toLowerCase().includes(term));
+        })
+      : photos;
+
+    // Group by category
+    filteredPhotos.forEach(photo => {
+      const categoryName = photo.category_name || '';
+      if (!photosByCategory[categoryName]) {
+        photosByCategory[categoryName] = [];
+      }
+      photosByCategory[categoryName].push(photo);
+    });
+
+    // Convert to scenes with alternating types
+    return Object.entries(photosByCategory).map(([categoryName, categoryPhotos], index) => ({
+      id: `scene-${index}`,
+      title: categoryName,
+      subtitle: `${categoryPhotos.length} ${t('gallery.photos', 'photos')}`,
+      // Alternate between grid and carousel
+      type: index % 2 === 0 ? 'grid' : 'carousel' as 'grid' | 'carousel',
+      photos: categoryPhotos
+    }));
+  }, [photos, searchQuery, t]);
+
+  // #1160: on a folder-only root this component renders its shell with an empty
+  // scope, so fall back to the event-wide count rather than announcing 0 Photos
+  // directly above folder tiles that hold them.
+  const totalPhotos = photos.length || eventPhotoCount || 0;
+  const stats = `${totalPhotos} ${t('gallery.photos', 'Photos')}`;
+
+  const handleToggleFavorite = useCallback(async (photoId: number) => {
+    if (favoriteRequests.current.has(photoId)) return;
+    favoriteRequests.current.add(photoId);
+
+    // The server /feedback like endpoint is a toggle (#590) — fire on
+    // every click, not only when adding. The previous code skipped the
+    // submit on unlike, so the UI removed the heart but the server
+    // still had the like row.
+    try {
+      // Story has a custom heart button instead of the shared PhotoLikes
+      // control. Register the per-guest identity before calling the API.
+      if (guestIdentity?.identityMode === 'guest') {
+        await guestIdentity.ensureIdentity();
+      }
+      await feedbackService.submitFeedback(slug, String(photoId), {
+        feedback_type: 'like',
+      });
+      setFavorites((previous) => {
+        const next = new Set(previous);
+        if (next.has(photoId)) next.delete(photoId);
+        else next.add(photoId);
+        return next;
+      });
+      onFeedbackChange?.();
+    } catch (error: any) {
+      if (error?.message !== 'user_cancelled') {
+        toast.error(error?.response?.status === 429
+          ? t('feedback.rateLimited', '操作太频繁，请稍后重试')
+          : t('feedback.likeError', '点赞失败，请稍后重试'));
+      }
+    } finally {
+      favoriteRequests.current.delete(photoId);
+    }
+  }, [slug, onFeedbackChange, setFavorites, guestIdentity, t]);
+
+  const handleOpenLightbox = useCallback((photo: Photo) => {
+    const index = photos.findIndex(p => p.id === photo.id);
+    setLightboxIndex(index >= 0 ? index : 0);
+  }, [photos]);
+
+  const handleDownloadAll = useCallback(async () => {
+    // Whole-gallery path when available: posting ids would hit the server's
+    // 500-id cap and silently truncate a large gallery (#1160).
+    if (onDownloadEverything) {
+      onDownloadEverything();
+      return;
+    }
+    const ids = photos.filter(p => p.category_allow_downloads !== false && p.download_allowed !== false).map(p => p.id);
+    if (!ids.length) return;
+    // #858: hand off to the resolution picker when the gallery offers a choice.
+    if (downloadChoices && downloadChoices.length > 1 && onPickResolution) {
+      onPickResolution(ids);
+      return;
+    }
+    toast.info(t('gallery.downloadStarted', { photoCount: ids.length }));
+    try {
+      await galleryService.downloadSelectedPhotos(slug, ids);
+    } catch {
+      toast.error(t('gallery.downloadError'));
+    }
+  }, [photos, onDownloadEverything, slug, t, downloadChoices, onPickResolution]);
+
+  // #1160: a folder-only root has no photos to show here, but the folder tiles
+  // above prove the gallery isn't empty — render the shell (hero, logout,
+  // controls) without the contradictory message.
+  if (photos.length === 0 && !suppressEmptyState) {
+    return (
+      <div className="text-center py-12">
+        <p className="text-gray-500">{t('gallery.noPhotosFound')}</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="gallery-story-layout">
+      <StoryScrollToTop />
+
+      {/* Navigation Overlay */}
+      <nav className={`story-nav ${scrolled ? 'scrolled' : ''}`}>
+        <span className="story-nav-logo">
+          {eventName ? eventName.split(' ').map(w => w[0]).join('').slice(0, 3).toUpperCase() : 'GALLERY'}
+        </span>
+
+        <div className="story-nav-actions">
+          <div className="story-nav-search">
+            <Search size={14} className="text-gray-400" />
+            <input
+              type="text"
+              placeholder={t('gallery.searchMemories', 'Search memories...')}
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
+          </div>
+          {feedbackEnabled && (
+            <button className="story-nav-btn" title={t('gallery.favorites', 'Favorites')}>
+              <Heart size={20} />
+              {favorites.size > 0 && (
+                <span className="story-nav-favorites-count">
+                  {favorites.size > 9 ? '9+' : favorites.size}
+                </span>
+              )}
+            </button>
+          )}
+          {onLogout && (
+            <button
+              className="story-nav-btn"
+              onClick={onLogout}
+              title={t('common.logout', 'Logout')}
+            >
+              <LogOut size={20} />
+            </button>
+          )}
+        </div>
+      </nav>
+
+      {/* Hero */}
+      <StoryHero
+        title={eventName || t('gallery.photoGallery', 'Photo Gallery')}
+        date={eventDate}
+        stats={stats}
+        photo={heroPhoto}
+        slug={slug}
+        allowDownloads={allowDownloads}
+        useEnhancedProtection={useEnhancedProtection}
+      />
+
+      {/* Main Content - Scenes */}
+      <main className="pb-32 space-y-0">
+        {scenes.map((scene) => {
+          if (scene.photos.length === 0) return null;
+
+          return (
+            <StoryScene
+              key={scene.id}
+              title={scene.title}
+              subtitle={scene.subtitle}
+              fullWidth={scene.type === 'carousel'}
+            >
+              {scene.type === 'carousel' ? (
+                <StoryCarousel
+                  id={`gallery-${scene.id}`}
+                  allowLikes={feedbackEnabled && Boolean(feedbackOptions?.allowLikes)}
+                  photos={scene.photos}
+                  favorites={favorites}
+                  onToggleFavorite={handleToggleFavorite}
+                  onPhotoClick={handleOpenLightbox}
+                  isSelectionMode={isSelectionMode}
+                  selectedPhotos={selectedPhotos}
+                  onPhotoSelect={onPhotoSelect}
+                  slug={slug}
+                />
+              ) : (
+                <div id={`gallery-${scene.id}`} className="story-gallery-grid">
+                  {scene.photos.map((photo, index) => (
+                    <StoryPhotoCard
+                      key={photo.id}
+                      allowLikes={feedbackEnabled && Boolean(feedbackOptions?.allowLikes)}
+                      photo={photo}
+                      index={index}
+                      isFavorite={favorites.has(photo.id)}
+                      onToggleFavorite={handleToggleFavorite}
+                      onClick={() => handleOpenLightbox(photo)}
+                      isSelectionMode={isSelectionMode}
+                      isSelected={selectedPhotos.has(photo.id)}
+                      onToggleSelect={onPhotoSelect}
+                      slug={slug}
+                      // Mark first photo in each grid as featured
+                      featured={index === 0 && scene.photos.length > 4}
+                    />
+                  ))}
+                </div>
+              )}
+            </StoryScene>
+          );
+        })}
+      </main>
+
+      {/* Footer */}
+      <footer className="story-footer">
+        <h2 className="story-footer-title">{t('gallery.thankYou', 'Thank You')}</h2>
+        {/* Needs something to download: either the whole-gallery callback, or
+            photos in the current scope. On a folder-only root of a gallery with
+            a category download opt-out it has neither, and posting an empty id
+            list is a 400 (#1160). */}
+        {allowDownloads && (onDownloadEverything || photos.length > 0) && (
+          <button className="story-footer-btn" onClick={handleDownloadAll}>
+            {t('common.downloadAll', 'Download All Photos')}
+          </button>
+        )}
+      </footer>
+
+      {/* Lightbox. It owns the whole feedback surface on this theme — ratings,
+          comments, reactions and colour labels — the same way the Premium
+          layout routes feedback through its own lightbox instead of a
+          per-card affordance. */}
+      {lightboxIndex !== null && (
+        <PhotoLightbox
+          photos={photos}
+          initialIndex={lightboxIndex}
+          onClose={() => setLightboxIndex(null)}
+          slug={slug}
+          feedbackEnabled={feedbackEnabled}
+          allowDownloads={allowDownloads}
+          protectionLevel={protectionLevel}
+          useEnhancedProtection={useEnhancedProtection}
+          useCanvasRendering={useCanvasRendering}
+          onFeedbackChange={onFeedbackChange}
+          showOriginalFilename={showOriginalFilename}
+          downloadChoices={downloadChoices}
+          onPickResolution={onPickResolution}
+        />
+      )}
+    </div>
+  );
+};

@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title">
+  <title id="title">Picflow</title>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round" stroke-width="18">
+    <path d="M88 42H68C53.6 42 42 53.6 42 68v20" stroke="#14594f"/>
+    <path d="M168 42h20c14.4 0 26 11.6 26 26v20" stroke="#f57962"/>
+    <path d="M214 168v20c0 14.4-11.6 26-26 26h-20" stroke="#14594f"/>
+    <path d="M88 214H68c-14.4 0-26-11.6-26-26v-20" stroke="#f57962"/>
+    <circle cx="128" cy="128" r="54" stroke="#14594f"/>
+  </g>
+  <path fill="#14594f" fill-rule="evenodd" d="M128 91 156 107v32l-28 16-28-16v-32l28-16Zm0 18a19 19 0 1 0 0 38 19 19 0 0 0 0-38Z"/>
+  <path d="M128 109a19 19 0 0 1 17 10h-17l-8 14a19 19 0 0 1 8-24Z" fill="#f57962"/>
+</svg>

@@ -1,0 +1,847 @@
+import React, { useState, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
+import {
+  Save,
+  Server,
+  Cloud,
+  HardDrive,
+  Eye,
+  EyeOff,
+  Wifi,
+  Loader2,
+  Database,
+  Image,
+  FileArchive,
+  ShieldAlert
+} from 'lucide-react';
+import { toast } from 'react-toastify';
+import { Button, Card, Input } from '../common';
+import { api } from '../../config/api';
+import { backupErrorCode, backupErrorText } from '../../utils/backupErrors';
+
+interface BackupFormData {
+  backup_enabled: boolean;
+  backup_destination_type: 'local' | 'rsync' | 's3';
+  backup_destination_path: string;
+  backup_rsync_host: string;
+  backup_rsync_user: string;
+  backup_rsync_path: string;
+  backup_rsync_ssh_key: string;
+  backup_s3_endpoint: string;
+  backup_s3_bucket: string;
+  backup_s3_access_key: string;
+  backup_s3_secret_key: string;
+  backup_s3_region: string;
+  backup_s3_prefix: string;
+  backup_s3_use_object_storage: boolean;
+  backup_schedule: string;
+  backup_schedule_cron: string;
+  backup_retention_days: number;
+  backup_include_database: boolean;
+  backup_include_photos: boolean;
+  backup_include_archives: boolean;
+  backup_include_thumbnails: boolean;
+  backup_include_temp: boolean;
+  backup_compression: boolean;
+  backup_encryption: boolean;
+  backup_encryption_passphrase: string;
+}
+
+interface BackupConfigurationProps {
+  config?: Partial<BackupFormData> & { object_storage_target?: ObjectStorageTarget };
+  onSave: (data: Partial<BackupFormData>) => void;
+  isSaving: boolean;
+  /** Where backups go and whether they include the database: Super Admin only. */
+  canManageDestination?: boolean;
+  /**
+   * The origin of a private S3 endpoint the last save was refused for
+   * (S3_PRIVATE_ENDPOINT), so the form can ask a Super Admin to approve it.
+   */
+  privateEndpointOrigin?: string | null;
+}
+
+interface ObjectStorageTarget {
+  configured: boolean;
+  endpoint: string;
+  region: string;
+  bucket: string;
+  prefix: string;
+}
+
+const APPROVAL_KEY = 'backup_s3_private_endpoint_approval';
+const SECRET_MASK = '••••••••';
+
+interface TestConnectionResult {
+  success: boolean;
+  message?: string;
+  code?: string;
+  origin?: string;
+}
+
+const isCronExpression = (value: unknown): value is string =>
+  typeof value === 'string' && /^\s*\S+(\s+\S+){4}\s*$/.test(value);
+// The labels the backend runs by name (backupService NAMED_SCHEDULES). A
+// named label wins over any cron there, so a save keeps it as it is.
+const NAMED_SCHEDULES = ['hourly', 'daily', 'weekly', 'monthly'];
+
+/**
+ * The schedule fields as the form should show them: the schedule the backend
+ * actually runs, in resolveScheduleCron's order — a named label, then a
+ * five-field backup_schedule_cron, then a cron held in backup_schedule
+ * itself, else daily at 02:00. Anything else the select cannot show: it
+ * displayed "Every hour", and a save sent the form's own defaults, which the
+ * backend then preferred, moving the backup without anyone choosing it.
+ */
+function scheduleFromConfig(config: Partial<BackupFormData>): Partial<BackupFormData> {
+  const hasLabel = typeof config.backup_schedule === 'string';
+  const hasCron = typeof config.backup_schedule_cron === 'string';
+  if (!hasLabel && !hasCron) return {};
+  const label = hasLabel ? config.backup_schedule!.trim() : '';
+  const name = label.toLowerCase();
+  if (NAMED_SCHEDULES.includes(name)) return { backup_schedule: name };
+  if (isCronExpression(config.backup_schedule_cron)) {
+    return { backup_schedule: 'custom', backup_schedule_cron: config.backup_schedule_cron.trim() };
+  }
+  if (isCronExpression(label)) return { backup_schedule: 'custom', backup_schedule_cron: label };
+  return { backup_schedule: 'daily' };
+}
+
+// Mirrors the settings the backend limits to Super Admins.
+const isRestrictedBackupSetting = (key: string) =>
+  /^backup_(destination_|s3_|rsync_)/.test(key)
+  || key === 'backup_include_database'
+  || key === 'backup_database_inline_dump';
+
+// The rsync SSH key setting is a key file path. GET /config masks anything
+// else, i.e. a private key pasted before the field asked for a path.
+const SSH_KEY_PATH = /^\/[a-zA-Z0-9._/@:-]+$/;
+const isMaskedSshKey = (value: string) => value === '••••••••';
+
+export const BackupConfiguration: React.FC<BackupConfigurationProps> = ({
+  config,
+  onSave,
+  isSaving,
+  canManageDestination = true,
+  privateEndpointOrigin = null,
+}) => {
+  const { t } = useTranslation();
+
+  const destinationTypes = [
+    {
+      id: 'local' as const,
+      name: t('backup.configuration.destinationTypes.local.name'),
+      icon: HardDrive,
+      description: t('backup.configuration.destinationTypes.local.description'),
+      fields: ['backup_destination_path']
+    },
+    {
+      id: 'rsync' as const,
+      name: t('backup.configuration.destinationTypes.rsync.name'),
+      icon: Server,
+      description: t('backup.configuration.destinationTypes.rsync.description'),
+      fields: ['backup_rsync_host', 'backup_rsync_user', 'backup_rsync_path', 'backup_rsync_ssh_key']
+    },
+    {
+      id: 's3' as const,
+      name: t('backup.configuration.destinationTypes.s3.name'),
+      icon: Cloud,
+      description: t('backup.configuration.destinationTypes.s3.description'),
+      fields: ['backup_s3_endpoint', 'backup_s3_bucket', 'backup_s3_access_key', 'backup_s3_secret_key', 'backup_s3_region']
+    }
+  ];
+
+  const scheduleOptions = [
+    { value: 'hourly', label: t('backup.configuration.schedule.options.hourly') },
+    { value: 'daily', label: t('backup.configuration.schedule.options.daily') },
+    { value: 'weekly', label: t('backup.configuration.schedule.options.weekly') },
+    { value: 'monthly', label: t('backup.configuration.schedule.options.monthly') },
+    { value: 'custom', label: t('backup.configuration.schedule.options.custom') }
+  ];
+
+  const [formData, setFormData] = useState<BackupFormData>({
+    backup_enabled: false,
+    backup_destination_type: 'local',
+    backup_destination_path: '',
+    backup_rsync_host: '',
+    backup_rsync_user: '',
+    backup_rsync_path: '',
+    backup_rsync_ssh_key: '',
+    backup_s3_endpoint: '',
+    backup_s3_bucket: '',
+    backup_s3_access_key: '',
+    backup_s3_secret_key: '',
+    backup_s3_region: '',
+    backup_s3_prefix: 'backups',
+    backup_s3_use_object_storage: false,
+    backup_schedule: 'daily',
+    backup_schedule_cron: '0 3 * * *',
+    backup_retention_days: 30,
+    backup_include_database: true,
+    backup_include_photos: true,
+    backup_include_archives: true,
+    // Matches the backend never-saved fallback (include everything) so the
+    // form does not show "off" while thumbnails are in fact being backed up.
+    backup_include_thumbnails: true,
+    backup_include_temp: false,
+    backup_compression: true,
+    backup_encryption: false,
+    backup_encryption_passphrase: ''
+  });
+
+  const [showSecrets, setShowSecrets] = useState({
+    s3_secret_key: false
+  });
+
+  const [testingConnection, setTestingConnection] = useState(false);
+  // A private S3 endpoint the backend asked to have approved, and whether the
+  // Super Admin ticked the approval. Both reset when the endpoint changes.
+  const [pendingPrivateOrigin, setPendingPrivateOrigin] = useState<string | null>(null);
+  const [approvePrivate, setApprovePrivate] = useState(false);
+
+  useEffect(() => {
+    if (privateEndpointOrigin) {
+      setPendingPrivateOrigin(privateEndpointOrigin);
+      setApprovePrivate(false);
+    }
+  }, [privateEndpointOrigin]);
+
+  const storedApproval = typeof (config as Record<string, unknown> | undefined)?.[APPROVAL_KEY] === 'string'
+    ? (config as Record<string, string>)[APPROVAL_KEY]
+    : '';
+  const approvedOrigin = approvePrivate && pendingPrivateOrigin ? pendingPrivateOrigin : null;
+  const objectStorageTarget = config?.object_storage_target;
+
+  useEffect(() => {
+    if (config) {
+      setFormData(prev => ({
+        ...prev,
+        ...config,
+        ...scheduleFromConfig(config)
+      }));
+    }
+  }, [config]);
+
+  const handleChange = <K extends keyof BackupFormData>(field: K, value: BackupFormData[K]) => {
+    if (field === 'backup_s3_endpoint') {
+      setPendingPrivateOrigin(null);
+      setApprovePrivate(false);
+    }
+    setFormData(prev => ({
+      ...prev,
+      [field]: value
+    }));
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+
+    const destinationType = destinationTypes.find(dt => dt.id === formData.backup_destination_type);
+    const missingFields: string[] = [];
+
+    if (canManageDestination && formData.backup_enabled && destinationType
+      && !(formData.backup_destination_type === 's3' && formData.backup_s3_use_object_storage)) {
+      destinationType.fields.forEach(field => {
+        if (!formData[field as keyof BackupFormData] && !field.includes('optional')) {
+          missingFields.push(field);
+        }
+      });
+    }
+
+    if (canManageDestination && formData.backup_enabled && formData.backup_destination_type === 's3'
+      && formData.backup_s3_use_object_storage && !objectStorageTarget?.configured) {
+      toast.error(t('backup.configuration.objectStorageNotConfigured', '请先在“设置 > 对象存储”中配置云端存储目标。'));
+      return;
+    }
+
+    if (missingFields.length > 0) {
+      toast.error(t('backup.configuration.messages.requiredFields'));
+      return;
+    }
+
+    // The rsync backup hands this to `ssh -i`: it is the path of a key file,
+    // never the key itself. The backend refuses anything else too.
+    const sshKey = formData.backup_rsync_ssh_key.trim();
+    if (canManageDestination && formData.backup_destination_type === 'rsync'
+      && sshKey && !isMaskedSshKey(sshKey) && !SSH_KEY_PATH.test(sshKey)) {
+      toast.error(t('backup.configuration.messages.rsyncSshKeyNotPath'));
+      return;
+    }
+
+    // A custom schedule needs a real 5-field cron — the backend silently
+    // falls back to daily 02:00 otherwise. For named schedules the stored
+    // cron is kept (the backend prefers the label), so switching back to
+    // Custom keeps the previously saved expression.
+    if (formData.backup_schedule === 'custom' && !isCronExpression(formData.backup_schedule_cron)) {
+      toast.error(t('backup.configuration.messages.invalidCron', 'Please enter a valid cron expression (5 fields)'));
+      return;
+    }
+
+    // The stored approval came in with the config; it is only ever sent back
+    // as a fresh, explicit approval of the endpoint in the form.
+    const { [APPROVAL_KEY]: _storedApproval, object_storage_target: _target, ...fields } = formData as BackupFormData & Record<string, unknown>;
+    // Other roles leave the destination alone, so it is not sent at all.
+    onSave(canManageDestination
+      ? { ...fields, ...(approvedOrigin && { [APPROVAL_KEY]: approvedOrigin }) }
+      : Object.fromEntries(Object.entries(fields).filter(([key]) => !isRestrictedBackupSetting(key))));
+  };
+
+  const connectionTestPayload = () => {
+    switch (formData.backup_destination_type) {
+    case 'local':
+      return { destination_type: 'local', path: formData.backup_destination_path };
+    case 'rsync':
+      // ssh_key is a key FILE path. The mask stands for the saved value, so
+      // it is left out and the backend uses what is saved; an emptied field
+      // is sent as '' and tested without a key.
+      return {
+        destination_type: 'rsync',
+        host: formData.backup_rsync_host,
+        user: formData.backup_rsync_user,
+        path: formData.backup_rsync_path,
+        ...(formData.backup_rsync_ssh_key !== SECRET_MASK
+          && { ssh_key: (formData.backup_rsync_ssh_key || '').trim() }),
+      };
+    default:
+      if (formData.backup_s3_use_object_storage) return { destination_type: 's3', use_object_storage: true };
+      return {
+        destination_type: 's3',
+        endpoint: formData.backup_s3_endpoint,
+        bucket: formData.backup_s3_bucket,
+        region: formData.backup_s3_region,
+        access_key: formData.backup_s3_access_key,
+        secret_key: formData.backup_s3_secret_key || SECRET_MASK,
+        ...(approvedOrigin && { private_endpoint_approval: approvedOrigin }),
+      };
+    }
+  };
+
+  const testConnection = async () => {
+    setTestingConnection(true);
+    try {
+      const { data } = await api.post<TestConnectionResult>('/admin/backup/test-connection', connectionTestPayload());
+      if (data.success) {
+        toast.success(t('backup.configuration.messages.connectionSuccess'));
+        return;
+      }
+      const code = backupErrorCode(data);
+      if (code === 'S3_PRIVATE_ENDPOINT' && data.origin) {
+        setPendingPrivateOrigin(data.origin);
+        toast.warning(backupErrorText(code, t));
+        return;
+      }
+      toast.error(`${t('backup.configuration.messages.connectionFailed')}: ${backupErrorText(code, t) ?? data.message ?? ''}`);
+    } catch (error) {
+      const server = (error as { response?: { data?: { error?: string } } }).response?.data?.error;
+      toast.error(`${t('backup.configuration.messages.connectionFailed')}: ${backupErrorText(backupErrorCode(error), t) ?? server ?? (error as Error).message}`);
+    } finally {
+      setTestingConnection(false);
+    }
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-6">
+      {/* Enable/Disable Toggle */}
+      <Card className="p-6">
+        <div className="flex items-center justify-between">
+          <div className="flex-1">
+            <h3 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">{t('backup.configuration.enableBackup')}</h3>
+            <p className="mt-1 text-sm text-neutral-600 dark:text-neutral-400">
+              {t('backup.configuration.enableBackupHelp')}
+            </p>
+          </div>
+          <label className="relative inline-flex items-center cursor-pointer">
+            <input
+              type="checkbox"
+              checked={formData.backup_enabled}
+              onChange={(e) => handleChange('backup_enabled', e.target.checked)}
+              className="sr-only peer"
+            />
+            <div className="w-11 h-6 bg-neutral-200 dark:bg-neutral-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-primary-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-neutral-300 dark:after:border-neutral-500 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary-600"></div>
+          </label>
+        </div>
+      </Card>
+
+      {/* Destination Configuration */}
+      <Card className="p-6">
+        <h3 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100 mb-4">{t('backup.configuration.destinationType')}</h3>
+        {!canManageDestination && (
+          <p className="mb-4 text-sm text-amber-700 dark:text-amber-300">
+            {t('backup.configuration.destinationSuperAdminOnly', 'Only a Super Admin can change where backups are stored or whether they include the database.')}
+          </p>
+        )}
+
+        <fieldset disabled={!canManageDestination} className="min-w-0 disabled:opacity-60">
+        {/* Destination Type Selection */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+          {destinationTypes.map((type) => {
+            const Icon = type.icon;
+            return (
+              <button
+                key={type.id}
+                type="button"
+                onClick={() => handleChange('backup_destination_type', type.id)}
+                className={`p-4 rounded-lg border-2 transition-all ${
+                  formData.backup_destination_type === type.id
+                    ? 'border-primary-600 bg-primary-50 dark:bg-primary-900/20'
+                    : 'border-neutral-200 dark:border-neutral-600 hover:border-neutral-300 dark:hover:border-neutral-500'
+                }`}
+              >
+                <Icon className={`h-8 w-8 mb-2 mx-auto ${
+                  formData.backup_destination_type === type.id
+                    ? 'text-primary-600 dark:text-primary-400'
+                    : 'text-neutral-400'
+                }`} />
+                <h4 className="font-medium text-neutral-900 dark:text-neutral-100">{type.name}</h4>
+                <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1">{type.description}</p>
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Destination-specific fields */}
+        <div className="space-y-4">
+          {formData.backup_destination_type === 'local' && (
+            <>
+              <div>
+                <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">
+                  {t('backup.configuration.fields.destinationPath')}
+                </label>
+                <Input
+                  type="text"
+                  value={formData.backup_destination_path}
+                  onChange={(e) => handleChange('backup_destination_path', e.target.value)}
+                  placeholder={t('backup.configuration.fields.destinationPathPlaceholder')}
+                  required
+                />
+                <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">
+                  {t('backup.configuration.fields.destinationPathHelp')}
+                </p>
+              </div>
+            </>
+          )}
+
+          {formData.backup_destination_type === 'rsync' && (
+            <>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">
+                    {t('backup.configuration.fields.rsyncHost')}
+                  </label>
+                  <Input
+                    type="text"
+                    value={formData.backup_rsync_host}
+                    onChange={(e) => handleChange('backup_rsync_host', e.target.value)}
+                    placeholder={t('backup.configuration.fields.rsyncHostPlaceholder')}
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">
+                    {t('backup.configuration.fields.rsyncUser')}
+                  </label>
+                  <Input
+                    type="text"
+                    value={formData.backup_rsync_user}
+                    onChange={(e) => handleChange('backup_rsync_user', e.target.value)}
+                    placeholder={t('backup.configuration.fields.rsyncUserPlaceholder')}
+                    required
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">
+                  {t('backup.configuration.fields.rsyncPath')}
+                </label>
+                <Input
+                  type="text"
+                  value={formData.backup_rsync_path}
+                  onChange={(e) => handleChange('backup_rsync_path', e.target.value)}
+                  placeholder={t('backup.configuration.fields.rsyncPathPlaceholder')}
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">
+                  {t('backup.configuration.fields.rsyncSshKey')}
+                </label>
+                <Input
+                  type="text"
+                  value={formData.backup_rsync_ssh_key}
+                  onChange={(e) => handleChange('backup_rsync_ssh_key', e.target.value)}
+                  placeholder={t('backup.configuration.fields.rsyncSshKeyPlaceholder')}
+                  className="font-mono text-sm"
+                  spellCheck={false}
+                  autoComplete="off"
+                />
+                {isMaskedSshKey(formData.backup_rsync_ssh_key) && (
+                  <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">
+                    {t('backup.configuration.fields.rsyncSshKeyStoredNotPath')}
+                  </p>
+                )}
+                <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">
+                  {t('backup.configuration.fields.rsyncSshKeyHelp')}
+                </p>
+              </div>
+            </>
+          )}
+
+          {formData.backup_destination_type === 's3' && (
+            <>
+              <label className="flex items-start gap-3 rounded-lg border border-neutral-200 p-4 dark:border-neutral-700">
+                <input
+                  type="checkbox"
+                  checked={formData.backup_s3_use_object_storage}
+                  onChange={(e) => handleChange('backup_s3_use_object_storage', e.target.checked)}
+                  className="mt-1 h-4 w-4 accent-primary-600"
+                />
+                <span>
+                  <span className="block text-sm font-medium text-neutral-900 dark:text-neutral-100">
+                    {t('backup.configuration.useObjectStorage', '复用已配置的对象存储')}
+                  </span>
+                  <span className="mt-1 block text-xs text-neutral-600 dark:text-neutral-400">
+                    {t('backup.configuration.useObjectStorageHelp', '直接使用“设置 > 对象存储”的 S3/COS 目标与密钥；备份写入独立前缀，不会与项目交付照片混放。')}
+                  </span>
+                </span>
+              </label>
+
+              {formData.backup_s3_use_object_storage ? (
+                <div className="space-y-4 rounded-lg bg-neutral-50 p-4 dark:bg-neutral-900/60">
+                  {objectStorageTarget?.configured ? (
+                    <div className="space-y-1 text-sm text-neutral-700 dark:text-neutral-300">
+                      <p>{t('backup.configuration.objectStorageSelected', '当前备份目标：{{bucket}}', { bucket: objectStorageTarget.bucket })}</p>
+                      <p className="break-all text-xs text-neutral-500 dark:text-neutral-400">
+                        {[objectStorageTarget.endpoint || 'AWS S3', objectStorageTarget.region, objectStorageTarget.prefix].filter(Boolean).join(' · ')}
+                      </p>
+                    </div>
+                  ) : (
+                    <p role="alert" className="text-sm text-amber-800 dark:text-amber-200">
+                      {t('backup.configuration.objectStorageNotConfigured', '请先在“设置 > 对象存储”中配置云端存储目标。')}
+                    </p>
+                  )}
+                  <div>
+                    <label className="mb-1 block text-sm font-medium text-neutral-700 dark:text-neutral-300">
+                      {t('backup.configuration.fields.s3BackupPrefix', '备份专用前缀')}
+                    </label>
+                    <Input
+                      type="text"
+                      value={formData.backup_s3_prefix}
+                      onChange={(e) => handleChange('backup_s3_prefix', e.target.value)}
+                      placeholder="backups"
+                      required
+                    />
+                    <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">
+                      {t('backup.configuration.fields.s3BackupPrefixHelp', '写入路径为对象存储前缀/此路径；默认 backups。')}
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <>
+              <div>
+                <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">
+                  {t('backup.configuration.fields.s3Endpoint')}
+                </label>
+                <Input
+                  type="text"
+                  value={formData.backup_s3_endpoint}
+                  onChange={(e) => handleChange('backup_s3_endpoint', e.target.value)}
+                  placeholder="https://s3.amazonaws.com"
+                  required
+                />
+                <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">
+                  {t('backup.configuration.fields.s3EndpointHelp')}
+                </p>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">
+                    {t('backup.configuration.fields.s3Bucket')}
+                  </label>
+                  <Input
+                    type="text"
+                    value={formData.backup_s3_bucket}
+                    onChange={(e) => handleChange('backup_s3_bucket', e.target.value)}
+                    placeholder="my-backup-bucket"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">
+                    {t('backup.configuration.fields.s3Region')}
+                  </label>
+                  <Input
+                    type="text"
+                    value={formData.backup_s3_region}
+                    onChange={(e) => handleChange('backup_s3_region', e.target.value)}
+                    placeholder="us-east-1"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-medium text-neutral-700 dark:text-neutral-300">
+                  {t('backup.configuration.fields.s3BackupPrefix', '备份前缀')}
+                </label>
+                <Input
+                  type="text"
+                  value={formData.backup_s3_prefix}
+                  onChange={(e) => handleChange('backup_s3_prefix', e.target.value)}
+                  placeholder="backups"
+                  required
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">
+                    {t('backup.configuration.fields.s3AccessKey')}
+                  </label>
+                  <Input
+                    type="text"
+                    value={formData.backup_s3_access_key}
+                    onChange={(e) => handleChange('backup_s3_access_key', e.target.value)}
+                    placeholder="AKIAIOSFODNN7EXAMPLE"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">
+                    {t('backup.configuration.fields.s3SecretKey')}
+                  </label>
+                  <div className="relative">
+                    <Input
+                      type={showSecrets.s3_secret_key ? 'text' : 'password'}
+                      value={formData.backup_s3_secret_key}
+                      onChange={(e) => handleChange('backup_s3_secret_key', e.target.value)}
+                      placeholder="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+                      required
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowSecrets(prev => ({ ...prev, s3_secret_key: !prev.s3_secret_key }))}
+                      className="absolute top-1/2 -translate-y-1/2 right-2 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300"
+                    >
+                      {showSecrets.s3_secret_key ? <EyeOff size={20} /> : <Eye size={20} />}
+                    </button>
+                  </div>
+                </div>
+              </div>
+              {pendingPrivateOrigin && canManageDestination && (
+                <div role="alert" className="rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/30 p-4">
+                  <div className="flex">
+                    <ShieldAlert className="h-5 w-5 flex-shrink-0 text-amber-500 mt-0.5" />
+                    <div className="ml-3 space-y-2">
+                      <h4 className="text-sm font-medium text-amber-800 dark:text-amber-200">
+                        {t('backup.configuration.privateEndpoint.title')}
+                      </h4>
+                      <p className="text-sm text-amber-700 dark:text-amber-300">
+                        {t('backup.configuration.privateEndpoint.body')}
+                      </p>
+                      <p className="text-sm">
+                        <code className="rounded bg-amber-100 dark:bg-amber-900/60 px-1.5 py-0.5 text-amber-900 dark:text-amber-100 break-all">
+                          {pendingPrivateOrigin}
+                        </code>
+                      </p>
+                      <label className="flex items-start gap-2 text-sm text-amber-800 dark:text-amber-200 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={approvePrivate}
+                          onChange={(e) => setApprovePrivate(e.target.checked)}
+                          className="mt-0.5 rounded border-amber-400 text-primary-600 focus:ring-primary-500"
+                        />
+                        <span>{t('backup.configuration.privateEndpoint.approve')}</span>
+                      </label>
+                      <p className="text-xs text-amber-700 dark:text-amber-300">
+                        {t('backup.configuration.privateEndpoint.hint')}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+              {!pendingPrivateOrigin && storedApproval && (
+                <p className="flex items-center gap-2 text-xs text-neutral-600 dark:text-neutral-400">
+                  <ShieldAlert className="h-4 w-4 text-amber-500" />
+                  <span>{t('backup.configuration.privateEndpoint.approved', { origin: storedApproval })}</span>
+                </p>
+              )}
+                </>
+              )}
+            </>
+          )}
+
+          {/* Test Connection Button */}
+          {canManageDestination && formData.backup_destination_type && (
+            <div className="pt-2">
+              <Button
+                type="button"
+                onClick={testConnection}
+                disabled={testingConnection}
+                variant="secondary"
+                size="sm"
+              >
+                {testingConnection ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    {t('backup.configuration.testingConnection')}
+                  </>
+                ) : (
+                  <>
+                    <Wifi className="mr-2 h-4 w-4" />
+                    {t('backup.actions.testConnection')}
+                  </>
+                )}
+              </Button>
+            </div>
+          )}
+        </div>
+        </fieldset>
+      </Card>
+
+      {/* Schedule Configuration */}
+      <Card className="p-6">
+        <h3 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100 mb-4">{t('backup.configuration.schedule.title')}</h3>
+
+        <div className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">
+              {t('backup.configuration.schedule.scheduleType')}
+            </label>
+            <select
+              value={formData.backup_schedule}
+              onChange={(e) => handleChange('backup_schedule', e.target.value)}
+              className="w-full px-3 py-2 border border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 rounded-md focus:outline-none focus:ring-primary-500 focus:border-primary-500"
+            >
+              {scheduleOptions.map(option => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {formData.backup_schedule === 'custom' && (
+            <div>
+              <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">
+                {t('backup.configuration.schedule.customCron')}
+              </label>
+              <Input
+                type="text"
+                value={formData.backup_schedule_cron}
+                onChange={(e) => handleChange('backup_schedule_cron', e.target.value)}
+                placeholder="0 3 * * *"
+              />
+              <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">
+                {t('backup.configuration.schedule.customCronHelp')}
+              </p>
+            </div>
+          )}
+
+          <div>
+            <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">
+              {t('backup.configuration.schedule.retention')}
+            </label>
+            <Input
+              type="number"
+              value={formData.backup_retention_days}
+              onChange={(e) => handleChange('backup_retention_days', parseInt(e.target.value))}
+              min="1"
+              max="365"
+            />
+            <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">
+              {t('backup.configuration.schedule.retentionHelp')}
+            </p>
+          </div>
+        </div>
+      </Card>
+
+      {/* Backup Content Selection */}
+      <Card className="p-6">
+        <h3 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100 mb-4">{t('backup.configuration.whatToBackup.title')}</h3>
+
+        <div className="space-y-3">
+          <label className="flex items-center">
+            <input
+              type="checkbox"
+              checked={formData.backup_include_database}
+              onChange={(e) => handleChange('backup_include_database', e.target.checked)}
+              disabled={!canManageDestination}
+              className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-neutral-300 dark:border-neutral-600 rounded bg-white dark:bg-neutral-700"
+            />
+            <div className="ml-3">
+              <div className="flex items-center space-x-2">
+                <Database className="h-4 w-4 text-neutral-400" />
+                <span className="text-sm font-medium text-neutral-700 dark:text-neutral-300">{t('backup.configuration.whatToBackup.database')}</span>
+              </div>
+              <p className="text-xs text-neutral-500 dark:text-neutral-400">{t('backup.configuration.whatToBackup.databaseHelp')}</p>
+            </div>
+          </label>
+
+          <label className="flex items-center">
+            <input
+              type="checkbox"
+              checked={formData.backup_include_photos}
+              onChange={(e) => handleChange('backup_include_photos', e.target.checked)}
+              className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-neutral-300 dark:border-neutral-600 rounded bg-white dark:bg-neutral-700"
+            />
+            <div className="ml-3">
+              <div className="flex items-center space-x-2">
+                <Image className="h-4 w-4 text-neutral-400" />
+                <span className="text-sm font-medium text-neutral-700 dark:text-neutral-300">{t('backup.configuration.whatToBackup.photos')}</span>
+              </div>
+              <p className="text-xs text-neutral-500 dark:text-neutral-400">{t('backup.configuration.whatToBackup.photosHelp')}</p>
+            </div>
+          </label>
+
+          <label className="flex items-center">
+            <input
+              type="checkbox"
+              checked={formData.backup_include_archives}
+              onChange={(e) => handleChange('backup_include_archives', e.target.checked)}
+              className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-neutral-300 dark:border-neutral-600 rounded bg-white dark:bg-neutral-700"
+            />
+            <div className="ml-3">
+              <div className="flex items-center space-x-2">
+                <FileArchive className="h-4 w-4 text-neutral-400" />
+                <span className="text-sm font-medium text-neutral-700 dark:text-neutral-300">{t('backup.configuration.whatToBackup.archives')}</span>
+              </div>
+              <p className="text-xs text-neutral-500 dark:text-neutral-400">{t('backup.configuration.whatToBackup.archivesHelp')}</p>
+            </div>
+          </label>
+
+          <label className="flex items-center">
+            <input
+              type="checkbox"
+              checked={formData.backup_include_thumbnails}
+              onChange={(e) => handleChange('backup_include_thumbnails', e.target.checked)}
+              className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-neutral-300 dark:border-neutral-600 rounded bg-white dark:bg-neutral-700"
+            />
+            <div className="ml-3">
+              <div className="flex items-center space-x-2">
+                <Image className="h-4 w-4 text-neutral-400" />
+                <span className="text-sm font-medium text-neutral-700 dark:text-neutral-300">{t('backup.configuration.whatToBackup.thumbnails')}</span>
+              </div>
+              <p className="text-xs text-neutral-500 dark:text-neutral-400">{t('backup.configuration.whatToBackup.thumbnailsHelp')}</p>
+            </div>
+          </label>
+        </div>
+      </Card>
+
+      {/* Save Button */}
+      <div className="flex justify-end">
+        <Button
+          type="submit"
+          disabled={isSaving}
+        >
+          {isSaving ? (
+            <>
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              {t('backup.configuration.savingSettings')}
+            </>
+          ) : (
+            <>
+              <Save className="mr-2 h-4 w-4" />
+              {t('backup.configuration.saveSettings')}
+            </>
+          )}
+        </Button>
+      </div>
+    </form>
+  );
+};

@@ -1,0 +1,1561 @@
+import { DownloadQueue } from './DownloadQueue';
+import { useGalleryFiltering, resolveMediaType } from './hooks/useGalleryFiltering';
+import { useGalleryUpload } from './hooks/useGalleryUpload';
+import { useGallerySelection } from './hooks/useGallerySelection';
+import { UploadProcessingNotice } from './UploadProcessingNotice';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import { differenceInDays, parseISO } from 'date-fns';
+import { useQuery } from '@tanstack/react-query';
+import { useTranslation } from 'react-i18next';
+import { toast as toastify } from 'react-toastify';
+
+import { Button } from '../common';
+import { GallerySkeleton } from './GallerySkeleton';
+import { PasswordChangeRequiredNotice } from './PasswordChangeRequiredNotice';
+import { isAdminSessionExpired, isPasswordChangeRequired } from '../../utils/passwordChangeRequired';
+import { useGalleryAuth, useTheme } from '../../contexts';
+import { useGalleryPhotos, useDownloadAllPhotos } from '../../hooks/useGallery';
+import { useGalleryFeedbackSettings } from '../../hooks/useGalleryFeedbackSettings';
+import { PhotoGridWithLayouts } from './PhotoGridWithLayouts';
+import { GalleryBatchSelectionToolbar } from './GalleryBatchSelectionToolbar';
+import { GalleryFolderTiles } from './GalleryFolderTiles';
+import {
+  findFolderByKey,
+  filterCategories,
+  folderTiles,
+  photosInScope,
+  SELECTED_DOWNLOAD_LIMIT,
+  readFolderParam,
+  writeFolderParam,
+} from './folders';
+import { DownloadResolutionModal } from './DownloadResolutionModal';
+import { ExpirationBanner } from './ExpirationBanner';
+import { CountdownTimer } from './CountdownTimer';
+import { GalleryLayout } from './GalleryLayout';
+import { GallerySidebar } from './GallerySidebar';
+import { PhotoFilterBar } from './PhotoFilterBar';
+import { GuestNamePromptModal } from './GuestNamePromptModal';
+import { GuestIdentityProvider } from '../../contexts/GuestIdentityContext';
+import type { FilterType, FeedbackFilterType } from './GalleryFilter';
+import { useDevToolsProtection } from '../../hooks/useDevToolsProtection';
+import { Upload, Menu, Eye, EyeOff, Shield, Download, ChevronLeft } from 'lucide-react';
+import { galleryService, type RetouchWorkflow } from '../../services/gallery.service';
+import { feedbackService, type ColorLabel } from '../../services/feedback.service';
+import { useWatermarkSettings } from '../../hooks/useWatermarkSettings';
+import { useGalleryCustomCss } from '../../hooks/useGalleryCustomCss';
+import { usePublicSettings } from '../../hooks/usePublicSettings';
+import type { Photo } from '../../types';
+import { GALLERY_THEME_PRESETS } from '../../types/theme.types';
+import { useQueryClient } from '@tanstack/react-query';
+import { getDownloadableSelectedPhotoIds, getPhotoDownloadFilenames } from './downloadSelection';
+import { BatchFeedbackControls } from './BatchFeedbackControls';
+import { categoryLabel } from '../../utils/categoryLabel';
+import { versionedRetouchUrl } from '../../utils/versionedRetouchUrl';
+import { photoDisplayFilename } from '../../utils/photoFilename';
+import { shouldShowGalleryLogoutControl } from '../../utils/gallerySessionControls';
+import { galleryRefreshInterval } from '../../utils/galleryRefreshInterval';
+
+const UserPhotoUpload = React.lazy(() => import('./UserPhotoUpload').then((module) => ({ default: module.UserPhotoUpload })));
+
+interface GalleryViewProps {
+  slug: string;
+  event: {
+    id: number;
+    event_name: string;
+    event_date: string | null;
+    color_theme?: string;
+    expires_at: string | null;
+    allow_user_uploads?: boolean;
+    upload_category_id?: number | null;
+    hero_photo_id?: number | null;
+    allow_downloads?: boolean;
+    // Banner overrides come from /gallery/:slug/info (the /photos response
+    // does NOT carry them) and are spread straight through to GalleryLayout.
+    promo_mode?: 'inherit' | 'custom' | 'off';
+    promo_markdown?: string | null;
+    info_mode?: 'inherit' | 'custom' | 'off';
+    info_markdown?: string | null;
+  };
+  /**
+   * Whether this gallery is password-protected (#1149).
+   *
+   * Drives the Logout button. Logging out of a gallery that asks for nothing
+   * is meaningless — there is no credential to drop and nothing to return to
+   * — and it used to strand the visitor: GalleryPage's auto-login is a
+   * one-shot latch, so clearing the session left the page rendering its
+   * skeleton until a manual reload.
+   *
+   * A client (PIN) session still gets the button on a public gallery: that
+   * credential provides the only way back to the guest view.
+   */
+  requiresPassword?: boolean;
+  /** Admin previews use the workbench session, never a customer logout action. */
+  adminPreview?: boolean;
+}
+
+// Convert default_photo_sort DB value to internal sortBy state
+const parseDefaultPhotoSort = (defaultSort?: string): { sortBy: 'date' | 'name' | 'size' | 'rating' | 'capture_date'; sortDesc: boolean } => {
+  switch (defaultSort) {
+    case 'upload_date_asc':
+      return { sortBy: 'date', sortDesc: false };
+    case 'capture_date_desc':
+      return { sortBy: 'capture_date', sortDesc: true };
+    case 'capture_date_asc':
+      return { sortBy: 'capture_date', sortDesc: false };
+    case 'filename_asc':
+      return { sortBy: 'name', sortDesc: false };
+    case 'filename_desc':
+      return { sortBy: 'name', sortDesc: true };
+    case 'upload_date_desc':
+    default:
+      return { sortBy: 'date', sortDesc: true };
+  }
+};
+
+export const GalleryView: React.FC<GalleryViewProps> = ({ slug, event, requiresPassword = true, adminPreview = false }) => {
+  const { t } = useTranslation();
+  const { logout, isClient } = useGalleryAuth();
+  const { setTheme, theme } = useTheme();
+  const queryClient = useQueryClient();
+  const [selectedCategoryId, setSelectedCategoryId] = useState<number | string | null>(null);
+  // Open folder (#1160), mirrored to `?folder=<slug>` so it is linkable and the
+  // browser back button walks out of it. Seeded from the URL on first render.
+  const [openFolderSlug, setOpenFolderSlug] = useState<string | null>(() => readFolderParam());
+  // Download size picker (#858). `showResolutionPicker` covers "download all";
+  // `resolutionPickerIds` covers a selection (sidebar / full-page layouts).
+  const [showResolutionPicker, setShowResolutionPicker] = useState(false);
+  const [resolutionPickerIds, setResolutionPickerIds] = useState<number[] | null>(null);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [workflowFilter, setWorkflowFilter] = useState<'all' | 'proof' | 'selected' | 'editing' | 'delivered' | 'requests' | 'cancelled'>('all');
+  const [sortBy, setSortBy] = useState<'date' | 'name' | 'size' | 'rating' | 'capture_date'>('date');
+  const [sortDesc, setSortDesc] = useState(true);
+  const [defaultSortApplied, setDefaultSortApplied] = useState(false);
+  const [brandingSettings, setBrandingSettings] = useState<any>(null);
+  const [showUploadModal, setShowUploadModal] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
+  const { watermarkEnabled } = useWatermarkSettings();
+
+  // Load and inject custom CSS for this gallery
+  useGalleryCustomCss(slug);
+
+  const [protectionLevel, setProtectionLevel] = useState<'basic' | 'standard' | 'enhanced' | 'maximum'>('standard');
+  // Multi-select feedback filters (#889): OR-combined; empty = "All".
+  // Clicking a filter toggles it, clicking "All" clears the set.
+  const [activeFilters, setActiveFilters] = useState<FeedbackFilterType[]>([]);
+  // Colour-label filters (#1044) live in their own slice rather than as five
+  // more members of FeedbackFilterType: every exhaustive
+  // Record<FeedbackFilterType, …> in this file and the chip components would
+  // otherwise have to grow to ten keys.
+  const [activeColorFilters, setActiveColorFilters] = useState<ColorLabel[]>([]);
+
+  const handleFilterChange = (filter: FilterType) => {
+    if (filter === 'all') {
+      setActiveFilters([]);
+    } else {
+      setActiveFilters(prev => prev.includes(filter)
+        ? prev.filter(f => f !== filter)
+        : [...prev, filter]);
+    }
+  };
+  const [mediaFilter, setMediaFilter] = useState<'all' | 'photo' | 'video'>('all');
+  const [guestId, setGuestId] = useState<string>('');
+  const [staticHeroPhoto, setStaticHeroPhoto] = useState<Photo | null>(null);
+
+  // Generate a unique guest ID for this session
+  useEffect(() => {
+    // Use existing guest ID from localStorage or generate new one
+    let storedGuestId = localStorage.getItem('gallery_guest_id');
+    if (!storedGuestId) {
+      storedGuestId = `guest_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      localStorage.setItem('gallery_guest_id', storedGuestId);
+    }
+    setGuestId(storedGuestId);
+  }, []);
+
+  // Fetch photos WITHOUT filter (always get all photos, filter on frontend)
+  // This ensures counts are always calculated from the full dataset
+  const { data, isLoading, error, refetch } = useGalleryPhotos(slug, 'all', guestId);
+  // `event.id` can be the admin-preview placeholder (0). Use the authoritative
+  // event returned by /photos so preview and customer views load the same
+  // feedback settings and guest identity mode.
+  const { data: feedbackSettings } = useGalleryFeedbackSettings(slug, data?.event?.id);
+  const feedbackEnabled = Boolean(feedbackSettings?.feedback_enabled);
+  const { data: retouchWorkflow } = useQuery<RetouchWorkflow>({
+    queryKey: ['gallery-retouch-workflow', slug],
+    queryFn: () => galleryService.getRetouchWorkflow(slug),
+    enabled: Boolean(data?.event?.id),
+    staleTime: 0,
+    refetchInterval: (query) => galleryRefreshInterval(query.state.data?.photos?.length || 0),
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
+    retry: false,
+  });
+  const retouchByPhotoId = useMemo(() => new Map((retouchWorkflow?.photos || []).map((photo) => [photo.photo_id, photo])), [retouchWorkflow?.photos]);
+  const galleryPhotos = useMemo(() => (data?.photos || []).map((photo) => {
+    const localizedPhoto = {
+      ...photo,
+      filename: photoDisplayFilename(photo),
+      category_name: categoryLabel({ name: photo.category_name, slug: photo.category_slug }, t),
+    };
+    const state = retouchByPhotoId.get(photo.id);
+    if (!retouchWorkflow?.enabled) return localizedPhoto;
+    const version = state?.current_version || 0;
+    return {
+      ...localizedPhoto,
+      url: versionedRetouchUrl(photo.url, version) || photo.url,
+      thumbnail_url: versionedRetouchUrl(photo.thumbnail_url, version),
+      preview_url: versionedRetouchUrl(photo.preview_url, version),
+      hero_url: versionedRetouchUrl(photo.hero_url, version),
+      slideshow_url: versionedRetouchUrl(photo.slideshow_url, version),
+      retouch_state: state?.state || 'proof',
+      retouch_version: version,
+      retouch_selected: Boolean(photo.retouch_selected),
+      retouch_selection_cancelled: Boolean(state?.selection_cancelled),
+      retouch_delivered_retained: Boolean(state?.delivered_retained),
+      retouch_added_during_editing: Boolean(state?.added_during_editing),
+      retouch_workflow_enabled: true,
+      retouch_withdraw_pending: Boolean(state?.withdraw_pending),
+    };
+  }), [data?.photos, retouchByPhotoId, retouchWorkflow?.enabled, t]);
+  const activeRequestPhotoIds = useMemo(() => new Set((retouchWorkflow?.requests || [])
+    .filter((request) => !['cancelled', 'completed', 'closed'].includes(request.status))
+    .map((request) => request.photo_id)), [retouchWorkflow?.requests]);
+  const workflowPhotoCounts = useMemo(() => ({
+    all: galleryPhotos.length,
+    proof: galleryPhotos.filter((photo) => photo.retouch_state === 'proof').length,
+    selected: galleryPhotos.filter((photo) => photo.retouch_state === 'selected').length,
+    editing: galleryPhotos.filter((photo) => photo.retouch_state === 'editing').length,
+    delivered: galleryPhotos.filter((photo) => photo.retouch_state === 'delivered').length,
+    requests: galleryPhotos.filter((photo) => activeRequestPhotoIds.has(photo.id)).length,
+    cancelled: galleryPhotos.filter((photo) => photo.retouch_state === 'cancelled').length,
+  }), [galleryPhotos, activeRequestPhotoIds]);
+  const workflowSourcePhotos = useMemo(() => {
+    if (!retouchWorkflow?.enabled || workflowFilter === 'all') return galleryPhotos;
+    return galleryPhotos.filter((photo) => {
+      if (workflowFilter === 'requests') return activeRequestPhotoIds.has(photo.id);
+      if (workflowFilter === 'cancelled') return photo.retouch_state === 'cancelled';
+      return photo.retouch_state === workflowFilter;
+    });
+  }, [galleryPhotos, activeRequestPhotoIds, retouchWorkflow?.enabled, workflowFilter]);
+  const { isSelectionMode, setIsSelectionMode, selectedPhotos, setSelectedPhotos } = useGallerySelection(galleryPhotos);
+
+  // Set protection level when data is available
+  useEffect(() => {
+    if (data?.event?.protection_level) {
+      setProtectionLevel(data.event.protection_level);
+    }
+  }, [data?.event?.protection_level]);
+
+  // Apply default photo sort from event settings
+  useEffect(() => {
+    if (!defaultSortApplied && data?.event?.default_photo_sort) {
+      const { sortBy: defaultSortBy, sortDesc: defaultSortDesc } = parseDefaultPhotoSort(data.event.default_photo_sort);
+      setSortBy(defaultSortBy);
+      setSortDesc(defaultSortDesc);
+      setDefaultSortApplied(true);
+    }
+  }, [data?.event?.default_photo_sort, defaultSortApplied]);
+
+  // Reveal mode (#838): an already-open view must follow reveal-state
+  // changes in BOTH directions — hidden→visible at reveal_at (or manual
+  // "Reveal now"), and visible→hidden on a re-hide. Refetch right at
+  // reveal_at plus a 60s poll while the mode is armed; there is no push
+  // channel.
+  const hiddenUntilReveal = data?.hidden_until_reveal === true;
+  const revealArmed = (data?.event as { reveal_armed?: boolean } | undefined)?.reveal_armed === true;
+  const revealAtMs = data?.reveal_at ? new Date(data.reveal_at).getTime() : null;
+  useEffect(() => {
+    if (!hiddenUntilReveal && !revealArmed) return undefined;
+    const timers: Array<ReturnType<typeof setTimeout>> = [];
+    if (revealAtMs && revealAtMs > Date.now()) {
+      timers.push(setTimeout(() => { refetch(); }, Math.min(revealAtMs - Date.now() + 1000, 2 ** 31 - 1)));
+    }
+    const interval = setInterval(() => { refetch(); }, 60_000);
+    return () => { timers.forEach(clearTimeout); clearInterval(interval); };
+  }, [hiddenUntilReveal, revealArmed, revealAtMs, refetch]);
+
+  const { uploadProcessing, handleUploadComplete } = useGalleryUpload(slug, refetch, () => setShowUploadModal(false));
+
+  const uploadProcessingNotice = <UploadProcessingNotice processing={uploadProcessing} />;
+
+  // Get individual protection settings from event
+  const disableRightClick = data?.event?.disable_right_click === true;
+  const enableDevtoolsProtection = data?.event?.enable_devtools_protection === true;
+  const useCanvasRendering = data?.event?.use_canvas_rendering === true;
+  // #508 — surface original camera filenames in the lightbox when the
+  // admin has flipped the same toggle that drives original-name downloads.
+  const showOriginalFilename = data?.event?.use_original_filenames === true;
+
+  // DevTools protection - enabled by individual setting OR legacy protection level
+  const devToolsEnabled = enableDevtoolsProtection || protectionLevel === 'enhanced' || protectionLevel === 'maximum';
+
+  useDevToolsProtection({
+    enabled: devToolsEnabled,
+    detectionSensitivity: protectionLevel === 'maximum' ? 'high' : 'medium',
+    onDevToolsDetected: () => {
+      console.warn('DevTools detected in gallery view');
+
+      // For maximum protection, redirect away from gallery
+      if (protectionLevel === 'maximum') {
+        setTimeout(() => {
+          window.location.href = '/';
+        }, 100);
+      }
+    },
+    redirectOnDetection: protectionLevel === 'maximum',
+    redirectUrl: '/'
+  });
+
+  // Right-click blocking - separate from DevTools protection
+  useEffect(() => {
+    if (!disableRightClick) return;
+
+    const handleContextMenu = (e: MouseEvent) => {
+      e.preventDefault();
+      return false;
+    };
+
+    document.addEventListener('contextmenu', handleContextMenu);
+    return () => {
+      document.removeEventListener('contextmenu', handleContextMenu);
+    };
+  }, [disableRightClick]);
+
+  // Data updates are handled by React Query
+  const downloadAllMutation = useDownloadAllPhotos();
+
+  // Handle window resize
+  useEffect(() => {
+    const handleResize = () => {
+      setIsMobile(window.innerWidth < 768);
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  const { data: settingsData } = usePublicSettings();
+
+  // Folders (#1160). `openFolder` resolves the `?folder=` slug against the
+  // categories the gallery actually returned, so a stale or hand-typed slug
+  // simply falls back to root instead of rendering an empty gallery.
+  const openFolder = useMemo(
+    () => findFolderByKey(data?.categories, openFolderSlug),
+    [data?.categories, openFolderSlug]
+  );
+
+  const tiles = useMemo(
+    () => folderTiles(data?.categories, galleryPhotos),
+    [data?.categories, galleryPhotos]
+  );
+
+  // Photos the current view is allowed to show, before any user-applied filter.
+  // This — not `filteredPhotos` — is the right basis for the category counts,
+  // so active filters do not change the category totals.
+  const scopedPhotos = useMemo(
+    () => photosInScope(galleryPhotos, data?.categories, openFolder?.id ?? null),
+    [galleryPhotos, data?.categories, openFolder]
+  );
+
+  // In guest identity mode both the "Liked / Favorited / Rated /
+  // Commented" filters AND the matching chip-count labels need to scope
+  // to the *current guest's* interactions, not the global aggregates on
+  // each photo row (#538 bug 1). Pull the current guest's feedback via
+  // /my-feedback (already keyed by x-guest-token in the api interceptor)
+  // and build per-type photo-id sets so both consumers below can do
+  // O(1) lookups.
+  //
+  // Always-on in guest mode (not gated on the active filter) because
+  // the chip counts render whether or not a feedback filter is selected
+  // — gating on activeFilters would leave "Liked (0)" stale until the user
+  // clicks the chip, which is the same UX cliff bug 1 was reporting.
+  const isGuestIdentityMode = feedbackSettings?.identity_mode === 'guest';
+  const { data: myFeedbackRows } = useQuery<Array<{
+    photo_id: number;
+    feedback_type: 'like' | 'favorite' | 'rating' | 'comment';
+  }>>({
+    queryKey: ['my-feedback', slug],
+    queryFn: () => feedbackService.getMyFeedback(slug),
+    enabled: isGuestIdentityMode && !!slug,
+    staleTime: 30 * 1000,
+  });
+
+  const myFeedbackPhotoIds = useMemo(() => {
+    const sets = {
+      liked: new Set<number>(),
+      favorited: new Set<number>(),
+      rated: new Set<number>(),
+      commented: new Set<number>(),
+    };
+    if (!myFeedbackRows) return sets;
+    for (const row of myFeedbackRows) {
+      if (row.feedback_type === 'like') sets.liked.add(row.photo_id);
+      else if (row.feedback_type === 'favorite') sets.favorited.add(row.photo_id);
+      else if (row.feedback_type === 'rating') sets.rated.add(row.photo_id);
+      else if (row.feedback_type === 'comment') sets.commented.add(row.photo_id);
+    }
+    return sets;
+  }, [myFeedbackRows]);
+
+  // Apply branding settings
+  useEffect(() => {
+    if (settingsData) {
+      setBrandingSettings({
+        company_name: settingsData.branding_company_name || '',
+        watermark_enabled: settingsData.branding_watermark_enabled || false,
+        logo_url: settingsData.branding_logo_url || null,
+        logo_url_dark: settingsData.branding_logo_url_dark || null,
+        logo_size: settingsData.branding_logo_size || 'medium',
+        logo_max_height: settingsData.branding_logo_max_height || 48,
+        logo_position: settingsData.branding_logo_position || 'left',
+        logo_display_header: settingsData.branding_logo_display_header !== false,
+        logo_display_hero: settingsData.branding_logo_display_hero !== false,
+        logo_display_mode: settingsData.branding_logo_display_mode || 'logo_and_text',
+        // All four domestic social links are optional; empty strings hide
+        // their icons. promo_markdown is the
+        // global default; per-event override happens in GalleryLayout.
+        douyin_url: settingsData.branding_douyin_url || '',
+        xiaohongshu_url: settingsData.branding_xiaohongshu_url || '',
+        weibo_url: settingsData.branding_weibo_url || '',
+        kuaishou_url: settingsData.branding_kuaishou_url || '',
+        promo_markdown: settingsData.branding_promo_markdown || '',
+        info_markdown: settingsData.branding_info_markdown || '',
+        promo_position: settingsData.branding_promo_position === 'below_footer' ? 'below_footer' : 'above_footer',
+        // Promo alignment (#482). Defaults to 'center' to match the
+        // gallery footer; see GalleryLayout.
+        promo_alignment: settingsData.branding_promo_alignment || 'center',
+      });
+    }
+  }, [settingsData]);
+
+  // Scoped (#1160): a Video chip offered at root for a video that only exists
+  // inside a folder filters to an empty grid.
+  const availableMediaTypes = useMemo(() => {
+    const types = new Set<'photo' | 'video'>();
+    scopedPhotos.forEach((photo) => {
+      const mediaType = resolveMediaType(photo);
+      if (mediaType === 'photo' || mediaType === 'video') {
+        types.add(mediaType);
+      }
+    });
+    return types;
+  }, [scopedPhotos]);
+
+  const showMediaFilter = availableMediaTypes.has('photo') && availableMediaTypes.has('video');
+
+  useEffect(() => {
+    if (!showMediaFilter && mediaFilter !== 'all') {
+      setMediaFilter('all');
+    }
+  }, [showMediaFilter, mediaFilter]);
+
+  // Determine the default hero photo from the initial (unfiltered) load
+  const [defaultHeroPhoto, setDefaultHeroPhoto] = useState<Photo | null>(null);
+
+  useEffect(() => {
+    if (!defaultHeroPhoto && galleryPhotos.length && activeFilters.length === 0) {
+      let hero: Photo | null = null;
+      const heroId = data?.event?.hero_photo_id || null;
+      if (heroId) {
+        hero = galleryPhotos.find(p => p.id === heroId) || null;
+      }
+      if (!hero && galleryPhotos.length > 0) {
+        const firstPhoto = galleryPhotos.find(p => resolveMediaType(p) === 'photo');
+        hero = firstPhoto || galleryPhotos[0];
+      }
+      if (hero) {
+        setDefaultHeroPhoto(hero);
+        setStaticHeroPhoto(hero);
+      }
+    }
+  }, [galleryPhotos, data?.event?.hero_photo_id, activeFilters, defaultHeroPhoto]);
+
+  // Switch hero photo when a category with its own hero image is selected
+  useEffect(() => {
+    if (!galleryPhotos.length || !defaultHeroPhoto) return;
+
+    if (selectedCategoryId) {
+      const category = (data?.categories || []).find(c => c.id === selectedCategoryId);
+      if (category?.hero_photo_id) {
+        const categoryHero = galleryPhotos.find(p => p.id === category.hero_photo_id);
+        if (categoryHero) {
+          setStaticHeroPhoto(categoryHero);
+          return;
+        }
+      }
+    }
+    // No category selected or category has no hero — revert to default
+    setStaticHeroPhoto(defaultHeroPhoto);
+  }, [selectedCategoryId, data?.categories, galleryPhotos, defaultHeroPhoto]);
+
+  // Apply theme when settings are loaded
+  useEffect(() => {
+    if (settingsData && data?.event) {
+      let themeToApply = null;
+      const fullEvent = data.event; // Use the full event data from API
+
+      if (fullEvent.color_theme) {
+        try {
+          // Check if it's a valid JSON string
+          if (fullEvent.color_theme.startsWith('{')) {
+            const eventTheme = JSON.parse(fullEvent.color_theme);
+            themeToApply = eventTheme;
+          } else {
+            // Handle legacy theme names - check if it's a preset
+            const preset = GALLERY_THEME_PRESETS[fullEvent.color_theme];
+            if (preset) {
+              themeToApply = preset.config;
+            } else {
+              // Unknown theme name, fall back to global theme
+              if (settingsData.theme_config) {
+                themeToApply = settingsData.theme_config;
+              }
+            }
+          }
+        } catch {
+          // Invalid theme format - use default
+          // Fall back to global theme
+          if (settingsData.theme_config) {
+            themeToApply = settingsData.theme_config;
+          }
+        }
+      } else if (settingsData.theme_config) {
+        // No event theme, use global theme
+        themeToApply = settingsData.theme_config;
+      }
+
+      // Apply theme with a small delay to ensure it overrides any global theme.
+      // Instance-wide force color mode is enforced inside ThemeContext.applyTheme,
+      // so callers don't have to wrap the theme themselves.
+      if (themeToApply) {
+        // Use setTimeout to ensure this runs after any global theme application
+        const timer = setTimeout(() => {
+          // If there's a hero photo, add it to gallery settings
+          if (fullEvent.hero_photo_id && themeToApply.gallerySettings) {
+            themeToApply.gallerySettings.heroImageId = fullEvent.hero_photo_id;
+            // Apply hero photo ID to existing gallery settings
+          } else if (fullEvent.hero_photo_id) {
+            themeToApply.gallerySettings = { heroImageId: fullEvent.hero_photo_id };
+            // Create gallery settings with hero photo ID
+          }
+          setTheme(themeToApply);
+        }, 0);
+
+        return () => clearTimeout(timer);
+      }
+    }
+  }, [settingsData, data, setTheme]); // Use data instead of event prop
+
+  // Client visibility toggle handler (#172)
+  const handleToggleVisibility = async (photoId: number, currentVisibility: string) => {
+    const newVisibility = currentVisibility === 'hidden' ? 'visible' : 'hidden';
+    try {
+      await galleryService.togglePhotoVisibility(slug, photoId, newVisibility);
+      queryClient.invalidateQueries({ queryKey: ['gallery-photos', slug] });
+    } catch (error) {
+      console.error('Failed to toggle visibility:', error);
+    }
+  };
+
+  const handleBulkVisibility = async (visibility: 'visible' | 'hidden') => {
+    if (selectedPhotos.size === 0) return;
+    try {
+      await galleryService.bulkToggleVisibility(slug, Array.from(selectedPhotos), visibility);
+      setSelectedPhotos(new Set());
+      setIsSelectionMode(false);
+      queryClient.invalidateQueries({ queryKey: ['gallery-photos', slug] });
+    } catch (error) {
+      console.error('Failed to bulk toggle visibility:', error);
+    }
+  };
+
+  // Client visibility stats
+  const visibleCount = useMemo(() => {
+    if (!isClient || !galleryPhotos.length) return 0;
+    return galleryPhotos.filter(p => p.visibility !== 'hidden').length;
+  }, [isClient, galleryPhotos]);
+
+  const totalCount = galleryPhotos.length;
+
+  // Calculate days until expiration (null means never expires)
+  const daysUntilExpiration = event.expires_at
+    ? differenceInDays(parseISO(event.expires_at), new Date())
+    : null;
+  const showUrgentWarning = daysUntilExpiration !== null && daysUntilExpiration <= 7;
+  const isExpired = daysUntilExpiration !== null && daysUntilExpiration < 0;
+
+
+  const openFolderBySlug = useCallback((key: string | null) => {
+    setOpenFolderSlug(key);
+    writeFolderParam(key);
+    // Entering or leaving a folder is a scope change, not a filter change —
+    // carrying a category selection across it would contradict the new scope.
+    setSelectedCategoryId(null);
+    // The grid only auto-clears its selection when `categoryId` changes, and
+    // that is already null at root — so without this a selection made outside
+    // the folder survives into it, and the toolbar would offer to download (or
+    // a client to hide) photos that are no longer on screen.
+    setSelectedPhotos(new Set());
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }, [setSelectedPhotos]);
+
+  // The address bar is the source of truth, so Back/Forward walk in and out of
+  // folders instead of leaving the gallery.
+  useEffect(() => {
+    const onPop = () => {
+      setOpenFolderSlug(readFolderParam());
+      setSelectedCategoryId(null);
+      setSelectedPhotos(new Set());
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, [setSelectedPhotos]);
+
+  const filteredPhotos = useGalleryFiltering({
+    sourcePhotos: workflowSourcePhotos, categories: data?.categories, folderId: openFolder?.id ?? null,
+    selectedCategoryId, searchTerm, sortBy, sortDesc, watermarkEnabled, slug,
+    activeFilters, activeColorFilters, mediaFilter, isGuestIdentityMode, myFeedbackPhotoIds,
+  });
+
+  // Counts shown in the filter chips ("Liked (N)", etc.). In guest
+  // mode these need to mirror the per-guest filter behaviour above —
+  // otherwise the chip says "Liked (5)" globally but clicking it
+  // surfaces 3 (the guest's own subset), which is the same confusing
+  // mismatch #538 reported for the filter itself. Fall back to the
+  // global aggregate in simple mode where no per-person identity
+  // exists.
+  const likeCount = useMemo(() => {
+    // Scoped (#1160): a chip counting another folder's likes advertises matches
+    // that clicking it — which filters scopedPhotos — can never produce.
+    if (isGuestIdentityMode) {
+      return scopedPhotos.filter(p => myFeedbackPhotoIds.liked.has(p.id)).length;
+    }
+    return scopedPhotos.filter(p => (p.like_count ?? 0) > 0).length;
+  }, [scopedPhotos, isGuestIdentityMode, myFeedbackPhotoIds]);
+
+  const favoriteCount = useMemo(() => {
+    if (isGuestIdentityMode) {
+      return scopedPhotos.filter(p => myFeedbackPhotoIds.favorited.has(p.id)).length;
+    }
+    return scopedPhotos.filter(p => (p.favorite_count ?? 0) > 0).length;
+  }, [scopedPhotos, isGuestIdentityMode, myFeedbackPhotoIds]);
+
+  const ratedCount = useMemo(() => {
+    if (isGuestIdentityMode) {
+      return scopedPhotos.filter(p => myFeedbackPhotoIds.rated.has(p.id)).length;
+    }
+    return scopedPhotos.filter(p => (p.total_ratings || 0) > 0 || (p.average_rating || 0) > 0).length;
+  }, [scopedPhotos, isGuestIdentityMode, myFeedbackPhotoIds]);
+
+  // Per-colour chip counts (#1044) — the viewer's own labels, matching what
+  // the filter actually selects.
+  const colorLabelCounts = useMemo(() => {
+    const counts: Partial<Record<ColorLabel, number>> = {};
+    for (const photo of scopedPhotos) {
+      const label = photo.my_color_label as ColorLabel | null | undefined;
+      if (!label) continue;
+      counts[label] = (counts[label] || 0) + 1;
+    }
+    return counts;
+  }, [scopedPhotos]);
+
+  const handleColorFilterToggle = useCallback((color: ColorLabel) => {
+    setActiveColorFilters(prev =>
+      prev.includes(color) ? prev.filter(c => c !== color) : [...prev, color]
+    );
+  }, []);
+
+  // Check if downloads are allowed (both event setting and not expired)
+  const allowDownloads = !isExpired && (data?.event?.allow_downloads === true);
+
+  // Resolution picker choices (#858). More than one option means there is an
+  // actual choice to make; a single option is just the standard size, so skip
+  // the modal and download straight away.
+  const downloadChoices = data?.event?.download_resolution?.picker_enabled
+    ? (data.event.download_resolution.choices || [])
+    : [];
+
+  const handleDownloadAll = () => {
+    // Prevent downloads if gallery is expired or downloads disabled
+    if (!allowDownloads) {
+      return;
+    }
+
+    // Download All is a per-photo queue; ZIP readiness is not part of this flow.
+    if (downloadChoices.length > 1) {
+      setShowResolutionPicker(true);
+      return;
+    }
+
+    downloadAllMutation.mutate({ slug });
+
+    // Track download all action
+  };
+
+  const handleDownloadSelected = async () => {
+    const selectedPhotoIds = getDownloadableSelectedPhotoIds(filteredPhotos, selectedPhotos);
+    if (selectedPhotoIds.length === 0) return;
+
+    // Prevent downloads if gallery is expired or downloads disabled
+    if (!allowDownloads) {
+      return;
+    }
+
+    // Resolution picker (#858): sidebar-driven selections get the same choice
+    // as the grid's own control, rather than silently downloading at the
+    // gallery standard.
+    if (downloadChoices.length > 1) {
+      setResolutionPickerIds(selectedPhotoIds);
+      return;
+    }
+
+    toastify.info(t('gallery.downloadStarted', { photoCount: selectedPhotoIds.length }));
+    try {
+      await galleryService.downloadSelectedPhotos(
+        slug,
+        selectedPhotoIds,
+        undefined,
+        getPhotoDownloadFilenames(filteredPhotos, selectedPhotoIds),
+      );
+      setSelectedPhotos(new Set());
+      setIsSelectionMode(false);
+    } catch {
+      toastify.error(t('gallery.downloadError'));
+    }
+  };
+
+  // Download just the open folder (#1160). The event-wide "download all" still
+  // zips the whole gallery including foldered photos; this is the "only this
+  // folder, once" case. Honours the per-category opt-out (#640), so a folder
+  // with allow_downloads = false offers no button at all.
+  const folderDownloadableIds = useMemo(() => {
+    if (!openFolder) return [];
+    if (openFolder.allow_downloads === false) return [];
+    // scopedPhotos, not filteredPhotos: a search or feedback chip stays active
+    // when entering a folder, and a button that says "Download folder" must not
+    // quietly hand over a filtered subset of it (or vanish when the filter
+    // matches nothing).
+    return scopedPhotos
+      .filter((photo) => photo.category_allow_downloads !== false && photo.download_allowed !== false)
+      .map((photo) => photo.id);
+  }, [openFolder, scopedPhotos]);
+
+  // /download-selected caps the id list server-side, so a folder bigger than the
+  // cap would deliver a truncated archive under a button promising the whole
+  // thing. Send only what the server will honour, and say so on the label.
+  // True when any category in this gallery opts out of downloads (#640).
+  const hasRestrictedCategory = useMemo(
+    () => (data?.categories || []).some((c) => c.allow_downloads === false),
+    [data?.categories]
+  );
+
+  const folderDownloadIds = useMemo(
+    () => folderDownloadableIds.slice(0, SELECTED_DOWNLOAD_LIMIT),
+    [folderDownloadableIds]
+  );
+  const folderDownloadCapped = folderDownloadableIds.length > SELECTED_DOWNLOAD_LIMIT;
+
+  const handleDownloadFolder = async () => {
+    if (!allowDownloads || folderDownloadableIds.length === 0) return;
+
+    // Same resolution-picker behaviour as every other multi-photo download.
+    if (downloadChoices.length > 1) {
+      setResolutionPickerIds(folderDownloadIds);
+      return;
+    }
+
+
+    await galleryService.downloadSelectedPhotos(
+      slug,
+      folderDownloadIds,
+      undefined,
+      getPhotoDownloadFilenames(scopedPhotos, folderDownloadIds),
+    );
+  };
+
+  // Calculate photo counts per category
+  const photoCounts = useMemo(() => {
+    const counts: Record<number | string, number> = {};
+    // Scoped to the current view (#1160): a folder's photos must not inflate the
+    // per-category counts shown at root, where those photos aren't in the grid.
+    scopedPhotos
+      .filter(photo => {
+        if (mediaFilter === 'photo') return resolveMediaType(photo) !== 'video';
+        if (mediaFilter === 'video') return resolveMediaType(photo) === 'video';
+        return true;
+      })
+      .forEach(photo => {
+      if (photo.category_id) {
+        counts[photo.category_id] = (counts[photo.category_id] || 0) + 1;
+      }
+    });
+    return counts;
+  }, [scopedPhotos, mediaFilter]);
+
+  if (isLoading) {
+    return <GallerySkeleton />;
+  }
+
+  if (error || !data) {
+    // Check if it's an authentication error (401)
+    const is401Error = (error as any)?.response?.status === 401;
+
+    // An admin preview whose admin session idled out: offer to sign in again.
+    // Logging a guest session out would leave the preview blank.
+    if (isAdminSessionExpired(error)) {
+      return <PasswordChangeRequiredNotice reason="session" />;
+    }
+
+    if (is401Error && !adminPreview) {
+      // Authentication failed - logout and let the parent component handle re-authentication
+      logout();
+      return null;
+    }
+
+    if (isPasswordChangeRequired(error)) {
+      return <PasswordChangeRequiredNotice />;
+    }
+
+    return (
+      <div className="min-h-screen bg-surface flex items-center justify-center">
+        <div className="text-center">
+          <p className="text-lg text-muted-theme">{t('gallery.failedToLoad')}</p>
+          <Button onClick={() => refetch()} className="mt-4">
+            {t('gallery.tryAgain')}
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  // Determine controls style (sidebar vs classic inline filter bar).
+  // Decoupled from layout — only an explicit controlsStyle === 'sidebar' on
+  // the theme renders the sidebar. Default (unset or 'classic') is the inline
+  // filter bar for every layout, so the gallery header/filters look identical
+  // regardless of whether the photos render as grid, masonry, carousel, etc.
+  const headerStyle = data?.event?.header_style || theme.headerStyle || 'standard';
+  const isHeroHeader = headerStyle === 'hero';
+  const showSidebar = theme.controlsStyle === 'sidebar';
+  const filterBarShown = !showSidebar
+    && settingsData?.gallery_show_filter_bar !== false
+    // Scoped (#1160): on a folder-only root there is nothing for search, sort or
+    // the feedback chips to act on, and showing them reintroduces exactly the
+    // empty filter row discussion #317 complained about.
+    && scopedPhotos.length > 0;
+
+  // Reveal mode (#838): the server returned the event shell with no photos —
+  // render the upload-only view for EVERY layout. Enforcement is server-side
+  // (the photo endpoints refuse plain guests); this is the friendly face.
+  if (hiddenUntilReveal) {
+    const uploadsOn = Boolean(data?.event?.allow_user_uploads || event?.allow_user_uploads);
+    return (
+      <GalleryLayout
+        event={{
+          ...event,
+          // The reveal-hidden view still renders the chrome, so BOTH
+          // banners resolve here too. The context `event` comes from the
+          // gallery login response and carries no banner fields, which would
+          // silently downgrade a per-event 'off' to 'inherit' and show the
+          // global banner on a gallery the admin muted (#440 promo / #932 info).
+          promo_mode: (data?.event as { promo_mode?: 'inherit' | 'custom' | 'off' })?.promo_mode,
+          promo_markdown: (data?.event as { promo_markdown?: string | null })?.promo_markdown,
+          info_mode: (data?.event as { info_mode?: 'inherit' | 'custom' | 'off' })?.info_mode,
+          info_markdown: (data?.event as { info_markdown?: string | null })?.info_markdown,
+        }}
+        brandingSettings={brandingSettings}
+      >
+        <div className="max-w-xl mx-auto text-center py-16 px-4">
+          <div className="mx-auto mb-5 w-16 h-16 rounded-full bg-surface flex items-center justify-center">
+            <EyeOff className="w-8 h-8 text-muted-theme" />
+          </div>
+          <h2 className="text-2xl font-semibold mb-3" style={{ color: 'var(--color-text, #171717)' }}>
+            {t('gallery.revealPendingTitle', 'The photos are still a surprise')}
+          </h2>
+          <p className="text-muted-theme mb-2">
+            {t('gallery.revealPendingMessage', 'The host will reveal the gallery later — check back soon!')}
+          </p>
+          {data.reveal_at && (
+            <p className="text-sm text-muted-theme mb-6">
+              {t('gallery.revealScheduledFor', 'Reveal scheduled for {{date}}', {
+                date: new Date(data.reveal_at).toLocaleString(),
+              })}
+            </p>
+          )}
+          {uploadsOn && (
+            <div className="mt-6">
+              <p className="text-sm text-muted-theme mb-3">
+                {t('gallery.revealUploadHint', 'You can already add your own photos to the collection:')}
+              </p>
+              <Button
+                variant="primary"
+                size="lg"
+                leftIcon={<Upload className="w-5 h-5" />}
+                onClick={() => setShowUploadModal(true)}
+              >
+                {t('upload.uploadPhotos', 'Upload Photos')}
+              </Button>
+            </div>
+          )}
+        </div>
+        {showUploadModal && uploadsOn && (
+          <React.Suspense fallback={<p role="status">{t('common.loading')}</p>}>
+            <UserPhotoUpload
+              slug={slug}
+              categoryId={data?.event?.upload_category_id || event?.upload_category_id}
+              onUploadComplete={() => setShowUploadModal(false)}
+              onClose={() => setShowUploadModal(false)}
+            />
+          </React.Suspense>
+        )}
+
+        {/* Download size picker (#858) — "download all", or a selection. */}
+        <DownloadQueue slug={slug} />
+        {(showResolutionPicker || resolutionPickerIds) && (
+          <DownloadResolutionModal
+            slug={slug}
+            choices={downloadChoices}
+            photoIds={resolutionPickerIds || undefined}
+            onClose={() => {
+              setShowResolutionPicker(false);
+              setResolutionPickerIds(null);
+            }}
+          />
+        )}
+      </GalleryLayout>
+    );
+  }
+
+  // Full-page layouts (gallery-premium, gallery-story) have their own integrated UI
+  // Skip all wrapper elements (header, footer, sidebar, filters) for these layouts
+  const isFullPageLayout = theme.galleryLayout === 'gallery-premium' || theme.galleryLayout === 'gallery-story';
+  const isStoryLayout = theme.galleryLayout === 'gallery-story';
+
+  // Does this session hold something worth dropping? A password gallery and a
+  // PIN client do; both provide a credential that can be explicitly cleared.
+  //
+  // Read from the auth context, which resolves this from /auth/session on
+  // mount — NOT from the photos payload. That response is cached by React
+  // Query for five minutes on a key that knows nothing about the session, so
+  // opening a gallery as a guest and then from the portal would have reused
+  // the guest answer, and vice versa.
+  const showLogoutControl = shouldShowGalleryLogoutControl(requiresPassword, isClient, adminPreview);
+
+  // Folder navigation (#1160): tiles at root, a breadcrumb + folder download
+  // inside one. Defined once and rendered by BOTH layout branches — containment
+  // comes from `filteredPhotos`, which every branch uses, so a branch that hides
+  // foldered photos without offering the tiles makes them unreachable.
+  // Renders nothing at all when the gallery has no folders, so galleries that
+  // don't use the feature are untouched.
+  const buildFolderNav = (compact: boolean) => openFolder ? (
+    <div className="mb-6 flex items-center gap-2 text-sm flex-wrap">
+      <button
+        type="button"
+        onClick={() => openFolderBySlug(null)}
+        className="inline-flex items-center gap-1 underline hover:no-underline"
+        style={{ color: 'var(--color-muted-text)' }}
+      >
+        <ChevronLeft className="w-4 h-4" />
+        {t('gallery.backToGallery', 'All photos')}
+      </button>
+      <span style={{ color: 'var(--color-muted-text)' }}>/</span>
+      <span className="font-medium" style={{ color: 'var(--color-text)' }}>
+        {openFolder.name}
+      </span>
+      {allowDownloads && folderDownloadableIds.length > 0 && (
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={handleDownloadFolder}
+          leftIcon={<Download className="w-4 h-4" />}
+          className="gallery-numeric ml-auto"
+        >
+          {folderDownloadCapped
+            ? t('gallery.downloadFolderCapped', 'Download first {{limit}} of {{total}}', {
+                limit: SELECTED_DOWNLOAD_LIMIT,
+                total: folderDownloadableIds.length,
+              })
+            : t('gallery.downloadFolder', 'Download folder ({{count}})', {
+                count: folderDownloadableIds.length,
+              })}
+        </Button>
+      )}
+    </div>
+  ) : (
+    <GalleryFolderTiles
+      tiles={tiles}
+      onOpen={openFolderBySlug}
+      compact={compact}
+      slug={slug}
+      useEnhancedProtection={protectionLevel !== 'basic'}
+      allowDownloads={allowDownloads}
+    />
+  );
+
+  const folderNav = buildFolderNav(false);
+
+  // True only when there is something to show, so the full-page layouts keep
+  // their edge-to-edge hero untouched unless folders are actually in use.
+  const hasFolderNav = !!openFolder || tiles.length > 0;
+
+  // Root of a gallery where every photo lives in a folder: the tiles ARE the
+  // content, and the grid below them would otherwise render its empty state.
+  // Deliberately `scopedPhotos`, not `filteredPhotos`: with loose root photos
+  // present, a search matching none of them would otherwise look "folder-only"
+  // and swallow the no-results message the guest needs.
+  const rootIsFoldersOnly = !openFolder && tiles.length > 0 && scopedPhotos.length === 0;
+  const identityMode: 'simple' | 'guest' =
+    feedbackSettings?.identity_mode === 'guest' ? 'guest' : 'simple';
+
+  // For full-page layouts, render just the PhotoGridWithLayouts without any wrappers
+  if (isFullPageLayout) {
+    return (
+      <GuestIdentityProvider slug={slug} identityMode={identityMode}>
+      <>
+        <GuestNamePromptModal />
+        {/* #1160: these layouts return early and render edge-to-edge, but they
+            still get `filteredPhotos`, so without this the foldered photos
+            would be hidden with no way in. Contained width so the folder strip
+            reads as chrome against the full-bleed grid below it. */}
+        {(hasFolderNav || (isStoryLayout && (filteredPhotos.length > 1 || isSelectionMode))) && (
+          // Story's `.story-nav` is fixed across this same band at z-index 50.
+          // Raising the strip above it is necessary for the chips to be
+          // clickable at all, but the strip is mostly empty space — so the
+          // container itself must not take hits, or it would block the nav's own
+          // search/favourites/logout underneath. Only the real controls opt back
+          // in via pointer-events-auto.
+          <div className="relative z-[60] pointer-events-none max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3 flex items-center gap-3 flex-wrap">
+            {hasFolderNav && (
+              <div className="pointer-events-auto flex items-center gap-3 flex-wrap">
+                {buildFolderNav(true)}
+              </div>
+            )}
+            {isStoryLayout && (
+              <GalleryBatchSelectionToolbar
+                isSelectionMode={isSelectionMode}
+                selectedCount={selectedPhotos.size}
+                downloadableCount={getDownloadableSelectedPhotoIds(filteredPhotos, selectedPhotos).length}
+                allowDownloads={allowDownloads}
+                isDownloading={downloadAllMutation.isPending}
+                onToggleSelectionMode={() => {
+                  setIsSelectionMode((active) => !active);
+                  if (isSelectionMode) setSelectedPhotos(new Set());
+                }}
+                onSelectAll={() => setSelectedPhotos(new Set(filteredPhotos.map((photo) => photo.id)))}
+                onDeselectAll={() => setSelectedPhotos(new Set())}
+                onDownloadSelected={() => void handleDownloadSelected()}
+              />
+            )}
+            {/* Hidden when a category opts out of downloads (#640): this routes
+                to the whole-gallery zip, which contains every event photo with
+                no per-category filter, so offering it here would hand a guest
+                the photos that opt-out is meant to withhold. Those galleries
+                keep the per-folder download, which enforces it.
+
+                These layouts have no header download button — their only
+                gallery-wide download is select-all + download-selected, and
+                select-all is (correctly) scoped to what is on screen. Once
+                folders exist that leaves no single way to get everything, so
+                surface the event-wide zip here. Root only: inside a folder the
+                breadcrumb already offers that folder's download. */}
+            {!openFolder && allowDownloads && !hasRestrictedCategory && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleDownloadAll}
+                disabled={downloadAllMutation.isPending}
+                leftIcon={<Download className="w-4 h-4" />}
+                // No ml-auto: the right of this band belongs to Story's fixed
+                // nav (logout, favourites), and pushing the button over there
+                // physically covers those controls.
+                className="pointer-events-auto"
+              >
+                {t('gallery.downloadEverything', 'Download all photos')}
+              </Button>
+            )}
+          </div>
+        )}
+        <PhotoGridWithLayouts
+          // Remount on a scope change (#1160): layout state such as the
+          // carousel's currentIndex is only meaningful for the photo set it was
+          // built against, and an index kept from a larger scope indexes past
+          // the end of a smaller folder.
+          key={openFolder ? `folder-${openFolder.id}` : 'root'}
+          photos={filteredPhotos}
+          // The hero, title, logout and download controls live inside this
+          // component for the full-bleed layouts, so a folder-only root must
+          // silence the empty message without unmounting the shell (#1160).
+          suppressEmptyState={rootIsFoldersOnly}
+          // Event-wide, so a layout's own Download All neither skips foldered
+          // photos nor truncates at the 500-id cap (#1160).
+          eventPhotoCount={galleryPhotos.length}
+          // Withheld when any category opts out of downloads (#640): the
+          // whole-gallery route serves a prebuilt zip that contains EVERY event
+          // photo with no per-category filter (gallery.js's own note on
+          // bumpEventDownloadCounts). Handing this to the layout there would
+          // turn a restricted photo into a downloadable one, so those galleries
+          // keep the id-based path, which enforces the opt-out.
+          onDownloadEverything={
+            allowDownloads && !hasRestrictedCategory ? handleDownloadAll : undefined
+          }
+          slug={slug}
+          categoryId={selectedCategoryId}
+          onFeedbackChange={() => {
+            refetch();
+            // Guest-mode Rated/Liked filter membership + chip counts come
+            // from my-feedback, not the photo rows (#538) — refresh it too
+            // so e.g. a cleared rating (#884) leaves the Rated filter.
+            queryClient.invalidateQueries({ queryKey: ['my-feedback', slug] });
+            queryClient.invalidateQueries({ queryKey: ['photo-feedback', slug] });
+            queryClient.invalidateQueries({ queryKey: ['gallery-retouch-workflow', slug] });
+          }}
+          heroPhotoOverride={staticHeroPhoto}
+          feedbackEnabled={feedbackEnabled}
+          feedbackOptions={{
+            allowLikes: !!feedbackSettings?.allow_likes,
+            allowFavorites: !!feedbackSettings?.allow_favorites,
+            allowRatings: !!feedbackSettings?.allow_ratings,
+            allowComments: !!feedbackSettings?.allow_comments,
+            allowReactions: !!feedbackSettings?.allow_reactions,
+            allowColorLabels: !!feedbackSettings?.allow_color_labels,
+            requireGuestName: !!feedbackSettings?.require_name_email,
+          }}
+          isSelectionMode={isSelectionMode}
+          selectedPhotos={selectedPhotos}
+          onSelectionChange={setSelectedPhotos}
+          onToggleSelectionMode={() => setIsSelectionMode(!isSelectionMode)}
+          showSelectionControls={false}
+          eventName={event.event_name}
+          eventLogo={data?.event?.hero_logo_url || brandingSettings?.logo_url}
+          eventDate={event.event_date}
+          expiresAt={event.expires_at}
+          allowDownloads={allowDownloads}
+          downloadChoices={downloadChoices}
+          protectionLevel={protectionLevel}
+          useEnhancedProtection={protectionLevel !== 'basic'}
+          disableRightClick={disableRightClick}
+          enableDevtoolsProtection={enableDevtoolsProtection}
+          useCanvasRendering={useCanvasRendering}
+          heroLogoVisible={data?.event?.hero_logo_visible !== false}
+          heroLogoSize={data?.event?.hero_logo_size || 'medium'}
+          heroLogoPosition={data?.event?.hero_logo_position || 'top'}
+          headerStyle={data?.event?.header_style || theme.headerStyle}
+          heroDividerStyle={data?.event?.hero_divider_style || theme.heroDividerStyle || 'wave'}
+          heroImageAnchor={data?.event?.hero_image_anchor || 'center'}
+          // Same gate as the standard layout below (#1149). These layouts
+          // render the button on the callback being present rather than on a
+          // showLogout flag, so withholding it is how the gate reaches them.
+          onLogout={showLogoutControl ? logout : undefined}
+          showOriginalFilename={showOriginalFilename}
+        />
+
+        {isSelectionMode && selectedPhotos.size > 0 && (feedbackEnabled || retouchWorkflow?.enabled) && (
+          <div className="mx-auto mt-4 max-w-7xl px-4 sm:px-6 lg:px-8">
+            <BatchFeedbackControls
+              slug={slug}
+              photoIds={Array.from(selectedPhotos)}
+              retouchEnabled={Boolean(retouchWorkflow?.enabled)}
+              commentsEnabled={Boolean(feedbackEnabled && feedbackSettings?.allow_comments)}
+              requireGuestName={!!feedbackSettings?.require_name_email}
+            />
+          </div>
+        )}
+
+        {/* Upload Modal for full-page layouts */}
+        {showUploadModal && (data?.event?.allow_user_uploads || event?.allow_user_uploads) && (
+          <React.Suspense fallback={<p role="status">{t('common.loading')}</p>}>
+            <UserPhotoUpload
+              slug={slug}
+              categoryId={data?.event?.upload_category_id || event?.upload_category_id}
+              onUploadComplete={handleUploadComplete}
+              onClose={() => setShowUploadModal(false)}
+            />
+          </React.Suspense>
+        )}
+        {uploadProcessingNotice}
+
+        {/* Download size picker (#858) — "download all", or a selection. */}
+      <DownloadQueue slug={slug} />
+        {(showResolutionPicker || resolutionPickerIds) && (
+          <DownloadResolutionModal
+            slug={slug}
+            choices={downloadChoices}
+            photoIds={resolutionPickerIds || undefined}
+            onClose={() => {
+              setShowResolutionPicker(false);
+              setResolutionPickerIds(null);
+            }}
+          />
+        )}
+      </>
+      </GuestIdentityProvider>
+    );
+  }
+
+  return (
+    <GuestIdentityProvider slug={slug} identityMode={identityMode}>
+    <>
+      <GuestNamePromptModal />
+      {/* Sidebar for non-grid layouts */}
+      {showSidebar ? (
+        <GallerySidebar
+          isOpen={sidebarOpen}
+          onClose={() => setSidebarOpen(!sidebarOpen)}
+          categories={filterCategories(data?.categories).filter(cat => photoCounts[cat.id] > 0)}
+          selectedCategoryId={selectedCategoryId}
+          onCategoryChange={setSelectedCategoryId}
+          searchTerm={searchTerm}
+          onSearchChange={setSearchTerm}
+          sortBy={sortBy}
+          onSortChange={setSortBy}
+          sortDesc={sortDesc}
+          onSortDescChange={setSortDesc}
+          isSelectionMode={isSelectionMode}
+          onToggleSelectionMode={() => setIsSelectionMode(!isSelectionMode)}
+          selectedCount={selectedPhotos.size}
+          onDownloadAll={handleDownloadAll}
+          onDownloadSelected={handleDownloadSelected}
+          isDownloading={downloadAllMutation.isPending}
+          allowDownloads={allowDownloads}
+          photoCounts={photoCounts}
+          totalPhotos={scopedPhotos.length}
+          // Download All queues the event-wide gallery — labelling or
+          // disabling it from the scoped count would show 0 on a folder-only
+          // root and refuse a perfectly valid download (#1160).
+          downloadAllTotal={galleryPhotos.length}
+          isMobile={isMobile}
+          galleryLayout={theme.galleryLayout}
+          allowUploads={data?.event?.allow_user_uploads || event?.allow_user_uploads || false}
+          onUploadClick={() => setShowUploadModal(true)}
+          feedbackEnabled={feedbackEnabled}
+          activeFilters={activeFilters}
+          onFilterChange={handleFilterChange}
+          mediaFilter={mediaFilter}
+          onMediaFilterChange={setMediaFilter}
+          showMediaFilter={showMediaFilter}
+          likeCount={likeCount}
+          favoriteCount={favoriteCount}
+          ratedCount={ratedCount}
+          colorLabelsEnabled={Boolean(feedbackSettings?.allow_color_labels)}
+          activeColorFilters={activeColorFilters}
+          onColorFilterChange={handleColorFilterToggle}
+          colorLabelCounts={colorLabelCounts}
+        />
+      ) : null}
+
+      <GalleryLayout
+        event={{
+          ...event,
+          // Per-event promo override (#440).
+          promo_mode: (data?.event as { promo_mode?: 'inherit' | 'custom' | 'off' })?.promo_mode,
+          promo_markdown: (data?.event as { promo_markdown?: string | null })?.promo_markdown,
+          // Per-event info-banner override (#932). Read from the /photos
+          // response rather than the context event: the context is seeded from
+          // the gallery LOGIN response, which carries only a small identity
+          // subset, so anything not in that subset is undefined right after a
+          // guest signs in. /photos is the payload that refreshes on every
+          // gallery load, which is why the fields were added there too.
+          info_mode: (data?.event as { info_mode?: 'inherit' | 'custom' | 'off' })?.info_mode,
+          info_markdown: (data?.event as { info_markdown?: string | null })?.info_markdown,
+        }}
+        brandingSettings={brandingSettings}
+        heroLogoVisible={data?.event?.hero_logo_visible !== false}
+        heroLogoSize={data?.event?.hero_logo_size || undefined}
+        headerStyle={data?.event?.header_style || theme.headerStyle}
+        showLogout={showLogoutControl}
+        onLogout={logout}
+        // Keep Download All available in the sidebar. The header action is
+        // reserved for entering batch-selection mode.
+        showDownloadAll={false}
+        onDownloadAll={handleDownloadAll}
+        isDownloading={downloadAllMutation.isPending}
+        menuButton={
+          // Menu icon is shown when the event theme uses the sidebar
+          // controls style. The button is icon-only — the redundant
+          // "Menu" text label was dropped (#386). The wrapper aligns the
+          // icon to the very left of the header so the logo lines up
+          // with the leftmost gallery image.
+          showSidebar ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="gallery-btn p-2"
+              onClick={() => setSidebarOpen(!sidebarOpen)}
+              aria-label={t('gallery.toggleMenu')}
+            >
+              <Menu className="w-5 h-5" />
+            </Button>
+          ) : undefined
+        }
+        showHeaderSelection={allowDownloads}
+        isSelectionMode={isSelectionMode}
+        onToggleSelectionMode={() => setIsSelectionMode(!isSelectionMode)}
+        headerExtra={(() => {
+          const items = [];
+
+          if (daysUntilExpiration !== null && daysUntilExpiration <= 1 && daysUntilExpiration > 0 && event.expires_at) {
+            items.push(
+              <CountdownTimer key="countdown" expiresAt={event.expires_at} className="mr-2" />
+            );
+          }
+
+          // Upload button - always show when uploads are allowed (regardless of layout/theme loading state)
+          const allowUploads = data?.event?.allow_user_uploads || event?.allow_user_uploads;
+          if (allowUploads) {
+            items.push(
+              <Button
+                key="upload-button"
+                variant="outline"
+                size="sm"
+                leftIcon={<Upload className="w-4 h-4" />}
+                onClick={() => setShowUploadModal(true)}
+                className={!showSidebar ? 'flex-1 sm:flex-initial' : ''}
+              >
+                <span className="hidden sm:inline">{t('upload.uploadPhotos')}</span>
+                <span className="sm:hidden">{t('common.upload')}</span>
+              </Button>
+            );
+          }
+
+          return items.length > 0 ? <>{items}</> : null;
+        })()}
+      >
+        {/* Expiration Banner */}
+        {showUrgentWarning && event.expires_at && (
+          <ExpirationBanner daysRemaining={daysUntilExpiration} expiresAt={event.expires_at} />
+        )}
+
+        {/* Client Access Banner (#172) */}
+        {isClient && (
+          <div className="mt-4 rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 p-4">
+            <div className="flex items-center justify-between flex-wrap gap-3">
+              <div className="flex items-center gap-2">
+                <Shield className="w-5 h-5 text-amber-600 dark:text-amber-400" />
+                <span className="text-sm font-medium text-amber-800 dark:text-amber-200">
+                  {t('clientAccess.banner')}
+                </span>
+                <span className="gallery-numeric text-xs text-amber-600 dark:text-amber-400 ml-2">
+                  {t('clientAccess.visibleCount', { visible: visibleCount, total: totalCount })}
+                </span>
+              </div>
+              {isSelectionMode && selectedPhotos.size > 0 && (
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    leftIcon={<EyeOff className="w-4 h-4" />}
+                    onClick={() => handleBulkVisibility('hidden')}
+                  >
+                    {t('clientAccess.hideSelected')}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    leftIcon={<Eye className="w-4 h-4" />}
+                    onClick={() => handleBulkVisibility('visible')}
+                  >
+                    {t('clientAccess.showSelected')}
+                  </Button>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {retouchWorkflow?.enabled && (
+          <section className="mt-4 space-y-3 rounded-lg border border-emerald-200 bg-emerald-50 p-4 dark:border-emerald-900 dark:bg-emerald-950/30" aria-label={t('photographyWorkflow.clientPanelTitle')}>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h2 className="text-sm font-semibold text-emerald-950 dark:text-emerald-100">{t('photographyWorkflow.clientPanelTitle')}</h2>
+                <p className="mt-1 text-sm text-emerald-900/80 dark:text-emerald-100/80">{t('photographyWorkflow.clientPanelHelp')}</p>
+              </div>
+              <Button
+                variant={isSelectionMode ? 'outline' : 'primary'}
+                size="sm"
+                onClick={() => {
+                  setIsSelectionMode((active) => !active);
+                  if (isSelectionMode) setSelectedPhotos(new Set());
+                }}
+                className="shrink-0"
+              >
+                {isSelectionMode ? t('gallery.cancelSelection') : t('photographyWorkflow.selectMultiple')}
+              </Button>
+            </div>
+            <div className="flex flex-wrap gap-2" role="group" aria-label={t('photographyWorkflow.quickFilterTitle')}>
+              {(['all', 'proof', 'selected', 'editing', 'delivered', 'requests', 'cancelled'] as const).map((filter) => (
+                <button
+                  key={filter}
+                  type="button"
+                  onClick={() => setWorkflowFilter(filter)}
+                  aria-pressed={workflowFilter === filter}
+                  className={`rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${workflowFilter === filter
+                    ? 'border-emerald-700 bg-emerald-700 text-white'
+                    : 'border-emerald-200 bg-white text-emerald-950 hover:bg-emerald-100 dark:border-emerald-800 dark:bg-neutral-900 dark:text-emerald-100 dark:hover:bg-emerald-950'}`}
+                >
+                  {t(`photographyWorkflow.quickFilter.${filter}`)} ({workflowPhotoCounts[filter]})
+                </button>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {isSelectionMode && selectedPhotos.size > 0 && allowDownloads && getDownloadableSelectedPhotoIds(filteredPhotos, selectedPhotos).length > 0 && (
+          <div className="mt-4 flex flex-wrap items-center gap-2">
+            <Button
+              variant="primary"
+              size="sm"
+              leftIcon={<Download className="h-4 w-4" />}
+              onClick={() => void handleDownloadSelected()}
+              disabled={downloadAllMutation.isPending}
+              aria-label={t('gallery.downloadSelected', { count: getDownloadableSelectedPhotoIds(filteredPhotos, selectedPhotos).length })}
+            >
+              {t('gallery.downloadSelected', { count: getDownloadableSelectedPhotoIds(filteredPhotos, selectedPhotos).length })}
+            </Button>
+          </div>
+        )}
+
+        {isSelectionMode && selectedPhotos.size > 0 && (feedbackEnabled || retouchWorkflow?.enabled) && (
+          <div className="mt-4">
+            <BatchFeedbackControls
+              slug={slug}
+              photoIds={Array.from(selectedPhotos)}
+              retouchEnabled={Boolean(retouchWorkflow?.enabled)}
+              commentsEnabled={Boolean(feedbackEnabled && feedbackSettings?.allow_comments)}
+              requireGuestName={!!feedbackSettings?.require_name_email}
+            />
+          </div>
+        )}
+
+        {/* Search and Filters - Only for grid layout, when admin enables the
+            filter bar globally, and when the gallery actually has photos
+            (avoids the empty "Search photos by filename" row in the screenshot
+            from discussion #317). */}
+        {filterBarShown ? (
+          <div className="mt-6">
+            <PhotoFilterBar
+              // Folders are navigation, not a filter (#1160) — they get tiles.
+              // Inside a folder the category chips are dead controls: the filter
+              // branch ignores `selectedCategoryId` there, so offering them would
+              // let a guest click a chip and see nothing happen.
+              categories={openFolder ? [] : filterCategories(data.categories)}
+              // Scoped, so a chip can't advertise a count the grid won't produce.
+              photos={scopedPhotos}
+              selectedCategoryId={selectedCategoryId}
+              onCategoryChange={setSelectedCategoryId}
+              searchTerm={searchTerm}
+              onSearchChange={setSearchTerm}
+            sortBy={sortBy}
+            onSortChange={setSortBy}
+            sortDesc={sortDesc}
+            onSortDescChange={setSortDesc}
+            photoCount={filteredPhotos.length}
+            // Feedback filter props
+            feedbackEnabled={feedbackEnabled}
+            activeFilters={activeFilters}
+            onFilterChange={handleFilterChange}
+            mediaFilter={mediaFilter}
+            onMediaFilterChange={setMediaFilter}
+            showMediaFilter={showMediaFilter}
+            colorLabelsEnabled={Boolean(feedbackSettings?.allow_color_labels)}
+              activeColorFilters={activeColorFilters}
+            onColorFilterChange={handleColorFilterToggle}
+            colorLabelCounts={colorLabelCounts}
+          />
+        </div>
+      ) : null}
+
+        {/* Photo Grid — when the hero header sits directly under the filter
+            bar, double the wrapper margin (mt-12) so the hero's decorative
+            `-mt-6` bleed leaves a visible gap instead of gluing the filter
+            bar to the hero image (issue #624). */}
+        <div className={filterBarShown && isHeroHeader ? "mt-12" : "mt-6"}>
+          {folderNav}
+          {/* A gallery whose photos ALL live in folders has an empty root grid,
+              and PhotoGridWithLayouts unconditionally renders "no photos found"
+              — directly under the tiles that prove otherwise. Skip the grid when
+              the tiles are the entire content. */}
+          <PhotoGridWithLayouts
+            key={openFolder ? `folder-${openFolder.id}` : 'root'}
+            photos={filteredPhotos}
+            suppressEmptyState={rootIsFoldersOnly}
+            slug={slug}
+            categoryId={selectedCategoryId}
+            onFeedbackChange={() => {
+              refetch();
+              // Guest-mode Rated/Liked filter membership + chip counts come
+              // from my-feedback, not the photo rows (#538) — refresh it too
+              // so e.g. a cleared rating (#884) leaves the Rated filter.
+              queryClient.invalidateQueries({ queryKey: ['my-feedback', slug] });
+              queryClient.invalidateQueries({ queryKey: ['photo-feedback', slug] });
+              queryClient.invalidateQueries({ queryKey: ['gallery-retouch-workflow', slug] });
+            }}
+            heroPhotoOverride={staticHeroPhoto}
+            feedbackEnabled={feedbackEnabled}
+            feedbackOptions={{
+              allowLikes: !!feedbackSettings?.allow_likes,
+              allowFavorites: !!feedbackSettings?.allow_favorites,
+              allowRatings: !!feedbackSettings?.allow_ratings,
+              allowComments: !!feedbackSettings?.allow_comments,
+              allowReactions: !!feedbackSettings?.allow_reactions,
+              allowColorLabels: !!feedbackSettings?.allow_color_labels,
+              requireGuestName: !!feedbackSettings?.require_name_email,
+            }}
+            isSelectionMode={isSelectionMode}
+            selectedPhotos={selectedPhotos}
+            onSelectionChange={setSelectedPhotos}
+            onToggleSelectionMode={() => setIsSelectionMode(!isSelectionMode)}
+            showSelectionControls={!showSidebar}
+            eventName={event.event_name}
+            eventLogo={data?.event?.hero_logo_url || brandingSettings?.logo_url}
+            eventDate={event.event_date}
+            expiresAt={event.expires_at}
+            allowDownloads={allowDownloads}
+            downloadChoices={downloadChoices}
+            protectionLevel={protectionLevel}
+            useEnhancedProtection={protectionLevel !== 'basic'}
+            disableRightClick={disableRightClick}
+            enableDevtoolsProtection={enableDevtoolsProtection}
+            useCanvasRendering={useCanvasRendering}
+            heroLogoVisible={data?.event?.hero_logo_visible !== false}
+            heroLogoSize={data?.event?.hero_logo_size || 'medium'}
+            heroLogoPosition={data?.event?.hero_logo_position || 'top'}
+            headerStyle={data?.event?.header_style || theme.headerStyle}
+            heroDividerStyle={data?.event?.hero_divider_style || theme.heroDividerStyle || 'wave'}
+            heroImageAnchor={data?.event?.hero_image_anchor || 'center'}
+            isClient={isClient}
+            onToggleVisibility={isClient ? handleToggleVisibility : undefined}
+            showOriginalFilename={showOriginalFilename}
+          />
+        </div>
+
+        {/* Upload Modal */}
+        {showUploadModal && (data?.event?.allow_user_uploads || event?.allow_user_uploads) && (
+          <React.Suspense fallback={<p role="status">{t('common.loading')}</p>}>
+            <UserPhotoUpload
+              slug={slug}
+              categoryId={data?.event?.upload_category_id || event?.upload_category_id}
+              onUploadComplete={handleUploadComplete}
+              onClose={() => setShowUploadModal(false)}
+            />
+          </React.Suspense>
+        )}
+        {uploadProcessingNotice}
+
+        {/* Download size picker (#858) — "download all", or a selection. */}
+        <DownloadQueue slug={slug} />
+        {(showResolutionPicker || resolutionPickerIds) && (
+          <DownloadResolutionModal
+            slug={slug}
+            choices={downloadChoices}
+            photoIds={resolutionPickerIds || undefined}
+            onClose={() => {
+              setShowResolutionPicker(false);
+              setResolutionPickerIds(null);
+            }}
+          />
+        )}
+
+      </GalleryLayout>
+    </>
+    </GuestIdentityProvider>
+  );
+};

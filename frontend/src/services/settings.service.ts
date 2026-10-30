@@ -1,0 +1,404 @@
+import { api } from '../config/api';
+import type { SlideshowGlobalDefaults } from './slideshow.service';
+
+// Storage usage is shown in both the admin sidebar and system settings. Keep
+// both observers on one cache entry so a refresh in either view is visible in
+// the other instead of leaving two conflicting usage snapshots on screen.
+
+export interface BrandingSettings {
+  company_name: string;
+  company_tagline: string;
+  footer_text: string;
+  watermark_enabled: boolean;
+  watermark_position?: 'bottom-right' | 'bottom-left' | 'top-right' | 'top-left' | 'center';
+  watermark_opacity?: number;
+  watermark_size?: number;
+  watermark_logo_url?: string;
+  logo_url?: string;
+  favicon_url?: string;
+  logo_size?: 'small' | 'medium' | 'large' | 'xlarge' | 'custom';
+  logo_max_height?: number;
+  /**
+   * Logo placement.
+   * - 'left' | 'center' | 'right': position inside the gallery header bar.
+   * - 'sidepanel': moved out of the gallery header into the admin
+   *   sidebar's brand row (replaces the "Picflow Admin" text; switches
+   *   to the favicon when the sidebar is collapsed). The gallery
+   *   silently falls back to 'left' for its own rendering since it has
+   *   no sidepanel.
+   */
+  logo_position?: 'left' | 'center' | 'right' | 'sidepanel';
+  logo_display_header?: boolean;
+  logo_display_hero?: boolean;
+  logo_display_mode?: 'logo_only' | 'text_only' | 'logo_and_text';
+  hide_powered_by?: boolean;
+  /**
+   * Force the entire admin and public site into a specific color mode.
+   * When set, the user-facing dark/light toggle is hidden and any per-theme
+   * `colorMode` override is ignored. `null` means no force (default behavior).
+   */
+  force_color_mode?: 'dark' | 'light' | null;
+  /**
+   * Login-page-only branding (#354 follow-up). Applies to the admin login
+   * and setup screens. Frame default is true; size
+   * default is 'medium' (matches the visual state before the toggle).
+   */
+  login_logo_frame_enabled?: boolean;
+  login_logo_size?: 'small' | 'medium' | 'large' | 'xlarge';
+  // Domestic social links shown in the gallery footer. Empty strings hide
+  // the corresponding platform mark.
+  douyin_url?: string;
+  xiaohongshu_url?: string;
+  weibo_url?: string;
+  kuaishou_url?: string;
+  promo_markdown?: string;
+  promo_position?: 'above_footer' | 'below_footer';
+  // Per-install promo banner alignment (#482). Defaults to center
+  // so the banner aligns with the gallery footer.
+  promo_alignment?: 'left' | 'center' | 'right';
+  // Gallery info banner (#932). Must also be mapped in
+  // formatBrandingSettings below — a field declared here but missing
+  // from the read mapper loads empty and the next save wipes it (see
+  // the note on the footer/promo block there).
+  info_markdown?: string;
+}
+
+export interface ThemeSettings {
+  name?: string;
+  primaryColor?: string;
+  accentColor?: string;
+  backgroundColor?: string;
+  textColor?: string;
+  fontFamily?: string;
+  borderRadius?: 'none' | 'sm' | 'md' | 'lg';
+  customCss?: string;
+}
+
+export interface PasswordComplexitySettings {
+  complexityLevel: 'simple' | 'moderate' | 'strong' | 'very_strong';
+  config: {
+    minLength: number;
+    requireUppercase: boolean;
+    requireLowercase: boolean;
+    requireNumbers: boolean;
+    requireSpecialChars: boolean;
+    preventCommonPasswords: boolean;
+    minStrengthScore: number;
+  };
+}
+
+export interface StorageInfo {
+  // Real bytes under the storage root (#1164), excluding the external media
+  // share. Was the summed size of the catalogued originals, which on a
+  // reference-mode install is the size of a NAS.
+  total_used: number;
+  // Summed photos.size_bytes — what total_used used to be.
+  cataloged_bytes?: number;
+  // True when part of the storage root could not be read, so total_used is a
+  // floor rather than the answer. Anything comparing it against a limit has to
+  // say so, or an unreadable subtree reads as "safely under".
+  storage_partial?: boolean;
+  // Where total_used came from. 'disk' is the filesystem walk; 'catalog' means
+  // the backend is S3, where the objects are in the bucket and a walk of the
+  // local storage root would report near-zero.
+  storage_measurement?: 'disk' | 'catalog' | 'unavailable';
+  archive_storage: number;
+  storage_by_event: Array<{
+    event_name: string;
+    id: number;
+    size: number;
+  }>;
+  storage_limit: number;
+  storage_soft_limit: number;
+  configured_soft_limit: number | null;
+  recommended_soft_limit: number | null;
+  soft_limit_configured: boolean;
+  disk_total: number | null;
+  disk_free: number | null;
+  disk_available: number | null;
+  disk_total_raw: number | null;
+  disk_free_raw: number | null;
+  disk_available_raw: number | null;
+  disk_metrics_reliable: boolean;
+  disk_override_source: 'env' | 'settings' | null;
+}
+
+export interface SystemStatus {
+  system: {
+    platform: string;
+    arch: string;
+    hostname: string;
+    uptime: number;
+    nodeVersion: string;
+    memory: {
+      total: number;
+      free: number;
+      used: number;
+    };
+    cpu: {
+      model: string;
+      cores: number;
+    };
+  };
+  services: {
+    fileWatcher: { status: string };
+    expirationChecker: { status: string };
+  };
+  timestamp: string;
+}
+
+export interface PublicSiteBranding {
+  companyName: string | null;
+  companyTagline: string | null;
+  logoUrl: string | null;
+  footerText: string | null;
+  colors: {
+    primary: string;
+    accent: string;
+    background: string;
+    text: string;
+    surface?: string;
+    elevated?: string;
+    border?: string;
+    mutedText?: string;
+  };
+}
+
+export const settingsService = {
+  // Get all settings
+  async getAllSettings(): Promise<Record<string, any>> {
+    const response = await api.get<Record<string, any>>('/admin/settings');
+    return response.data;
+  },
+
+  // Get a subset of settings by key. Use this when a caller knows
+  // exactly which keys it needs — saves transferring (and JSON-parsing)
+  // the ~100-row dict. The backend accepts a comma-separated list and
+  // returns the same shape as getAllSettings(), just narrower.
+  async getSettings(keys: string[]): Promise<Record<string, any>> {
+    if (!keys || keys.length === 0) return {};
+    const response = await api.get<Record<string, any>>(
+      '/admin/settings',
+      { params: { keys: keys.join(',') } },
+    );
+    return response.data;
+  },
+
+  // Get settings by type
+  async getSettingsByType(type: 'branding' | 'theme' | 'general' | 'slideshow'): Promise<Record<string, any>> {
+    const response = await api.get<Record<string, any>>(`/admin/settings/${type}`);
+    return response.data;
+  },
+
+  // Update global Live Slideshow defaults (watermark)
+  async updateSlideshowDefaults(settings: SlideshowGlobalDefaults): Promise<void> {
+    await api.put('/admin/settings/slideshow', settings);
+  },
+
+  // Update branding settings
+  async updateBranding(settings: BrandingSettings): Promise<void> {
+    await api.put('/admin/settings/branding', settings);
+  },
+
+  async getPublicSiteDefaults(): Promise<{ html: string; css: string; baseCss: string; branding?: PublicSiteBranding; meta?: { title?: string } }> {
+    const response = await api.get('/admin/settings/public-site/default');
+    return response.data;
+  },
+
+  async resetPublicSite(): Promise<{ html: string; css: string; baseCss?: string; branding?: PublicSiteBranding }> {
+    const response = await api.post('/admin/settings/public-site/reset');
+    return response.data;
+  },
+
+  async updatePublicSite(settings: {
+    enabled: boolean;
+    html: string;
+    css: string;
+  }): Promise<void> {
+    await api.put('/admin/settings/general', {
+      general_public_site_enabled: settings.enabled,
+      general_public_site_html: settings.html,
+      general_public_site_custom_css: settings.css,
+    });
+  },
+
+  // Upload logo. Pass variant='dark' to store the dark-mode logo
+  // (branding_logo_url_dark); default stores the light logo.
+  async uploadLogo(file: File, variant?: 'dark'): Promise<string> {
+    const formData = new FormData();
+    formData.append('logo', file);
+
+    const response = await api.post<{ logoUrl: string }>(
+      `/admin/settings/logo${variant === 'dark' ? '?variant=dark' : ''}`,
+      formData,
+      {
+        headers: {
+          'Content-Type': 'multipart/form-data'
+        }
+      }
+    );
+
+    return response.data.logoUrl;
+  },
+
+  // Remove a logo (variant='dark' clears the dark-mode logo).
+  async removeLogo(variant?: 'dark'): Promise<void> {
+    await api.delete(`/admin/settings/logo${variant === 'dark' ? '?variant=dark' : ''}`);
+  },
+
+  // Upload favicon
+  async uploadFavicon(file: File): Promise<string> {
+    const formData = new FormData();
+    formData.append('favicon', file);
+
+    const response = await api.post<{ faviconUrl: string }>(
+      '/admin/settings/favicon',
+      formData,
+      {
+        headers: {
+          'Content-Type': 'multipart/form-data'
+        }
+      }
+    );
+
+    return response.data.faviconUrl;
+  },
+
+  // Upload watermark logo
+  async uploadWatermarkLogo(file: File): Promise<string> {
+    const formData = new FormData();
+    formData.append('watermarkLogo', file);
+
+    const response = await api.post<{ watermarkLogoUrl: string }>(
+      '/admin/settings/branding/watermark-logo',
+      formData,
+      {
+        headers: {
+          'Content-Type': 'multipart/form-data'
+        }
+      }
+    );
+
+    return response.data.watermarkLogoUrl;
+  },
+
+  // Update theme settings
+  async updateTheme(settings: ThemeSettings): Promise<void> {
+    await api.put('/admin/settings/theme', settings);
+  },
+
+  // General API rate limiter (#1337). Its own route validates ranges and
+  // clears the limiter's settings cache, so changes apply at once.
+  async updateRateLimit(settings: {
+    rate_limit_enabled: boolean;
+    rate_limit_window_minutes: number;
+    rate_limit_max_requests: number;
+    rate_limit_auth_max_requests: number;
+    rate_limit_skip_authenticated: boolean;
+    rate_limit_public_endpoints_only: boolean;
+  }): Promise<void> {
+    await api.put('/admin/settings/security/rate-limit', settings);
+  },
+  // Update multiple settings at once
+  async updateSettings(settings: Record<string, any>): Promise<void> {
+    // Determine the endpoint based on setting keys
+    const firstKey = Object.keys(settings)[0];
+    let endpoint = '/admin/settings/general';
+
+    if (firstKey?.startsWith('security_')) {
+      endpoint = '/admin/settings/security';
+    } else if (firstKey?.startsWith('branding_')) {
+      endpoint = '/admin/settings/branding';
+    } else if (firstKey?.startsWith('seo_')) {
+      endpoint = '/admin/settings/seo';
+    }
+
+    await api.put(endpoint, settings);
+  },
+
+  // Get storage information
+  async getStorageInfo(): Promise<StorageInfo> {
+    const response = await api.get<StorageInfo>('/admin/settings/storage/info');
+    return response.data;
+  },
+
+  // Get system status
+  async getSystemStatus(): Promise<SystemStatus> {
+    const response = await api.get<SystemStatus>('/admin/system/status');
+    return response.data;
+  },
+
+  // Helper to parse boolean values that might come as strings or actual booleans
+  _parseBoolean(value: any, defaultValue: boolean): boolean {
+    if (value === true || value === 'true') return true;
+    if (value === false || value === 'false') return false;
+    return defaultValue;
+  },
+
+  // Format branding settings from raw data
+  formatBrandingSettings(rawSettings: Record<string, any>): BrandingSettings {
+    return {
+      company_name: rawSettings.branding_company_name || '',
+      company_tagline: rawSettings.branding_company_tagline || '',
+      footer_text: rawSettings.branding_footer_text || '',
+      watermark_enabled: this._parseBoolean(rawSettings.branding_watermark_enabled, false),
+      watermark_position: rawSettings.branding_watermark_position || 'bottom-right',
+      watermark_opacity: rawSettings.branding_watermark_opacity || 50,
+      watermark_size: rawSettings.branding_watermark_size || 15,
+      watermark_logo_url: rawSettings.branding_watermark_logo_url || undefined,
+      logo_url: rawSettings.branding_logo_url || undefined,
+      favicon_url: rawSettings.branding_favicon_url || undefined,
+      logo_size: rawSettings.branding_logo_size || 'medium',
+      logo_max_height: rawSettings.branding_logo_max_height || 48,
+      logo_position: rawSettings.branding_logo_position || 'left',
+      logo_display_header: this._parseBoolean(rawSettings.branding_logo_display_header, true),
+      logo_display_hero: this._parseBoolean(rawSettings.branding_logo_display_hero, true),
+      logo_display_mode: rawSettings.branding_logo_display_mode || 'logo_and_text',
+      hide_powered_by: this._parseBoolean(rawSettings.branding_hide_powered_by, false),
+      force_color_mode: rawSettings.branding_force_color_mode === 'dark'
+        ? 'dark'
+        : rawSettings.branding_force_color_mode === 'light'
+          ? 'light'
+          : null,
+      // Login-only knobs (#354). Default to frame ON, size 'medium' so
+      // installs that haven't toggled them keep the visual state shipped
+      // before the controls existed.
+      login_logo_frame_enabled: this._parseBoolean(rawSettings.branding_login_logo_frame_enabled, true),
+      login_logo_size: ['small', 'medium', 'large', 'xlarge'].includes(rawSettings.branding_login_logo_size)
+        ? rawSettings.branding_login_logo_size
+        : 'medium',
+      // Keep each domestic platform URL in the branding form on reload so
+      // a later partial edit cannot accidentally clear saved links.
+      douyin_url: rawSettings.branding_douyin_url || '',
+      xiaohongshu_url: rawSettings.branding_xiaohongshu_url || '',
+      weibo_url: rawSettings.branding_weibo_url || '',
+      kuaishou_url: rawSettings.branding_kuaishou_url || '',
+      promo_markdown: rawSettings.branding_promo_markdown || '',
+      info_markdown: rawSettings.branding_info_markdown || '',
+      promo_position: rawSettings.branding_promo_position === 'below_footer' ? 'below_footer' : 'above_footer',
+      promo_alignment: ['left', 'center', 'right'].includes(rawSettings.branding_promo_alignment)
+        ? rawSettings.branding_promo_alignment
+        : 'center'
+    };
+  },
+
+  // Format theme settings from raw data
+  formatThemeSettings(rawSettings: Record<string, any>): ThemeSettings {
+    return rawSettings.theme_config || {};
+  },
+
+  // Format bytes to human readable
+  formatBytes(bytes: number): string {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  },
+
+  // Get password complexity settings
+  async getPasswordComplexitySettings(): Promise<PasswordComplexitySettings> {
+    const response = await api.get<PasswordComplexitySettings>('/admin/settings/password/complexity');
+    return response.data;
+  }
+};
