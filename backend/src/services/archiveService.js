@@ -72,6 +72,12 @@ async function archiveEvent(event) {
     const changed = await db('events').where({ id: event.id, is_archiving: false, is_archived: false }).update({ is_archiving: true });
     if (changed !== 1) throw new Error('项目已归档或正在归档');
     claimed = true;
+    // Revoke password shares before taking the archive snapshot. If archive
+    // processing later fails, the project can be restored, but old external
+    // download links must not silently become valid again.
+    if (await db.schema.hasTable('object_delivery_shares')) {
+      await db('object_delivery_shares').where({ event_id: event.id }).whereNull('revoked_at').update({ revoked_at: new Date() });
+    }
     // Archive pauses gallery derivative work as well as final-photo delivery.
     // Existing objects remain available for the explicit retain/delete choice.
     await require('./cloudGalleryAssetService').pauseProjectAssets(event.id);

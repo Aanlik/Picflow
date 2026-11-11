@@ -8,6 +8,7 @@ import { Button, Card } from '../common';
 import { useMutationWithToast } from '../../hooks';
 import { toast } from 'react-toastify';
 import { archiveService } from '../../services/archive.service';
+import { CloudDeliveryShareManager } from './CloudDeliveryShareManager';
 
 type DeliveryStatus = {
   enabled: boolean;
@@ -205,6 +206,13 @@ export function ObjectDeliveryCard({ eventId, isArchived = false }: { eventId: n
               </li>)}
             </ul>}
           </div>
+
+          <CloudDeliveryShareManager
+            eventId={eventId}
+            isArchived={isArchived}
+            canEdit={canEdit}
+            storageReady={storageReady}
+          />
 
         </>
       )}

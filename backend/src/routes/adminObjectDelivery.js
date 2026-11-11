@@ -6,6 +6,7 @@ const { requirePermission } = require('../middleware/permissions');
 const { requireEventOwnership } = require('../middleware/ownership');
 const delivery = require('../services/objectDeliveryService');
 const { parseBooleanInput } = require('../utils/parsers');
+const cloudDeliveryShares = require('../services/cloudDeliveryShareService');
 
 const router = express.Router();
 
@@ -22,6 +23,51 @@ router.get('/:id/object-delivery', adminAuth, requirePermission(['events.view', 
     });
   } catch (error) {
     res.status(500).json({ error: '读取项目云端交付状态失败' });
+  }
+});
+
+router.get('/:id/object-delivery/shares', adminAuth, requirePermission(['events.view', 'events.edit']), requireEventOwnership, async (req, res) => {
+  res.set('Cache-Control', 'private, no-store');
+  try {
+    res.json(await cloudDeliveryShares.listProjectShares(req.params.id));
+  } catch (error) {
+    res.status(error.status || 503).json({ code: error.code || 'SHARE_LIST_FAILED', error: error.message || '读取云端分享失败' });
+  }
+});
+
+router.post('/:id/object-delivery/shares', adminAuth, requirePermission('events.edit'), requireEventOwnership, [
+  body('photo_id').isInt({ min: 1 }).toInt(),
+  body('password').isString(),
+  body('expires_in_days').isInt({ min: 1, max: 30 }).toInt(),
+], async (req, res) => {
+  res.set('Cache-Control', 'private, no-store');
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ code: 'INVALID_SHARE_REQUEST', error: '分享参数无效' });
+    const share = await cloudDeliveryShares.createProjectShare(
+      req.params.id,
+      req.body.photo_id,
+      req.body.password,
+      req.body.expires_in_days,
+      req.admin.id,
+    );
+    res.status(201).json(share);
+  } catch (error) {
+    res.status(error.status || 503).json({ code: error.code || 'SHARE_CREATE_FAILED', error: error.message || '创建云端分享失败' });
+  }
+});
+
+router.delete('/:id/object-delivery/shares/:shareId', adminAuth, requirePermission('events.edit'), requireEventOwnership, async (req, res) => {
+  res.set('Cache-Control', 'private, no-store');
+  try {
+    const shareId = Number(req.params.shareId);
+    if (!Number.isSafeInteger(shareId) || shareId < 1) return res.status(400).json({ code: 'INVALID_SHARE_ID' });
+    if (!await cloudDeliveryShares.revokeProjectShare(req.params.id, shareId)) {
+      return res.status(404).json({ code: 'SHARE_NOT_FOUND' });
+    }
+    return res.json({ success: true });
+  } catch (error) {
+    return res.status(503).json({ code: 'SHARE_REVOKE_FAILED', error: '撤销云端分享失败' });
   }
 });
 

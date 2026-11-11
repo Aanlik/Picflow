@@ -876,6 +876,7 @@ app.use('/api/admin/transfers',  require('./src/routes/adminTransfers'));
 // PicTransfer (#997): recipient download + client upload, token-authenticated.
 app.use('/api/public/transfer', require('./src/routes/publicTransfer'));
 app.use('/api/public/transfer-upload', require('./src/routes/publicTransferUpload'));
+app.use('/api/public/cloud-delivery-shares', require('./src/routes/publicCloudDeliveryShares'));
 // Only the integrated image exposes the two container-local Bridge photo
 // operations; standalone Picflow installs have no Bridge service surface.
 if (/^(1|true)$/i.test(process.env.PICPEAK_INTEGRATED_BRIDGE || '')) {
@@ -929,6 +930,16 @@ try {
     // /index.html must serve the RENDERED shell, and express.static would
     // otherwise answer first with the raw template straight off disk.
     app.get('/index.html', (req, res) => sendSpa(res));
+
+    // Password-protected final-photo shares contain a bearer token in the
+    // path. Do not let shared-link pages enter browser/proxy caches or become
+    // referrers to third-party object storage.
+    app.get('/cloud-delivery/:token', (req, res) => {
+      res.setHeader('Cache-Control', 'private, no-store, no-cache, must-revalidate');
+      res.setHeader('Referrer-Policy', 'no-referrer');
+      res.setHeader('X-Robots-Tag', 'noindex, nofollow, noarchive');
+      sendSpa(res);
+    });
 
     // Serve pre-built assets. index:false keeps `/` flowing to the landing-page
     // handler below (nginx parity: `location = /` goes to the backend, it never

@@ -30,6 +30,7 @@ const LocalUsersPage = lazy(() => import('./pages/admin/LocalUsersPage').then((m
 const TransfersPage = lazy(() => import('./pages/admin/transfers/TransfersPage').then((m) => ({ default: m.TransfersPage })));
 const TransferDownloadPage = lazy(() => import('./pages/public/TransferDownloadPage').then((m) => ({ default: m.TransferDownloadPage })));
 const TransferUploadPage = lazy(() => import('./pages/public/TransferUploadPage').then((m) => ({ default: m.TransferUploadPage })));
+const CloudDeliverySharePage = lazy(() => import('./pages/public/CloudDeliverySharePage').then((m) => ({ default: m.CloudDeliverySharePage })));
 const AdminLayout = lazy(() => import('./components/admin/AdminLayout').then((m) => ({ default: m.AdminLayout })));
 const AdminAuthWrapper = lazy(() => import('./components/admin/AdminAuthWrapper').then((m) => ({ default: m.AdminAuthWrapper })));
 const SetupPage = lazy(() => import('./pages/SetupPage').then((m) => ({ default: m.SetupPage })));
@@ -135,6 +136,7 @@ function App() {
                       token-only, no auth. */}
                   <Route path="/transfer/:token" element={<TransferDownloadPage />} />
                   <Route path="/transfer-upload/:token" element={<TransferUploadPage />} />
+                  <Route path="/cloud-delivery/:token" element={<CloudDeliverySharePage />} />
 
                   <Route path="/customer/*" element={<Navigate to="/" replace />} />
 
