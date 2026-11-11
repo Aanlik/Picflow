@@ -157,6 +157,7 @@ export function BatchFeedbackControls({
           ? t('gallery.batchSubmittingProgress', retouchProgress)
           : t('gallery.batchSubmitting')}</span>}
       </div>
+      {retouchEnabled && <p className="text-xs leading-5 text-neutral-500 dark:text-neutral-400">{t('gallery.batchRetouchScopeHint')}</p>}
       {commentsEnabled && photoIds.length > 20 && <p className="text-xs text-amber-700">{t('gallery.batchCommentLimit')}</p>}
       {commentOpen && commentsEnabled && (
         <div className="space-y-2">

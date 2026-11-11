@@ -55,6 +55,7 @@ import { photoDisplayFilename } from '../../utils/photoFilename';
 import { shouldShowGalleryLogoutControl } from '../../utils/gallerySessionControls';
 import { galleryRefreshInterval } from '../../utils/galleryRefreshInterval';
 import type { RetouchBatchPhotoState } from './photoSelection';
+import { switchWorkflowFilter } from './workflowFilterSelection';
 
 const UserPhotoUpload = React.lazy(() => import('./UserPhotoUpload').then((module) => ({ default: module.UserPhotoUpload })));
 
@@ -1396,7 +1397,15 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ slug, event, requiresP
                       <button
                         key={filter}
                         type="button"
-                        onClick={() => setWorkflowFilter(filter)}
+                        onClick={() => {
+                          const next = switchWorkflowFilter({ filter: workflowFilter, photoIds: selectedPhotos }, filter);
+                          if (next.photoIds !== selectedPhotos) {
+                            setSelectedPhotos(next.photoIds);
+                            queryClient.invalidateQueries({ queryKey: ['gallery-photos', slug] });
+                            queryClient.invalidateQueries({ queryKey: ['gallery-retouch-workflow', slug] });
+                          }
+                          setWorkflowFilter(next.filter);
+                        }}
                         aria-pressed={workflowFilter === filter}
                         className={`rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${workflowFilter === filter
                           ? 'border-emerald-700 bg-emerald-700 text-white'
