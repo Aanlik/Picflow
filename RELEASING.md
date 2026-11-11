@@ -8,3 +8,5 @@
 6. 升级前备份 Picflow 数据卷、Bridge 状态卷及项目交付目录。Camera 原片保持只读挂载。
 
 `main` 是主线和正式发布分支，`dev` 用于日常开发。不发布可变的 `latest`、`stable` 或 `main` 镜像标签，也不自动同步上游代码。
+
+NAS 验收 `dev` 时，在 `dev` 分支手动运行同一工作流并勾选发布；它会推送不可变标签 `<version>-dev-<commit>`，用于此次开发版本验证。该标签不替代 `main` 的正式版本镜像或 GitHub Release。

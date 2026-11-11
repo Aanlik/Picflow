@@ -8,7 +8,7 @@ on:
       publish:
         type: boolean
         default: false
-        description: Publish the fixed-version image
+        description: Publish the main release image or an immutable dev image for NAS testing
 permissions:
   contents: read
 jobs:
@@ -68,7 +68,7 @@ jobs:
           load: true
           cache-from: type=gha,scope=picflow
           cache-to: type=gha,mode=max,scope=picflow
-      - name: Publish only after manual approval of a release run
+      - name: Publish the fixed-version release image
         if: github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -78,5 +78,18 @@ jobs:
           owner=$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
           version=${PICFLOW_IMAGE##*:}
           target="ghcr.io/$owner/picflow:$version"
+          docker tag "$PICFLOW_IMAGE" "$target"
+          docker push "$target"
+      - name: Publish an immutable development image for NAS testing
+        if: github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/dev'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PICFLOW_IMAGE: ${{ steps.picflow.outputs.image }}
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          owner=$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
+          version=${PICFLOW_IMAGE##*:}
+          revision=${GITHUB_SHA:0:12}
+          target="ghcr.io/$owner/picflow:${version}-dev-${revision}"
           docker tag "$PICFLOW_IMAGE" "$target"
           docker push "$target"

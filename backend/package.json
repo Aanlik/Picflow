@@ -1,6 +1,6 @@
 {
   "name": "picflow-backend",
-  "version": "1.6.7",
+  "version": "1.7.0",
   "description": "Backend for Picflow photography platform",
   "main": "server.js",
   "engines": {
