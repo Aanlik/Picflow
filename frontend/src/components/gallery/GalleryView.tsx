@@ -54,6 +54,7 @@ import { versionedRetouchUrl } from '../../utils/versionedRetouchUrl';
 import { photoDisplayFilename } from '../../utils/photoFilename';
 import { shouldShowGalleryLogoutControl } from '../../utils/gallerySessionControls';
 import { galleryRefreshInterval } from '../../utils/galleryRefreshInterval';
+import type { RetouchBatchPhotoState } from './photoSelection';
 
 const UserPhotoUpload = React.lazy(() => import('./UserPhotoUpload').then((module) => ({ default: module.UserPhotoUpload })));
 
@@ -201,15 +202,17 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ slug, event, requiresP
     const state = retouchByPhotoId.get(photo.id);
     if (!retouchWorkflow?.enabled) return localizedPhoto;
     const version = state?.current_version || 0;
+    const revision = state?.current_revision || 0;
     return {
       ...localizedPhoto,
-      url: versionedRetouchUrl(photo.url, version) || photo.url,
-      thumbnail_url: versionedRetouchUrl(photo.thumbnail_url, version),
-      preview_url: versionedRetouchUrl(photo.preview_url, version),
-      hero_url: versionedRetouchUrl(photo.hero_url, version),
-      slideshow_url: versionedRetouchUrl(photo.slideshow_url, version),
+      url: versionedRetouchUrl(photo.url, version, revision) || photo.url,
+      thumbnail_url: versionedRetouchUrl(photo.thumbnail_url, version, revision),
+      preview_url: versionedRetouchUrl(photo.preview_url, version, revision),
+      hero_url: versionedRetouchUrl(photo.hero_url, version, revision),
+      slideshow_url: versionedRetouchUrl(photo.slideshow_url, version, revision),
       retouch_state: state?.state || 'proof',
       retouch_version: version,
+      retouch_revision: revision,
       retouch_selected: Boolean(photo.retouch_selected),
       retouch_selection_cancelled: Boolean(state?.selection_cancelled),
       retouch_delivered_retained: Boolean(state?.delivered_retained),
@@ -239,6 +242,18 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ slug, event, requiresP
     });
   }, [galleryPhotos, activeRequestPhotoIds, retouchWorkflow?.enabled, workflowFilter]);
   const { isSelectionMode, setIsSelectionMode, selectedPhotos, setSelectedPhotos } = useGallerySelection(galleryPhotos);
+  const batchRetouchSelectionStates = useMemo<RetouchBatchPhotoState[]>(() => {
+    const photosById = new Map(galleryPhotos.map((photo) => [photo.id, photo]));
+    return Array.from(selectedPhotos).flatMap((photoId) => {
+      const photo = photosById.get(photoId);
+      if (!photo) return [];
+      return [{
+        photoId,
+        selected: Boolean(photo.retouch_selected),
+        canChange: photo.retouch_state !== 'delivered' && !photo.retouch_withdraw_pending,
+      }];
+    });
+  }, [galleryPhotos, selectedPhotos]);
 
   // Set protection level when data is available
   useEffect(() => {
@@ -1153,6 +1168,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ slug, event, requiresP
             <BatchFeedbackControls
               slug={slug}
               photoIds={Array.from(selectedPhotos)}
+              retouchSelectionStates={batchRetouchSelectionStates}
               retouchEnabled={Boolean(retouchWorkflow?.enabled)}
               commentsEnabled={Boolean(feedbackEnabled && feedbackSettings?.allow_comments)}
               requireGuestName={!!feedbackSettings?.require_name_email}
@@ -1363,43 +1379,50 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ slug, event, requiresP
 
         {retouchWorkflow?.enabled && (
           <section className="mt-4 space-y-3 rounded-lg border border-emerald-200 bg-emerald-50 p-4 dark:border-emerald-900 dark:bg-emerald-950/30" aria-label={t('photographyWorkflow.clientPanelTitle')}>
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <h2 className="text-sm font-semibold text-emerald-950 dark:text-emerald-100">{t('photographyWorkflow.clientPanelTitle')}</h2>
-                <p className="mt-1 text-sm text-emerald-900/80 dark:text-emerald-100/80">{t('photographyWorkflow.clientPanelHelp')}</p>
-              </div>
-              <Button
-                variant={isSelectionMode ? 'outline' : 'primary'}
-                size="sm"
-                onClick={() => {
-                  setIsSelectionMode((active) => !active);
-                  if (isSelectionMode) setSelectedPhotos(new Set());
-                }}
-                className="shrink-0"
-              >
-                {isSelectionMode ? t('gallery.cancelSelection') : t('photographyWorkflow.selectMultiple')}
-              </Button>
-            </div>
-            <div className="flex flex-wrap gap-2" role="group" aria-label={t('photographyWorkflow.quickFilterTitle')}>
-              {(['all', 'proof', 'selected', 'editing', 'delivered', 'requests', 'cancelled'] as const).map((filter) => (
-                <button
-                  key={filter}
-                  type="button"
-                  onClick={() => setWorkflowFilter(filter)}
-                  aria-pressed={workflowFilter === filter}
-                  className={`rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${workflowFilter === filter
-                    ? 'border-emerald-700 bg-emerald-700 text-white'
-                    : 'border-emerald-200 bg-white text-emerald-950 hover:bg-emerald-100 dark:border-emerald-800 dark:bg-neutral-900 dark:text-emerald-100 dark:hover:bg-emerald-950'}`}
-                >
-                  {t(`photographyWorkflow.quickFilter.${filter}`)} ({workflowPhotoCounts[filter]})
-                </button>
-              ))}
+            <div>
+              <h2 className="text-sm font-semibold text-emerald-950 dark:text-emerald-100">{t('photographyWorkflow.clientPanelTitle')}</h2>
+              <p className="mt-1 text-sm text-emerald-900/80 dark:text-emerald-100/80">{t('photographyWorkflow.clientPanelHelp')}</p>
             </div>
           </section>
         )}
 
+        {(retouchWorkflow?.enabled || (isSelectionMode && selectedPhotos.size > 0)) && (
+          <div className="sticky top-[var(--gallery-header-height,0px)] z-30 -mx-4 px-4 py-2 border-b border-neutral-200 bg-white/95 shadow-sm backdrop-blur dark:border-neutral-700 dark:bg-neutral-950/95 sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8">
+            {retouchWorkflow?.enabled && (
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <div className="overflow-x-auto" role="group" aria-label={t('photographyWorkflow.quickFilterTitle')}>
+                  <div className="flex min-w-max flex-nowrap gap-2 sm:min-w-0 sm:flex-wrap">
+                    {(['all', 'proof', 'selected', 'editing', 'delivered', 'requests', 'cancelled'] as const).map((filter) => (
+                      <button
+                        key={filter}
+                        type="button"
+                        onClick={() => setWorkflowFilter(filter)}
+                        aria-pressed={workflowFilter === filter}
+                        className={`rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${workflowFilter === filter
+                          ? 'border-emerald-700 bg-emerald-700 text-white'
+                          : 'border-emerald-200 bg-white text-emerald-950 hover:bg-emerald-100 dark:border-emerald-800 dark:bg-neutral-900 dark:text-emerald-100 dark:hover:bg-emerald-950'}`}
+                      >
+                        {t(`photographyWorkflow.quickFilter.${filter}`)} ({workflowPhotoCounts[filter]})
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <Button
+                  variant={isSelectionMode ? 'outline' : 'primary'}
+                  size="sm"
+                  onClick={() => {
+                    setIsSelectionMode((active) => !active);
+                    if (isSelectionMode) setSelectedPhotos(new Set());
+                  }}
+                  className="shrink-0 self-start sm:self-auto"
+                >
+                  {isSelectionMode ? t('gallery.cancelSelection') : t('photographyWorkflow.selectMultiple')}
+                </Button>
+              </div>
+            )}
+
         {isSelectionMode && selectedPhotos.size > 0 && allowDownloads && getDownloadableSelectedPhotoIds(filteredPhotos, selectedPhotos).length > 0 && (
-          <div className="mt-4 flex flex-wrap items-center gap-2">
+          <div className="mt-2 flex flex-wrap items-center gap-2">
             <Button
               variant="primary"
               size="sm"
@@ -1414,14 +1437,17 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ slug, event, requiresP
         )}
 
         {isSelectionMode && selectedPhotos.size > 0 && (feedbackEnabled || retouchWorkflow?.enabled) && (
-          <div className="mt-4">
+          <div className="mt-2">
             <BatchFeedbackControls
               slug={slug}
               photoIds={Array.from(selectedPhotos)}
+              retouchSelectionStates={batchRetouchSelectionStates}
               retouchEnabled={Boolean(retouchWorkflow?.enabled)}
               commentsEnabled={Boolean(feedbackEnabled && feedbackSettings?.allow_comments)}
               requireGuestName={!!feedbackSettings?.require_name_email}
             />
+          </div>
+        )}
           </div>
         )}
 

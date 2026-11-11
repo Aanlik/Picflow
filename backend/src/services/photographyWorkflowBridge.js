@@ -225,6 +225,7 @@ async function getPublicPhotoStates(eventId) {
     selection_cancelled: Boolean(photo.selection_cancelled),
     delivered: Boolean(photo.delivered),
     current_version: Number(photo.current_version) || 0,
+    current_revision: Number(photo.current_revision) || 0,
     added_during_editing: Boolean(photo.added_during_editing),
     ready_for_editing: Boolean(photo.ready_for_editing),
     withdraw_pending: Boolean(photo.withdraw_pending),

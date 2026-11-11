@@ -60,6 +60,10 @@ class Delivery(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     photo_pk: Mapped[int] = mapped_column(ForeignKey("photos.id"))
     sha256: Mapped[str] = mapped_column(String(64))
+    # A photo may be re-exported in place (for example, a corrected V1).
+    # Keep that replacement in the same version slot while retaining its
+    # separate delivery record and immutable snapshot.
+    version: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     marker: Mapped[str] = mapped_column(String(512))
     snapshot: Mapped[str] = mapped_column(Text)
     state: Mapped[str] = mapped_column(String(16), default="PENDING")
@@ -118,6 +122,22 @@ def database(url):
     if "previous_stage" not in {c["name"] for c in inspect(engine).get_columns("projects")}:
         with engine.begin() as conn:
             conn.execute(text("ALTER TABLE projects ADD COLUMN previous_stage VARCHAR(16)"))
+    delivery_columns = {c["name"] for c in inspect(engine).get_columns("deliveries")}
+    if "version" not in delivery_columns:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE deliveries ADD COLUMN version INTEGER NOT NULL DEFAULT 0"))
+            rows = conn.execute(text(
+                "SELECT id, photo_pk, state FROM deliveries ORDER BY photo_pk, id"
+            )).all()
+            next_version = {}
+            for row in rows:
+                version = next_version.get(row.photo_pk, 0) + 1
+                if row.state == "SUCCESS":
+                    next_version[row.photo_pk] = version
+                conn.execute(text("UPDATE deliveries SET version = :version WHERE id = :id"), {
+                    "version": version,
+                    "id": row.id,
+                })
     with engine.begin() as conn:
         conn.execute(text("""
             UPDATE projects

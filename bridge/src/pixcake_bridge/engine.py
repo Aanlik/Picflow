@@ -135,7 +135,7 @@ class Engine:
 
     def current_version(self, s, photo):
         return int(s.scalar(
-            select(func.count(Delivery.id)).where(
+            select(func.max(Delivery.version)).where(
                 Delivery.photo_pk == photo.id,
                 Delivery.state == "SUCCESS",
             )
@@ -648,22 +648,51 @@ class Engine:
                 if photo.cancelled and photo.delivery_hash:
                     continue
                 key = stem_key(photo.work_filename or photo.source_filename)
-                version = self.current_version(s, photo) + 1
-                version_dir = self.output_folder(cfg, version)
-                if version not in version_indexes:
-                    version_indexes[version] = await asyncio.to_thread(index_files, version_dir, FINAL_EXTENSIONS) if version_dir.is_dir() else {}
-                candidates = list(version_indexes[version].get(key, []))
-                # Keep compatibility with projects that exported their first
-                # delivery directly into 04_FINAL before version folders were
-                # introduced. A V1 export always wins when it exists alone.
-                if version == 1:
-                    if legacy_index is None:
-                        legacy_index = await asyncio.to_thread(index_files, cfg.final, FINAL_EXTENSIONS)
-                    legacy = [p for p in legacy_index.get(key, []) if p.parent == cfg.final]
-                    candidates.extend(legacy)
-                override = json.loads(photo.final_overrides or "{}").get(str(version))
-                if override:
-                    candidates = [safe_file(cfg.final / override, cfg.final)]
+                current_version = self.current_version(s, photo)
+                version = current_version + 1
+                candidates = []
+
+                async def candidates_for(target_version):
+                    folder = self.output_folder(cfg, target_version)
+                    if target_version not in version_indexes:
+                        version_indexes[target_version] = (
+                            await asyncio.to_thread(index_files, folder, FINAL_EXTENSIONS)
+                            if folder.is_dir() else {}
+                        )
+                    found = list(version_indexes[target_version].get(key, []))
+                    override = json.loads(photo.final_overrides or "{}").get(str(target_version))
+                    if override:
+                        return [safe_file(cfg.final / override, cfg.final)]
+                    return found
+
+                # A version folder is a live output slot. If its contents were
+                # manually corrected after delivery (most commonly V1), upload
+                # that change into the same slot; only an unchanged current
+                # version advances the scan to V2/V3. This keeps the customer
+                # facing version number aligned with the photographer's folder.
+                if current_version > 0:
+                    current_candidates = await candidates_for(current_version)
+                    if current_candidates:
+                        if len(current_candidates) != 1:
+                            raise ValueError("FINAL 或 Proof 同 stem 冲突")
+                        current_source = current_candidates[0]
+                        safe_file(current_source, cfg.final)
+                        if not self.stability.ready(current_source):
+                            continue
+                        current_digest = await asyncio.to_thread(sha256, current_source)
+                        if current_digest != photo.delivery_hash:
+                            version, candidates = current_version, current_candidates
+
+                if not candidates:
+                    version = current_version + 1
+                    candidates = await candidates_for(version)
+                    # Keep compatibility with projects that exported their first
+                    # delivery directly into 04_FINAL before version folders were
+                    # introduced. A V1 export always wins when it exists alone.
+                    if version == 1 and not candidates:
+                        if legacy_index is None:
+                            legacy_index = await asyncio.to_thread(index_files, cfg.final, FINAL_EXTENSIONS)
+                        candidates = [p for p in legacy_index.get(key, []) if p.parent == cfg.final]
                 if not candidates:
                     continue
                 if len(candidates) != 1 or (photo.source_kind != "UPLOAD" and not photo.raw_override and counts[stem_key(photo.source_filename)] != 1):
@@ -697,7 +726,7 @@ class Engine:
                     # be reconciled on restart.
                     marker = f"{Path(photo.work_filename or photo.source_filename).stem}.__bridge_{digest}{source.suffix.lower()}"
                     safe_name(marker)
-                    delivery = Delivery(photo_pk=photo.id, sha256=digest, marker=marker, snapshot=str(staged))
+                    delivery = Delivery(photo_pk=photo.id, sha256=digest, version=version, marker=marker, snapshot=str(staged))
                     s.add(delivery)
                 elif delivery.state == "SUCCESS":
                     # The same bytes were already delivered for this photo.
@@ -710,6 +739,7 @@ class Engine:
                         staged.unlink()
                     else:
                         delivery.snapshot = str(staged)
+                    delivery.version = version
                 s.commit()
                 if photo.remote_filename == delivery.marker:
                     self.success(s, cfg, photo, delivery, complete_task=True)

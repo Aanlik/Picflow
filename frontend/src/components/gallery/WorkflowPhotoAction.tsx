@@ -7,6 +7,7 @@ import { toast } from 'react-toastify';
 import type { Photo } from '../../types';
 import { galleryService } from '../../services/gallery.service';
 import { useGuestIdentityOptional } from '../../contexts/GuestIdentityContext';
+import { selectedForPhoto, type PhotoSelectionOverride } from './photoSelection';
 
 export function WorkflowPhotoAction({
   photo,
@@ -24,9 +25,12 @@ export function WorkflowPhotoAction({
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const guestIdentity = useGuestIdentityOptional();
-  const [selected, setSelected] = useState(Boolean(photo.retouch_selected));
-  const [busy, setBusy] = useState(false);
-  const [showWithdrawOptions, setShowWithdrawOptions] = useState(false);
+  const [selectionOverride, setSelectionOverride] = useState<PhotoSelectionOverride | null>(null);
+  const [busyPhotoIds, setBusyPhotoIds] = useState<Set<number>>(() => new Set());
+  const [withdrawPhotoId, setWithdrawPhotoId] = useState<number | null>(null);
+  const selected = selectedForPhoto(photo.id, Boolean(photo.retouch_selected), selectionOverride);
+  const busy = busyPhotoIds.has(photo.id);
+  const showWithdrawOptions = withdrawPhotoId === photo.id;
   const delivered = photo.retouch_state === 'delivered';
 
   const getSelectionErrorMessage = (error: any) => {
@@ -42,23 +46,39 @@ export function WorkflowPhotoAction({
     return t('photographyWorkflow.selectionFailed');
   };
 
-  useEffect(() => setSelected(Boolean(photo.retouch_selected)), [photo.retouch_selected]);
+  useEffect(() => {
+    setSelectionOverride((current) => (
+      current?.photoId === photo.id && current.selected === Boolean(photo.retouch_selected)
+        ? null
+        : current
+    ));
+  }, [photo.id, photo.retouch_selected]);
+
+  const setPhotoBusy = (photoId: number, value: boolean) => {
+    setBusyPhotoIds((current) => {
+      const next = new Set(current);
+      if (value) next.add(photoId);
+      else next.delete(photoId);
+      return next;
+    });
+  };
 
   const updateSelection = async (event: MouseEvent<HTMLButtonElement>) => {
     event.stopPropagation();
     if (busy) return;
 
     if (delivered && selected) {
-      setShowWithdrawOptions(true);
+      setWithdrawPhotoId(photo.id);
       return;
     }
 
-    setBusy(true);
+    const photoId = photo.id;
+    setPhotoBusy(photoId, true);
     try {
       if (guestIdentity?.identityMode === 'guest') await guestIdentity.ensureIdentity();
-      const result = await galleryService.setRetouchSelection(slug, photo.id, !selected);
+      const result = await galleryService.setRetouchSelection(slug, photoId, !selected);
       const nextSelected = result.selected;
-      setSelected(nextSelected);
+      setSelectionOverride({ photoId, selected: nextSelected });
       toast.success(t(nextSelected
         ? 'photographyWorkflow.selectionAdded'
         : delivered ? 'photographyWorkflow.deliveredSelectionRemoved' : 'photographyWorkflow.selectionRemoved'));
@@ -73,18 +93,19 @@ export function WorkflowPhotoAction({
         ? t('feedback.rateLimited')
         : getSelectionErrorMessage(error));
     } finally {
-      setBusy(false);
+      setPhotoBusy(photoId, false);
     }
   };
 
   const withdrawSelection = async (deleteDelivered: boolean) => {
     if (busy) return;
-    setBusy(true);
+    const photoId = photo.id;
+    setPhotoBusy(photoId, true);
     try {
       if (guestIdentity?.identityMode === 'guest') await guestIdentity.ensureIdentity();
-      const result = await galleryService.withdrawRetouchSelection(slug, photo.id, deleteDelivered);
-      setShowWithdrawOptions(false);
-      setSelected(false);
+      const result = await galleryService.withdrawRetouchSelection(slug, photoId, deleteDelivered);
+      setWithdrawPhotoId(null);
+      setSelectionOverride({ photoId, selected: false });
       toast.success(t(result.processing ? 'photographyWorkflow.withdrawProcessing' : result.kept_for_other_participant
         ? 'photographyWorkflow.keptForOtherParticipant'
         : deleteDelivered
@@ -102,7 +123,7 @@ export function WorkflowPhotoAction({
         ? t('photographyWorkflow.withdrawFailed')
         : getSelectionErrorMessage(error));
     } finally {
-      setBusy(false);
+      setPhotoBusy(photoId, false);
     }
   };
 
@@ -141,7 +162,7 @@ export function WorkflowPhotoAction({
     </button>
     </div>
       {showWithdrawOptions && (
-        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 p-4" onClick={() => setShowWithdrawOptions(false)}>
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 p-4" onClick={() => setWithdrawPhotoId(null)}>
           <section
             role="dialog"
             aria-modal="true"
@@ -160,7 +181,7 @@ export function WorkflowPhotoAction({
               {t('photographyWorkflow.keepDeliveredOption')}
             </button>
             <div className="flex justify-end">
-              <button type="button" disabled={busy || photo.retouch_withdraw_pending} onClick={() => setShowWithdrawOptions(false)} className="px-3 py-2 text-sm text-neutral-500 hover:text-neutral-900 dark:hover:text-white">
+              <button type="button" disabled={busy || photo.retouch_withdraw_pending} onClick={() => setWithdrawPhotoId(null)} className="px-3 py-2 text-sm text-neutral-500 hover:text-neutral-900 dark:hover:text-white">
                 {t('common.cancel')}
               </button>
             </div>

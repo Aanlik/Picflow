@@ -195,6 +195,7 @@ export interface Photo {
   retouch_selection_cancelled?: boolean;
   retouch_delivered_retained?: boolean;
   retouch_version?: number;
+  retouch_revision?: number;
   retouch_added_during_editing?: boolean;
   retouch_workflow_enabled?: boolean;
   retouch_withdraw_pending?: boolean;

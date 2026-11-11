@@ -253,7 +253,11 @@ router.get('/:slug/photo/:photoId',
       const retouchVersion = Number.isSafeInteger(requestedRetouchVersion) && requestedRetouchVersion > 0
         ? `-r${requestedRetouchVersion}`
         : '';
-      const etag = `"${photoId}-${mtimeMs}${watermarkHash}${orientationVersion}${retouchVersion}"`;
+      const requestedRetouchRevision = Number.parseInt(req.query.retouch_r, 10);
+      const retouchRevision = Number.isSafeInteger(requestedRetouchRevision) && requestedRetouchRevision > 0
+        ? `-c${requestedRetouchRevision}`
+        : '';
+      const etag = `"${photoId}-${mtimeMs}${watermarkHash}${orientationVersion}${retouchVersion}${retouchRevision}"`;
 
       if (req.headers['if-none-match'] === etag) {
         return res.status(304).end();
@@ -685,7 +689,11 @@ router.get('/:slug/preview/:photoId',
       const retouchVersion = Number.isSafeInteger(requestedRetouchVersion) && requestedRetouchVersion > 0
         ? `-r${requestedRetouchVersion}`
         : '';
-      const etag = `"preview-${photoId}-${tierWidth || 'def'}-${mtimeMs}${watermarkHash}${retouchVersion}"`;
+      const requestedRetouchRevision = Number.parseInt(req.query.retouch_r, 10);
+      const retouchRevision = Number.isSafeInteger(requestedRetouchRevision) && requestedRetouchRevision > 0
+        ? `-c${requestedRetouchRevision}`
+        : '';
+      const etag = `"preview-${photoId}-${tierWidth || 'def'}-${mtimeMs}${watermarkHash}${retouchVersion}${retouchRevision}"`;
       if (req.headers['if-none-match'] === etag) {
         return res.status(304).end();
       }

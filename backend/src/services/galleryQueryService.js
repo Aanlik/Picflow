@@ -473,18 +473,18 @@ async function getGalleryPhotos({ event, query = {}, identity, accessLevel, admi
       // image URL so the browser sends it (the admin_token cookie rides along
       // same-origin).
       const imgQuery = [wmVersion, adminPreview ? 'admin_preview=1' : ''].filter(Boolean).join('&');
-      const wmQuery = imgQuery ? `?${imgQuery}` : '';
       // The hero crop follows the event's focal point (issue 1737) and the
       // hero route caches for an hour, so a non-centre anchor rides in the
       // URL: a changed anchor is a new URL, not a stale cached crop.
-      const heroQuery = [imgQuery, heroAnchorQuery(event.hero_image_anchor)].filter(Boolean).join('&');
       const sourceVersion = gallerySourceVersion(photo);
+      const heroQuery = [imgQuery, `v=${sourceVersion}`, heroAnchorQuery(event.hero_image_anchor)].filter(Boolean).join('&');
       const previewVersion = `${sourceVersion}-preview-v2-r${Number(photo.cloud_preview_revision) || 0}`;
       const thumbnailQuery = [imgQuery, `v=${sourceVersion}-${thumbnailProfileVersion}`,
         !watermarkSettings?.enabled && parseBooleanInput(event.cloud_thumbnail_sync_enabled, false) ? 'cloud_batch=1' : ''].filter(Boolean).join('&');
+      const photoQuery = [imgQuery, `v=${sourceVersion}`].filter(Boolean).join('&');
       const photoUrl = useJwtUrl ?
-        `/api/gallery/${slug}/photo/${photo.id}${wmQuery}` :
-        `/api/secure-images/${slug}/secure/${photo.id}/{{token}}`;
+        `/api/gallery/${slug}/photo/${photo.id}?${photoQuery}` :
+        `/api/secure-images/${slug}/secure/${photo.id}/{{token}}?v=${sourceVersion}`;
 
       return {
         id: photo.id,
@@ -501,7 +501,7 @@ async function getGalleryPhotos({ event, query = {}, identity, accessLevel, admi
         // ready cloud copy only when that project's switch permits it.
         thumbnail_url: `/api/gallery/${slug}/thumbnail/${photo.id}${thumbnailQuery ? `?${thumbnailQuery}` : ''}`,
         // Hero-optimized image URL (1920x1080) for full-width hero sections
-        hero_url: `/api/gallery/${slug}/hero/${photo.id}${heroQuery ? `?${heroQuery}` : ''}`,
+        hero_url: `/api/gallery/${slug}/hero/${photo.id}?${heroQuery}`,
         // The legacy preference controls whether this dedicated URL is
         // emitted; the viewer also uses the slideshow preview below.
         preview_url: (lightboxPreviewEnabled || originalNeedsPreview(photo))
@@ -520,7 +520,7 @@ async function getGalleryPhotos({ event, query = {}, identity, accessLevel, admi
             && (!photo.mime_type || !photo.mime_type.startsWith('video/'))
           ? `/api/gallery/${slug}/preview/${photo.id}?${[imgQuery, `v=${previewVersion}`].filter(Boolean).join('&')}`
           : null,
-        secure_url_template: `/api/secure-images/${slug}/secure/${photo.id}/{{token}}`,
+        secure_url_template: `/api/secure-images/${slug}/secure/${photo.id}/{{token}}?v=${sourceVersion}`,
         download_url_template: `/api/secure-images/${slug}/secure-download/${photo.id}/{{token}}`,
         type: photo.type,
         category_id: photo.category_id || null,

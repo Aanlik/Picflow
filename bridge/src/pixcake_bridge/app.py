@@ -219,6 +219,11 @@ def create_app(config=None, client=None, start_workers=True):
                     if item.photo_pk in present_photo_ids and item.photo_pk not in cancelled_photo_ids
                     and item.photo_pk not in additional_photo_ids
                 ]
+                successful_versions = {}
+                for item in active_deliveries:
+                    if item.state == "SUCCESS":
+                        successful_versions.setdefault(item.photo_pk, set()).add(item.version)
+                retouch_count = sum(max(0, len(versions) - 1) for versions in successful_versions.values())
                 summary = {
                     "客户已选": len(active_selections),
                     "追加选片": sum(x.added_during_editing for x in active_selections),
@@ -227,7 +232,7 @@ def create_app(config=None, client=None, start_workers=True):
                     "待精修": sum(is_file_reference(x.selected_path) and not x.delivery_hash for x in active_selections),
                     "已精修": len({x.photo_pk for x in active_deliveries if x.state == "SUCCESS"}),
                     "已同步": sum(x.id in present_photo_ids and x.selected and not x.cancelled and not x.added_during_editing and bool(x.delivery_hash) for x in photos),
-                    "返修": max(0, sum(x.state == "SUCCESS" for x in active_deliveries) - len({x.photo_pk for x in active_deliveries if x.state == "SUCCESS"})),
+                    "返修": retouch_count,
                     "取消待确认": sum(x.id in present_photo_ids and x.cancelled and is_file_reference(x.selected_path) for x in photos),
                     "异常": sum(bool(x.error) or not getattr(x, "remote_present", True) for x in photos) + sum(x.state in {"FAILED", "UNKNOWN"} for x in deliveries) + sum(bool(x.error) or x.state in {"UNKNOWN", "UPLOADING"} for x in withdrawals),
                 }
@@ -328,13 +333,21 @@ def create_app(config=None, client=None, start_workers=True):
         if entry is None:
             raise HTTPException(404, "项目不存在")
         versions_by_photo = {}
+        revisions_by_photo = {}
         with engine.sessions() as session:
             deliveries = list(session.scalars(
                 select(Delivery).join(Photo).where(Photo.project_id == entry["project"].id, Delivery.state == "SUCCESS")
             ))
             pending_withdrawals = {task.photo_pk: task.error for task in session.scalars(select(Withdrawal).join(Photo).where(Photo.project_id == entry["project"].id, Withdrawal.state != "SUCCESS"))}
             for delivery in deliveries:
-                versions_by_photo[delivery.photo_pk] = versions_by_photo.get(delivery.photo_pk, 0) + 1
+                current = versions_by_photo.get(delivery.photo_pk, 0)
+                if delivery.version > current:
+                    versions_by_photo[delivery.photo_pk] = delivery.version
+                    revisions_by_photo[delivery.photo_pk] = delivery.id
+                elif delivery.version == current:
+                    revisions_by_photo[delivery.photo_pk] = max(
+                        delivery.id, revisions_by_photo.get(delivery.photo_pk, 0),
+                    )
         project_cfg = next((item for item in engine.config.projects if item.event_id == event_id), None)
         delivery_host_root = engine.config.delivery_host_root_for(event_id)
         delivery_container_root = engine.config.delivery_root_for(event_id)
@@ -367,6 +380,9 @@ def create_app(config=None, client=None, start_workers=True):
                 ),
                 "ready_for_editing": bool(getattr(photo, "remote_present", True) and is_file_reference(photo.selected_path)),
                 "current_version": version,
+                # Same-slot replacements (e.g. correcting V1 in place) keep
+                # the displayed version but still need a fresh browser URL.
+                "current_revision": revisions_by_photo.get(photo.id, 0),
                 "next_version": version + 1,
                 "next_version_folder": str(
                     (host_project_path(delivery_host_root, delivery_container_root, project_cfg.selected.parent) / "04_FINAL" / f"V{version + 1}")

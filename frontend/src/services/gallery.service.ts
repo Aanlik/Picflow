@@ -9,6 +9,7 @@ import type {
 } from '../types';
 import { normalizeRequirePassword } from '../utils/accessControl';
 import { parseContentDispositionFilename } from '../utils/contentDisposition';
+import { chunkPhotoIds } from '../utils/photoIdBatches';
 
 // Gallery pages beyond the first are fetched this many at a time (#1357).
 const PAGE_FETCH_CONCURRENCY = 4;
@@ -61,6 +62,7 @@ export interface RetouchWorkflowPhoto {
   delivered_retained?: boolean;
   delivered: boolean;
   current_version: number;
+  current_revision?: number;
   added_during_editing: boolean;
   ready_for_editing: boolean;
   withdraw_pending?: boolean;
@@ -102,17 +104,44 @@ export const galleryService = {
     return response.data;
   },
 
-  async submitBatchRetouchSelections(slug: string, photoIds: number[], selected = true): Promise<{
+  async submitBatchRetouchSelections(
+    slug: string,
+    photoIds: number[],
+    selected = true,
+    onProgress?: (completed: number, total: number) => void,
+  ): Promise<{
     success: boolean;
     applied_count: number;
     selected: boolean;
     photo_ids: number[];
   }> {
-    const response = await api.post(`/gallery/${slug}/retouch-selections/batch`, {
-      photo_ids: photoIds,
+    const batches = chunkPhotoIds(photoIds, 100);
+    const appliedIds: number[] = [];
+    let completed = 0;
+    for (const batch of batches) {
+      try {
+        const response = await api.post(`/gallery/${slug}/retouch-selections/batch`, {
+          photo_ids: batch,
+          selected,
+        });
+        appliedIds.push(...(response.data.photo_ids || []));
+        completed += batch.length;
+        onProgress?.(completed, photoIds.length);
+      } catch (error) {
+        // Each server batch is atomic; preserve the confirmed progress when
+        // a later batch is rejected or the connection drops.
+        Object.assign(error as object, {
+          batchProgress: { completed, applied_count: appliedIds.length, total: photoIds.length },
+        });
+        throw error;
+      }
+    }
+    return {
+      success: true,
+      applied_count: appliedIds.length,
       selected,
-    });
-    return response.data;
+      photo_ids: appliedIds,
+    };
   },
 
   async submitRetouchRequest(slug: string, photoId: number, payload: {

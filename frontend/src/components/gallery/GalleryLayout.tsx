@@ -128,6 +128,8 @@ export const GalleryLayout: React.FC<GalleryLayoutProps> = ({
   headerStyle: headerStyleProp,
   children,
 }) => {
+  const pageRef = React.useRef<HTMLDivElement>(null);
+  const headerRef = React.useRef<HTMLElement>(null);
   const { t } = useTranslation();
   const { format } = useLocalizedDate();
   const { theme } = useTheme();
@@ -137,6 +139,22 @@ export const GalleryLayout: React.FC<GalleryLayoutProps> = ({
     ? (brandingSettings?.logo_url_dark || brandingSettings?.logo_url)
     : (brandingSettings?.logo_url || brandingSettings?.logo_url_dark);
   const guestIdentity = useGuestIdentityOptional();
+
+  React.useLayoutEffect(() => {
+    const page = pageRef.current;
+    const header = headerRef.current;
+    if (!page || !header) return;
+    const syncHeaderHeight = () => {
+      page.style.setProperty('--gallery-header-height', `${header.getBoundingClientRect().height}px`);
+    };
+    syncHeaderHeight();
+    const observer = new ResizeObserver(syncHeaderHeight);
+    observer.observe(header);
+    return () => {
+      observer.disconnect();
+      page.style.removeProperty('--gallery-header-height');
+    };
+  }, []);
 
   // Determine header style - use prop first (from event data), then theme, then fall back to 'standard'
   const headerStyle: HeaderStyleType = headerStyleProp || theme.headerStyle || 'standard';
@@ -302,12 +320,12 @@ export const GalleryLayout: React.FC<GalleryLayoutProps> = ({
   const hasFooterRow = !!guestIdentity?.identity;
 
   return (
-    <div className="gallery-page min-h-screen" style={{ backgroundColor: 'var(--color-background)' }}>
+    <div ref={pageRef} className="gallery-page min-h-screen" style={{ backgroundColor: 'var(--color-background)' }}>
       {/* Dynamic Favicon */}
       <DynamicFavicon />
 
       {/* Header structure */}
-      <header className={`gallery-header bg-surface border-b border-surface sticky top-0 z-40 ${isHeroHeader || isBannerHeader ? 'shadow-sm' : ''}`}>
+      <header ref={headerRef} className={`gallery-header bg-surface border-b border-surface sticky top-0 z-40 ${isHeroHeader || isBannerHeader ? 'shadow-sm' : ''}`}>
         {/* Standard / Banner header - full bar with logo, event info, and actions (all layouts) */}
         {!isHeroHeader && !isMinimalHeader && !isNoHeader && (
           <div className="container py-3 relative">

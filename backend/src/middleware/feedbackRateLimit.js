@@ -25,7 +25,11 @@ const DEFAULT_RATE_LIMITS = {
   // works through a 500-photo shoot pressing 1/2/3, and changing their mind
   // costs a second request. A likes-sized 200/h cap would lock them out
   // mid-session, so this one is deliberately generous.
-  color_label: { max: 2000, window: 3600 }
+  color_label: { max: 2000, window: 3600 },
+  // Bulk retouch selections are sent in 100-photo requests. Count each batch
+  // as one action so large galleries are not capped at 2,000 photos/hour,
+  // while retaining a generous per-identity request budget against abuse.
+  retouch_selection: { max: 2000, window: 3600 }
 };
 
 /**

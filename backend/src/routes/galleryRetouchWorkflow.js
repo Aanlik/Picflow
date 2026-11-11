@@ -52,6 +52,7 @@ router.get('/:slug/retouch-workflow', verifyGalleryAccess, resolveGuest, blockHi
         delivered_retained: Boolean(photo.selection_cancelled && photo.delivered),
         delivered: Boolean(photo.delivered),
         current_version: Number(photo.current_version) || 0,
+        current_revision: Number(photo.current_revision) || 0,
         added_during_editing: Boolean(photo.added_during_editing),
         ready_for_editing: Boolean(photo.ready_for_editing),
         state: customerStatus(photo, workflow.data.stage),
@@ -150,14 +151,32 @@ router.post('/:slug/retouch-selections/batch',
       if (settings.identity_mode === 'guest' && (!req.guest || req.guest.eventId !== event.id)) {
         return res.status(401).json({ error: 'Guest identity required', code: 'GUEST_IDENTITY_REQUIRED' });
       }
-      if (!(await requireRetouchWorkflow(event.id))) return res.status(503).json({ error: 'Retouch workflow is not connected' });
       const photos = await db('photos').where({ event_id: event.id }).whereIn('id', photoIds);
       if (photos.length !== photoIds.length || photos.some((photo) => isPhotoHiddenFromViewer(photo, req.accessLevel))) {
         return res.status(404).json({ error: 'Photo not found' });
       }
 
-      req.feedbackRateLimitCost = photoIds.length;
-      await feedbackRateLimit('color_label')(req, res, (error) => { if (error) throw error; });
+      const workflow = await getPublicPhotoStates(event.id);
+      if (workflow.status !== 200 || !Array.isArray(workflow.data?.photos)) {
+        return res.status(503).json({ error: 'Retouch workflow is not connected' });
+      }
+      if (!selected) {
+        const requestedIds = new Set(photoIds);
+        const delivered = workflow.data.photos.some((photo) => requestedIds.has(Number(photo.photo_id)) && photo.delivered);
+        if (delivered) {
+          return res.status(409).json({
+            code: 'DELIVERED_SELECTION_WITHDRAWAL_REQUIRED',
+            error: 'Delivered photos must use the individual withdrawal flow',
+          });
+        }
+        const withdrawalPending = workflow.data.photos.some((photo) => requestedIds.has(Number(photo.photo_id)) && photo.withdraw_pending);
+        if (withdrawalPending) {
+          return res.status(409).json({ code: 'WITHDRAW_PENDING', error: '撤回任务仍在处理中，请稍后重新选片' });
+        }
+      }
+
+      req.feedbackRateLimitCost = 1;
+      await feedbackRateLimit('retouch_selection')(req, res, (error) => { if (error) throw error; });
       if (res.headersSent) return;
       const guestIdentifier = await generateGuestIdentifier(req);
       const results = await retouchSelectionService.setRetouchSelections(
