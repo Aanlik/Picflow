@@ -46,6 +46,21 @@ function attachAccess(req, event, grant) {
   };
 }
 
+function isDeliveryPortalRequest(req) {
+  const method = String(req.method || '').toUpperCase();
+  if (method !== 'GET' && method !== 'HEAD') return false;
+  if (req.baseUrl && !String(req.baseUrl).replace(/\/$/, '').endsWith('/api/gallery')) return false;
+  const routePath = String(req.route?.path || '');
+  return [
+    '/:slug/photos',
+    '/:slug/retouch-workflow',
+    '/:slug/thumbnail-urls',
+    '/:slug/thumbnail/:photoId',
+    '/:slug/preview/:photoId',
+    '/:slug/download/:photoId',
+  ].includes(routePath);
+}
+
 async function verifyAdminPreview(req, event) {
   if (req.isAdminPreview && req.galleryAccess && (!event || event.id === req.event?.id)) return true;
   const preview = readAdminPreview(req);
@@ -109,6 +124,9 @@ async function verifyGalleryAccess(req, res, next) {
     const grant = access.grant(event, decoded ? 'gallery' : 'public', decoded);
     await access.authorize(event, grant);
     attachAccess(req, event, grant);
+    if (grant.session?.accessLevel === 'delivery' && !isDeliveryPortalRequest(req)) {
+      return res.status(403).json({ error: 'This session is limited to the delivered-photo area', code: 'DELIVERY_PORTAL_SCOPE' });
+    }
     return next();
   } catch (error) {
     if (!error.isOperational) logger.error('Error verifying gallery access', { error: error.message });
@@ -139,6 +157,7 @@ function denySlideshowToken(req, res, next) {
 module.exports = {
   verifyGalleryAccess,
   denySlideshowToken,
+  isDeliveryPortalRequest,
   isAdminPreview,
   verifyAdminPreview
 };

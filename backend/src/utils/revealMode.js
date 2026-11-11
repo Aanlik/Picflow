@@ -28,7 +28,7 @@ function toDate(value) {
 
 /**
  * Whether the gallery is currently hidden from plain guests.
- * Host/admin/slideshow/client access bypasses this at the route layer.
+ * Host/admin/slideshow/client/delivered-area access bypasses this at the route layer.
  */
 function isGalleryHidden(event, now = new Date()) {
   if (!isTrue(event.reveal_mode)) return false;
@@ -38,11 +38,12 @@ function isGalleryHidden(event, now = new Date()) {
 }
 
 /**
- * Which access levels see the full gallery while it is hidden:
- * the live slideshow, client access, and the admin preview.
+ * Which access levels bypass the project-wide reveal gate: the live
+ * slideshow, client access, the password-protected delivered area, and the
+ * admin preview. Per-photo hidden visibility remains a separate check.
  */
 function bypassesReveal(req) {
-  if (req.accessLevel === 'slideshow' || req.accessLevel === 'client') return true;
+  if (req.accessLevel === 'slideshow' || req.accessLevel === 'client' || req.accessLevel === 'delivery') return true;
   // req.isAdminPreview is set by verifyAdminPreview() only after the full
   // session check (revocation, deactivation, password change). Re-decoding
   // the token here would re-grant the bypass to a session that check just

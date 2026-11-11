@@ -408,6 +408,73 @@ router.post('/gallery/:slug/client-login', [
   }
 });
 
+// Recipient-specific access to the isolated delivered-photo area. The URL
+// token identifies one revocable share; the password is an additional secret.
+// Neither the raw token nor the password is stored or logged.
+router.post('/gallery/:slug/delivery-login', [
+  body('token').isString().isLength({ min: 43, max: 43 }).matches(/^[A-Za-z0-9_-]+$/),
+  body('password').isString().isLength({ min: 8, max: 72 }).custom((value) => Buffer.byteLength(value, 'utf8') <= 72),
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ errors: safeValidationErrors(errors) });
+
+    const { slug } = req.params;
+    const { token, password } = req.body;
+    const ipAddress = getClientIp(req);
+    const userAgent = req.headers['user-agent'] || '';
+    const event = await db('events')
+      .where({ slug, is_active: formatBoolean(true), is_archived: formatBoolean(false) })
+      .first();
+    const share = isGalleryAvailable(event)
+      ? await db('delivery_portal_shares')
+        .where({ event_id: event.id, token_hash: require('../services/deliveryPortalService').tokenDigest(token) })
+        .whereNull('revoked_at')
+        .first()
+      : null;
+    const lockoutKey = `delivery:${slug}:${share?.id || 'unknown'}`;
+    const lockoutStatus = await checkAccountLockout(lockoutKey, ipAddress);
+    if (lockoutStatus.isLocked) {
+      return res.status(423).json({ error: 'Too many attempts. Please try again later.', retryAfter: lockoutStatus.remainingTime });
+    }
+
+    const active = share && new Date(share.expires_at).getTime() > Date.now();
+    const validPassword = await bcrypt.compare(password, active ? share.password_hash : DUMMY_BCRYPT_HASH);
+    if (!active || !validPassword) {
+      await trackFailedAttempt(lockoutKey, ipAddress, userAgent);
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    await trackSuccessfulLogin(lockoutKey, ipAddress, userAgent);
+    const expiresIn = Math.max(1, Math.min(24 * 60 * 60, Math.floor((new Date(share.expires_at).getTime() - Date.now()) / 1000)));
+    const sessionToken = jwt.sign({
+      eventId: event.id,
+      eventSlug: event.slug,
+      type: 'gallery',
+      jti: crypto.randomUUID(),
+      accessLevel: 'delivery',
+      deliveryShareId: share.id,
+      ip: ipAddress,
+      loginTime: Date.now(),
+    }, process.env.JWT_SECRET, { expiresIn, issuer: 'picpeak-auth' });
+    setGalleryAuthCookies(res, sessionToken, event.slug);
+    return res.json({
+      token: sessionToken,
+      accessLevel: 'delivery',
+      event: {
+        id: event.id,
+        event_name: event.event_name,
+        event_date: event.event_date,
+        color_theme: event.color_theme,
+        expires_at: event.expires_at,
+        require_password: true,
+      },
+    });
+  } catch (error) {
+    errorResponse(res, error, 500, 'Authentication failed');
+  }
+});
+
 // Share link authentication (token-based)
 router.post('/gallery/share-login', [
   body('slug').notEmpty().trim(),

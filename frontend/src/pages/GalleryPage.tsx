@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { Navigate, useParams } from 'react-router-dom';
 import { AlertCircle, Check, Clock, Copy } from 'lucide-react';
 import { differenceInDays, parseISO } from 'date-fns';
 import { useTranslation } from 'react-i18next';
@@ -21,7 +21,7 @@ import { isAdminSessionExpired, isPasswordChangeRequired } from '../utils/passwo
 
 export const GalleryPage: React.FC = () => {
   const { slug: rawSlug, token: rawToken } = useParams<{ slug: string; token?: string }>();
-  const { isAuthenticated, login, event, isLoading: isAuthLoading } = useGalleryAuth();
+  const { isAuthenticated, login, event, accessLevel, isLoading: isAuthLoading } = useGalleryAuth();
   const { t, i18n } = useTranslation();
   const { format } = useLocalizedDate();
   const { setTheme } = useTheme();
@@ -308,6 +308,9 @@ export const GalleryPage: React.FC = () => {
   // Show the same skeleton GalleryView uses while photos load, so the
   // visitor sees one continuous loading state from URL open to real photos
   // instead of three different full-page interstitials (#321).
+  if (!isAuthLoading && isAuthenticated && accessLevel === 'delivery' && rawSlug) {
+    return <Navigate to={`/gallery/${rawSlug}/delivery`} replace />;
+  }
   if (isLoadingInfo) {
     return <GallerySkeleton />;
   }

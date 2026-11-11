@@ -100,7 +100,7 @@ export interface Event {
   event_reminder_sent_at?: string | null;
 }
 
-export type GalleryAccessLevel = 'guest' | 'client';
+export type GalleryAccessLevel = 'guest' | 'client' | 'delivery';
 
 export interface GalleryInfo {
   event_name: string;

@@ -20,6 +20,7 @@ import { EventThemeSection } from './EventThemeSection';
 import { ArchiveStatusCard } from './ArchiveStatusCard';
 import { ObjectDeliveryCard } from '../../../components/admin/ObjectDeliveryCard';
 import { DownloadSourceReview } from './DownloadSourceReview';
+import { DeliveryPortalManager } from '../../../components/admin/DeliveryPortalManager';
 
 interface OverviewTabProps {
   event: Event;
@@ -159,6 +160,10 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
 
         {/* Client Access (#172) */}
         <ClientAccessCard event={event} refetchEvent={refetchEvent} />
+
+        <PermissionGate permission="events.view">
+          <DeliveryPortalManager eventId={event.id} isArchived={event.is_archived} isShareable={event.is_active} />
+        </PermissionGate>
 
         {/* Per-gallery download resolution override (#858). */}
         <DownloadResolutionCard ref={downloadResolutionRef} eventId={event.id} isEditing={isEditing} onChanged={() => refetchEvent()} />

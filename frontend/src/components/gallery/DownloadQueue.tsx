@@ -67,7 +67,7 @@ function bytes(value: number) {
 }
 
 /** All gallery layouts mount this same manager; no native-download history is read. */
-export function DownloadQueue({ slug: providedSlug }: { slug?: string }) {
+export function DownloadQueue({ slug: providedSlug, historyEnabled = true }: { slug?: string; historyEnabled?: boolean }) {
   const { t } = useTranslation();
   const guestContext = useGuestIdentityOptional();
   const { formatDateTime } = useLocalizedDate();
@@ -145,6 +145,7 @@ export function DownloadQueue({ slug: providedSlug }: { slug?: string }) {
 
   const refresh = useCallback(
     async (page = 1) => {
+      if (!historyEnabled) return;
       if (!slug || identity === "anonymous" || identityFor(slug) !== identity)
         return;
       const guest = getGuestIdentity(slug);
@@ -186,17 +187,17 @@ export function DownloadQueue({ slug: providedSlug }: { slug?: string }) {
           setHistoryError(true);
       }
     },
-    [slug, identity],
+    [slug, identity, historyEnabled],
   );
   useEffect(() => {
     if (!snapshot.open) return;
-    void refresh();
+    if (historyEnabled) void refresh();
     const timer = window.setInterval(() => {
-      if (historyPageRef.current === 1) void refresh();
+      if (historyEnabled && historyPageRef.current === 1) void refresh();
       void customerDownloads.refreshLocal();
     }, 10000);
     return () => window.clearInterval(timer);
-  }, [snapshot.open, refresh]);
+  }, [snapshot.open, refresh, historyEnabled]);
   useEffect(() => {
     if (!snapshot.open) return;
     const previous = document.activeElement as HTMLElement | null;
@@ -416,7 +417,7 @@ export function DownloadQueue({ slug: providedSlug }: { slug?: string }) {
                 role="tablist"
                 aria-label={t("downloadManager.title")}
               >
-                {(["active", "history"] as const).map((value) => (
+                {(historyEnabled ? (["active", "history"] as const) : (["active"] as const)).map((value) => (
                   <button
                     key={value}
                     type="button"

@@ -14,19 +14,7 @@ const {
   triggerWorkflowSync,
 } = require('../services/photographyWorkflowBridge');
 const { isPhotoHiddenFromViewer } = require('../utils/photoVisibility');
-
-function customerStatus(photo, stage) {
-  // A delivered image that its customer kept is back in the proofing queue;
-  // the photo bytes stay retouched, but it is no longer an active RAW task.
-  if (photo.withdraw_pending) return 'proof';
-  if (photo.selection_cancelled && photo.delivered) return 'proof';
-  if (photo.selected && photo.added_during_editing && photo.ready_for_editing && ['EDITING', 'DELIVERED'].includes(stage)) return 'editing';
-  if (photo.delivered) return 'delivered';
-  if (photo.selection_cancelled) return 'cancelled';
-  if (photo.selected && photo.ready_for_editing && ['EDITING', 'DELIVERED'].includes(stage)) return 'editing';
-  if (photo.selected) return 'selected';
-  return 'proof';
-}
+const { customerStatus } = require('../services/retouchWorkflowState');
 
 router.get('/:slug/retouch-workflow', verifyGalleryAccess, resolveGuest, blockHiddenGallery, noStoreCache, async (req, res) => {
   try {
@@ -57,7 +45,13 @@ router.get('/:slug/retouch-workflow', verifyGalleryAccess, resolveGuest, blockHi
         ready_for_editing: Boolean(photo.ready_for_editing),
         state: customerStatus(photo, workflow.data.stage),
       }));
-    const requests = await db('photo_retouch_requests')
+    const deliveryPhotoIds = req.accessLevel === 'delivery'
+      ? await require('../services/deliveryPortalService').getDeliveredPhotoIds(req.event.id)
+      : null;
+    const scopedPhotos = deliveryPhotoIds
+      ? photos.filter((photo) => deliveryPhotoIds.has(Number(photo.photo_id)))
+      : photos;
+    const requests = req.accessLevel === 'delivery' ? [] : await db('photo_retouch_requests')
       .where({ event_id: req.event.id, guest_identifier: guestIdentifier })
       .select('id', 'photo_id', 'request_type', 'base_version', 'customer_message', 'guest_name', 'status', 'photographer_reply', 'created_at', 'updated_at')
       .orderBy('created_at', 'desc');
@@ -65,8 +59,8 @@ router.get('/:slug/retouch-workflow', verifyGalleryAccess, resolveGuest, blockHi
     res.json({
       enabled: workflow.status === 200,
       bridge_available: workflow.status === 200,
-      photos,
-      requests: requests.filter((request) => visibleIds.has(Number(request.photo_id))),
+      photos: scopedPhotos,
+      requests: req.accessLevel === 'delivery' ? [] : requests.filter((request) => visibleIds.has(Number(request.photo_id))),
     });
   } catch (error) {
     require('../utils/logger').error('Gallery retouch workflow read failed', { error: error.message });

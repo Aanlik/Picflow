@@ -71,6 +71,11 @@ function directChunk(
 }
 
 export function identityFor(slug: string): string {
+  try {
+    if (sessionStorage.getItem(`gallery_access_level_${slug}`) === 'delivery') return `delivery:${slug}`;
+  } catch {
+    // Storage restrictions should not prevent the ordinary download fallback.
+  }
   const guest = getGuestIdentity(slug);
   return guest ? `guest:${guest.id}:${guest.identifier}` : "anonymous";
 }

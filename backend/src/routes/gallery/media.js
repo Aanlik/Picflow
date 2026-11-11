@@ -31,8 +31,11 @@ const { isPhotoHiddenFromViewer } = require('../../utils/photoVisibility');
  * media routes must agree, or a link holder could request every other
  * category's photos by id. Applied by every route below that resolves a photo.
  */
-function isPhotoOutsideGrant(req, photo) {
+async function isPhotoOutsideGrant(req, photo) {
   if (isPhotoHiddenFromViewer(photo, req.accessLevel)) return true;
+  if (req.accessLevel === 'delivery') {
+    return !(await require('../../services/deliveryPortalService').isDeliveredPhoto(req.event.id, photo.id));
+  }
   return req.accessLevel === 'slideshow' && req.event?.show_category_id != null
     && Number(photo.category_id) !== Number(req.event.show_category_id);
 }
@@ -54,7 +57,11 @@ router.get('/:slug/thumbnail-urls', verifyGalleryAccess, blockHiddenGallery, asy
     const settings = await processor.getThumbnailSettings();
     const width = tier || settings.width || processor.DEFAULT_THUMBNAIL_WIDTH;
     const photos = await db('photos').where({ event_id: req.event.id }).whereIn('id', [...new Set(raw.map(Number))]);
-    await Promise.all(photos.filter((photo) => !isPhotoOutsideGrant(req, photo)).map(async (photo) => {
+    const allowedPhotos = [];
+    for (const photo of photos) {
+      if (!await isPhotoOutsideGrant(req, photo)) allowedPhotos.push(photo);
+    }
+    await Promise.all(allowedPhotos.map(async (photo) => {
       try {
         const url = await require('../../services/cloudGalleryAssetService').getReadyAssetUrl(req.event, photo, 'thumbnail', width);
         if (url) urls[String(photo.id)] = url;
@@ -87,7 +94,7 @@ router.get('/:slug/photo/:photoId',
       }
 
       // Block guest access to hidden photos
-      if (isPhotoOutsideGrant(req, photo)) {
+      if (await isPhotoOutsideGrant(req, photo)) {
         return res.status(403).json({ error: 'Photo not available' });
       }
 
@@ -357,7 +364,7 @@ router.get('/:slug/thumbnail/:photoId',
       }
 
       // Block guest access to hidden photos
-      if (isPhotoOutsideGrant(req, photo)) {
+      if (await isPhotoOutsideGrant(req, photo)) {
         return res.status(403).json({ error: 'Photo not available' });
       }
 
@@ -482,7 +489,7 @@ router.get('/:slug/hero/:photoId',
       }
 
       // Block guest access to hidden photos
-      if (isPhotoOutsideGrant(req, photo)) {
+      if (await isPhotoOutsideGrant(req, photo)) {
         return res.status(403).json({ error: 'Photo not available' });
       }
 
@@ -627,7 +634,7 @@ router.get('/:slug/preview/:photoId',
         return res.status(404).json({ error: 'Photo not found' });
       }
 
-      if (isPhotoOutsideGrant(req, photo)) {
+      if (await isPhotoOutsideGrant(req, photo)) {
         return res.status(403).json({ error: 'Photo not available' });
       }
 

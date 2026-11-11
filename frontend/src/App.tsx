@@ -17,6 +17,7 @@ import { AdminAuthProvider } from './contexts';
 
 const GalleryPage = lazy(() => import('./pages/GalleryPage').then((m) => ({ default: m.GalleryPage })));
 const ClientAccessPage = lazy(() => import('./pages/ClientAccessPage').then((m) => ({ default: m.ClientAccessPage })));
+const DeliveryPortalPage = lazy(() => import('./pages/DeliveryPortalPage').then((m) => ({ default: m.DeliveryPortalPage })));
 const PreviewPage = lazy(() => import('./pages/gallery/PreviewPage').then((m) => ({ default: m.PreviewPage })));
 const SlideshowPage = lazy(() => import('./pages/gallery/SlideshowPage').then((m) => ({ default: m.SlideshowPage })));
 const AdminLoginPage = lazy(() => import('./pages/admin/AdminLoginPage').then((m) => ({ default: m.AdminLoginPage })));
@@ -83,6 +84,11 @@ function App() {
                   <Route path="/gallery/:slug/client-access" element={
                     <GalleryAuthProvider>
                       <ClientAccessPage />
+                    </GalleryAuthProvider>
+                  } />
+                  <Route path="/gallery/:slug/delivery" element={
+                    <GalleryAuthProvider>
+                      <DeliveryPortalPage />
                     </GalleryAuthProvider>
                   } />
                   <Route path="/gallery/:slug/:token?" element={

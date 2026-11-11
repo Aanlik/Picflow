@@ -24,10 +24,11 @@ export const customerDownloads = new DownloadEngine(
 );
 export function queueCustomerDownloads(items: DownloadQueueItem[]) {
   if (!items.length) return Promise.resolve();
-  const guest = getGuestIdentity(items[0].slug);
+  const identity = identityFor(items[0].slug);
+  const guest = identity.startsWith('delivery:') ? null : getGuestIdentity(items[0].slug);
   return customerDownloads.enqueue(
     items,
-    identityFor(items[0].slug),
+    identity,
     guest?.id,
   );
 }

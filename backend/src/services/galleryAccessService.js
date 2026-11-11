@@ -5,6 +5,7 @@ const { isTokenBeforeCutoff } = require('../utils/sessionCutoff');
 const { AppError } = require('../utils/errors');
 const { assertGalleryCredentialCurrent } = require('../utils/galleryCredentialCutoff');
 const { isFeatureEnabled } = require('../middleware/requireFeatureFlag');
+const { db } = require('../database/db');
 const sessions = require('./sessionAccessService');
 
 // These claims identify a session for revocation; no raw JWT, IP or password
@@ -12,7 +13,7 @@ const sessions = require('./sessionAccessService');
 // parentIat/parentJti identify the portal session a gallery token was minted from.
 // showLink names the slideshow link a slideshow session was opened with.
 const CLAIMS = ['type', 'id', 'eventId', 'eventSlug', 'iat', 'exp', 'jti', 'via', 'accessLevel',
-  'parentIat', 'parentJti', 'showLink'];
+  'parentIat', 'parentJti', 'showLink', 'deliveryShareId'];
 
 class GalleryAccessService {
   grant(event, kind, decoded) {
@@ -61,6 +62,19 @@ class GalleryAccessService {
       assertGalleryCredentialCurrent(event, session);
       if (session.via === 'customer') {
         throw new AppError('Customer-account access is no longer supported', 401, 'CUSTOMER_PORTAL_DISABLED');
+      }
+      if (session.accessLevel === 'delivery') {
+        const shareId = Number(session.deliveryShareId);
+        if (!Number.isSafeInteger(shareId) || shareId < 1) {
+          throw new AppError('Delivery link is invalid', 401, 'DELIVERY_SHARE_INVALID');
+        }
+        const share = await db('delivery_portal_shares')
+          .where({ id: shareId, event_id: Number(event.id) })
+          .whereNull('revoked_at')
+          .first('expires_at');
+        if (!share || new Date(share.expires_at).getTime() <= Date.now()) {
+          throw new AppError('Delivery link has expired or been revoked', 401, 'DELIVERY_SHARE_REVOKED');
+        }
       }
       // The slideshow feature flag is a master kill-switch for /show/ links;
       // a session derived from one dies with it. Same carve-out as the link

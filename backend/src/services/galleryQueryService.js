@@ -71,6 +71,14 @@ async function getGalleryPhotos({ event, query = {}, identity, accessLevel, admi
     applySlideshowMediaFilter(photosQuery);
   }
 
+  const deliveryPhotoIds = accessLevel === 'delivery'
+    ? await require('./deliveryPortalService').getDeliveredPhotoIds(event.id)
+    : null;
+  if (deliveryPhotoIds) {
+    if (deliveryPhotoIds.size) photosQuery.whereIn('photos.id', [...deliveryPhotoIds]);
+    else photosQuery.whereRaw('1 = 0');
+  }
+
   // Apply sort option.
   //
   // Every branch carries photos.id as a tiebreaker (#1172). Without one the
@@ -313,11 +321,15 @@ async function getGalleryPhotos({ event, query = {}, identity, accessLevel, admi
 
   // Get actual categories used by photos in this event
   // This includes both global categories and event-specific ones
-  const usedCategoryIds = hiddenForGuest ? [] : await db('photos')
+  let categoryQuery = db('photos')
     .where('event_id', event.id)
     .whereNotNull('category_id')
-    .distinct('category_id')
-    .pluck('category_id');
+    .distinct('category_id');
+  if (deliveryPhotoIds) {
+    if (deliveryPhotoIds.size) categoryQuery.whereIn('id', [...deliveryPhotoIds]);
+    else categoryQuery.whereRaw('1 = 0');
+  }
+  const usedCategoryIds = hiddenForGuest ? [] : await categoryQuery.pluck('category_id');
 
   // Fetch category details from photo_categories table
   let categories = [];
@@ -395,7 +407,7 @@ async function getGalleryPhotos({ event, query = {}, identity, accessLevel, admi
   const globalLogoSize = await getAppSetting('branding_logo_size', 'medium');
   const downloadPolicy = await resolveEventDownloadPolicy(event);
 
-  return {
+  const payload = {
     pagination: { page, limit: limit || total, total, has_more: !!limit && page * limit < total },
     event: {
       id: event.id,
@@ -576,5 +588,36 @@ async function getGalleryPhotos({ event, query = {}, identity, accessLevel, admi
       };
     })
   };
+  if (accessLevel === 'delivery') {
+    payload.event = {
+      id: event.id,
+      event_name: event.event_name,
+      event_date: event.event_date,
+      allow_downloads: parseBooleanInput(event.allow_downloads, true),
+      download_resolution: payload.event.download_resolution,
+      use_original_filenames: useOriginalFilenames,
+    };
+    payload.hidden_until_reveal = false;
+    payload.categories = [];
+    payload.photos = payload.photos.map((photo) => ({
+      id: photo.id,
+      filename: photo.filename,
+      original_filename: photo.original_filename,
+      source_filename: photo.source_filename,
+      url: photo.url,
+      thumbnail_url: photo.thumbnail_url,
+      preview_url: photo.preview_url,
+      category_allow_downloads: photo.category_allow_downloads,
+      download_allowed: photo.download_allowed,
+      size: photo.size,
+      uploaded_at: photo.uploaded_at,
+      width: photo.width,
+      height: photo.height,
+      media_type: photo.media_type,
+      mime_type: photo.mime_type,
+      duration: photo.duration,
+    }));
+  }
+  return payload;
 }
 module.exports = { getGalleryPhotos };

@@ -89,6 +89,11 @@ router.get('/:slug/download/:photoId', verifyGalleryAccess, resolveGuest, denySl
       return res.status(404).json({ error: 'Photo not found' });
     }
 
+    if (req.accessLevel === 'delivery'
+      && !await require('../../services/deliveryPortalService').isDeliveredPhoto(req.event.id, photo.id)) {
+      return res.status(404).json({ error: 'Photo not found' });
+    }
+
     if (!canDownloadPhoto(req.event, photo)) {
       return res.status(403).json({ code: 'DOWNLOAD_DISABLED' });
     }

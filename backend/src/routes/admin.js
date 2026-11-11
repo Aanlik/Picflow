@@ -13,12 +13,14 @@ const backupRoutes = require('./adminBackup');
 const restoreRoutes = require('./adminRestore');
 const objectStorageRoutes = require('./adminObjectStorage');
 const objectDeliveryRoutes = require('./adminObjectDelivery');
+const deliveryPortalRoutes = require('./adminDeliveryPortal');
 
 // Mount sub-routers
 router.use('/archives', archiveRoutes);
 router.use('/settings', settingsRoutes);
 router.use('/events', eventsRoutes);
 router.use('/events', objectDeliveryRoutes);
+router.use('/events', deliveryPortalRoutes);
 router.use('/events', photosRoutes);
 router.use('/categories', categoriesRoutes);
 router.use('/cms', cmsRoutes);

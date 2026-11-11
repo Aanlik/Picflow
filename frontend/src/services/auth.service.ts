@@ -55,6 +55,13 @@ export const authService = {
     return normalizeGalleryResponse(response.data);
   },
 
+  async deliveryPortalLogin(slug: string, password: string, token: string): Promise<GalleryAuthResponse> {
+    const response = await api.post<GalleryAuthResponse>(`/auth/gallery/${slug}/delivery-login`, {
+      password, token,
+    });
+    return normalizeGalleryResponse(response.data);
+  },
+
   async shareLinkLogin(slug: string, token: string): Promise<GalleryAuthResponse> {
     const response = await api.post<GalleryAuthResponse>('/auth/gallery/share-login', {
       slug,

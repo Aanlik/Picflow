@@ -42,6 +42,7 @@ interface GalleryAuthContextType {
   isClient: boolean;
   login: (slug: string, password?: string) => Promise<void>;
   clientLogin: (slug: string, password: string, token: string) => Promise<void>;
+  deliveryLogin: (slug: string, password: string, token: string) => Promise<void>;
   logout: () => void;
   isLoading: boolean;
   error: string | null;
@@ -97,6 +98,7 @@ export const GalleryAuthProvider: React.FC<GalleryAuthProviderProps> = ({ childr
 
       const identifier = segments[1] || null;
       const tokenSegment = segments[2];
+      const isDeliveryPortalPath = tokenSegment === 'delivery';
 
       if (!identifier) {
         if (!cancelled) {
@@ -145,7 +147,7 @@ export const GalleryAuthProvider: React.FC<GalleryAuthProviderProps> = ({ childr
         lastResolvedIdentifier.current = null;
         setRouteInfo({
           slug: identifier,
-          token: tokenSegment,
+          token: isDeliveryPortalPath ? undefined : tokenSegment,
           identifier,
           ready: true,
         });
@@ -195,11 +197,10 @@ export const GalleryAuthProvider: React.FC<GalleryAuthProviderProps> = ({ childr
 
     // Restore access level from session storage
     const storedAccessLevel = sessionStorage.getItem(`gallery_access_level_${currentSlug}`);
-    if (storedAccessLevel === 'client') {
-      setAccessLevel('client');
-    } else {
-      setAccessLevel('guest');
-    }
+    const cachedAccessLevel: GalleryAccessLevel = storedAccessLevel === 'client' || storedAccessLevel === 'delivery'
+      ? storedAccessLevel
+      : 'guest';
+    setAccessLevel(cachedAccessLevel);
 
     const initialise = async () => {
       try {
@@ -218,10 +219,12 @@ export const GalleryAuthProvider: React.FC<GalleryAuthProviderProps> = ({ childr
           // guess above (#1149). A second tab has no sessionStorage but the
           // same cookie, so the stored value silently downgraded a client
           // session to 'guest' while the backend kept serving it as a client.
-          if (sessionResponse.data.accessLevel === 'client') {
-            setAccessLevel('client');
-            sessionStorage.setItem(`gallery_access_level_${currentSlug}`, 'client');
-          }
+          const restoredAccessLevel: GalleryAccessLevel = sessionResponse.data.accessLevel === 'client'
+            || sessionResponse.data.accessLevel === 'delivery'
+            ? sessionResponse.data.accessLevel
+            : 'guest';
+          setAccessLevel(restoredAccessLevel);
+          sessionStorage.setItem(`gallery_access_level_${currentSlug}`, restoredAccessLevel);
 
           // Always refresh from the server — the stored event from sessionStorage
           // is shown above as an instant placeholder for perceived perf, but it
@@ -285,11 +288,15 @@ export const GalleryAuthProvider: React.FC<GalleryAuthProviderProps> = ({ childr
         setIsAuthenticated(false);
         sessionStorage.removeItem(`gallery_event_${currentSlug}`);
         setEvent(null);
+        setAccessLevel('guest');
+        sessionStorage.removeItem(`gallery_access_level_${currentSlug}`);
         clearGalleryToken(currentSlug);
       } catch (initialiseError: any) {
         setIsAuthenticated(false);
         sessionStorage.removeItem(`gallery_event_${currentSlug}`);
         setEvent(null);
+        setAccessLevel('guest');
+        sessionStorage.removeItem(`gallery_access_level_${currentSlug}`);
         clearGalleryToken(currentSlug);
         if (initialiseError?.response?.data?.error) {
           setError(initialiseError.response.data.error);
@@ -324,6 +331,8 @@ export const GalleryAuthProvider: React.FC<GalleryAuthProviderProps> = ({ childr
         sessionStorage.setItem(`gallery_event_${slug}`, JSON.stringify(normalizedEvent));
       }
       setIsAuthenticated(true);
+      setAccessLevel('guest');
+      sessionStorage.setItem(`gallery_access_level_${slug}`, 'guest');
     } catch (err: any) {
       setError(err.response?.data?.error || 'Invalid password');
       throw err;
@@ -352,6 +361,28 @@ export const GalleryAuthProvider: React.FC<GalleryAuthProviderProps> = ({ childr
       setIsAuthenticated(true);
     } catch (err: any) {
       setError(err.response?.data?.error || 'Invalid PIN');
+      throw err;
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const deliveryLoginFn = async (slug: string, password: string, token: string) => {
+    try {
+      setRouteError(null);
+      setError(null);
+      setIsLoading(true);
+      const response = await authService.deliveryPortalLogin(slug, password, token);
+      if (response.token) storeGalleryToken(slug, response.token);
+      setActiveGallerySlug(slug);
+      const normalizedEvent = normalizeEvent(response.event);
+      setEvent(normalizedEvent);
+      if (normalizedEvent) sessionStorage.setItem(`gallery_event_${slug}`, JSON.stringify(normalizedEvent));
+      setAccessLevel('delivery');
+      sessionStorage.setItem(`gallery_access_level_${slug}`, 'delivery');
+      setIsAuthenticated(true);
+    } catch (err: any) {
+      setError(err.response?.data?.error || 'Invalid credentials');
       throw err;
     } finally {
       setIsLoading(false);
@@ -387,6 +418,7 @@ export const GalleryAuthProvider: React.FC<GalleryAuthProviderProps> = ({ childr
         isClient: accessLevel === 'client',
         login,
         clientLogin: clientLoginFn,
+        deliveryLogin: deliveryLoginFn,
         logout,
         isLoading,
         error: routeError ?? error,
