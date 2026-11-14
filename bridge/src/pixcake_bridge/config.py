@@ -5,6 +5,48 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
 
+from .storage_layout import (
+    FINAL_DIRECTORY,
+    HISTORY_DIRECTORY,
+    PROJECT_DIRECTORY_RENAMES,
+    SELECTED_DIRECTORY,
+)
+
+
+def _directory_has_data(path: Path) -> bool:
+    if not path.exists():
+        return False
+    if path.is_symlink() or not path.is_dir():
+        raise ValueError(f"交付目录不是普通文件夹，已停止迁移：{path}")
+    return next(path.iterdir(), None) is not None
+
+
+def _assert_safe_delivery_path(root: Path, path: Path) -> None:
+    try:
+        relative = path.relative_to(root)
+    except ValueError as error:
+        raise ValueError("交付目录路径越出可写挂载根目录") from error
+    current = root
+    for part in relative.parts:
+        if part in {"", ".", ".."}:
+            raise ValueError("交付目录路径无效")
+        current = current / part
+        if current.is_symlink():
+            raise ValueError(f"交付目录包含符号链接，已停止迁移：{current}")
+        if current.exists() and not current.is_dir():
+            raise ValueError(f"交付路径中存在同名文件，已停止迁移：{current}")
+
+
+def _write_json_atomic(path: Path, payload) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as file:
+        json.dump(payload, file, ensure_ascii=False, indent=2)
+        file.write("\n")
+        file.flush()
+        os.fsync(file.fileno())
+        temporary = Path(file.name)
+    temporary.replace(path)
+
 
 @dataclass
 class ProjectConfig:
@@ -58,7 +100,7 @@ class ProjectConfig:
                 if i < len(raw_dirs) and j < len(raw_dirs):
                     continue
                 if a == b or a in b.parents or b in a.parents:
-                    raise ValueError("RAW、待精修、成片、历史目录必须互相独立")
+                    raise ValueError("RAW、已选、交付和临时目录必须互相独立")
         for p in (self.selected, self.final, self.history):
             if p.is_symlink():
                 raise ValueError("不能使用符号链接目录")
@@ -73,7 +115,7 @@ class Config:
     poll_seconds: float = 30
     stable_seconds: float = 10
     max_bytes: int = 100 * 1024 * 1024
-    history_keep: int = 3
+    history_keep: int = 1
     materialize_mode: str = "auto"
     projects: list[ProjectConfig] = field(default_factory=list)
     projects_file: Path = Path("/config/projects.json")
@@ -95,19 +137,32 @@ class Config:
         return mount["host"] if mount else self.delivery_host_root
 
     def migrate_legacy_delivery_layout(self):
-        """Move old nested project workspaces into the direct project folder.
+        """Move old nested workspaces and rename their managed directories.
 
-        Older installs mirrored Camera's ``RAW/Project`` path beneath the
-        unified delivery mount. New installs store the work folders directly
-        beneath ``PixCakeDelivery/Project``. Also retain the older migration
-        for ``event-ID-name`` directories used by per-project mounts.
+        Existing RAW and delivery files are moved in place, never copied over
+        or removed. If old and new folders both contain data, startup stops so
+        an operator can resolve the ambiguity without losing either version.
         """
         changed = False
+        journal = self.projects_file.with_name("layout-migrations.json")
+        records = json.loads(journal.read_text()) if journal.exists() else []
+        planned = []
+
         for project in self.projects:
             root = self.delivery_root_for(project.event_id)
             legacy = project.selected.parent
-            if legacy == root or legacy.is_symlink() or root.is_symlink() or not root.is_dir():
+            if root.is_symlink() or legacy.is_symlink():
+                raise ValueError("交付目录不能是符号链接，已停止自动整理")
+            if not root.is_dir():
                 continue
+            try:
+                legacy.relative_to(root)
+            except ValueError:
+                pass
+            else:
+                _assert_safe_delivery_path(root, legacy)
+
+            target = None
             try:
                 is_event_legacy = (
                     legacy.parent.resolve() == root.resolve() and
@@ -116,7 +171,6 @@ class Config:
             except OSError:
                 is_event_legacy = False
 
-            target = None
             if is_event_legacy:
                 target = root
             else:
@@ -127,76 +181,105 @@ class Config:
                         target = root.joinpath(*relative.parts[1:])
                 except ValueError:
                     pass
-            if target is None or target == legacy:
-                continue
-            try:
-                resolved_target = target.resolve(strict=False)
-                resolved_root = root.resolve(strict=True)
-                if resolved_target != resolved_root and resolved_root not in resolved_target.parents:
-                    raise ValueError("旧交付目录路径越出 PixCakeDelivery 根目录")
-                if any((root / Path(*target.relative_to(root).parts[:index])).is_symlink()
-                       for index in range(1, len(target.relative_to(root).parts) + 1)):
-                    raise ValueError("旧交付目录路径包含符号链接，已停止自动整理")
-                target.mkdir(parents=True, exist_ok=True)
-            except OSError as error:
-                raise ValueError("无法创建项目交付目录，旧文件保持原位") from error
 
-            names = ("03_SELECTED_RAW", "04_FINAL", "05_HISTORY")
-            journal = self.projects_file.with_name("layout-migrations.json")
-            records = json.loads(journal.read_text()) if journal.exists() else []
-            record = {"event_id": project.event_id, "old": str(legacy), "new": str(target)}
-            if record not in records:
-                records.append(record)
-                journal.parent.mkdir(parents=True, exist_ok=True)
-                with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=journal.parent, delete=False) as file:
-                    json.dump(records, file)
-                    file.flush()
-                    os.fsync(file.fileno())
-                    temporary = Path(file.name)
-                temporary.replace(journal)
-            moves = [(legacy / name, target / name) for name in names]
-            for source, destination in moves:
-                if source.is_symlink() or destination.is_symlink():
-                    raise ValueError("旧交付目录中存在符号链接，已停止自动整理")
-                if source.exists() and destination.exists():
-                    source_has_data = any(source.iterdir()) if source.is_dir() else True
-                    destination_has_data = any(destination.iterdir()) if destination.is_dir() else True
-                    if source_has_data and destination_has_data:
-                        raise ValueError(f"新旧交付目录均有文件，需先人工检查冲突：{source.name}")
-            for source, destination in moves:
-                if not source.exists():
-                    continue
-                if destination.exists():
-                    if not any(destination.iterdir()):
-                        destination.rmdir()
-                    else:
+            workspace = target or legacy
+            if target is not None:
+                _assert_safe_delivery_path(root, target)
+            else:
+                # Legacy per-project bind mounts may have their own root.
+                if legacy.is_symlink():
+                    raise ValueError("项目交付目录不能是符号链接，已停止自动整理")
+                for name in ("03_SELECTED_RAW", "04_FINAL", "05_HISTORY", SELECTED_DIRECTORY, FINAL_DIRECTORY, HISTORY_DIRECTORY):
+                    candidate = legacy / name
+                    if candidate.is_symlink() or (candidate.exists() and not candidate.is_dir()):
+                        raise ValueError(f"交付目录不是普通文件夹，已停止迁移：{candidate}")
+
+            destinations = []
+            for legacy_name, current_name in PROJECT_DIRECTORY_RENAMES:
+                destination = workspace / current_name
+                candidates = {
+                    legacy / legacy_name,
+                    legacy / current_name,
+                    workspace / legacy_name,
+                    destination,
+                }
+                candidates.discard(destination)
+                existing_sources = [path for path in candidates if path.exists() or path.is_symlink()]
+                all_paths = existing_sources + ([destination] if destination.exists() or destination.is_symlink() else [])
+                for path in all_paths:
+                    if path.is_symlink() or not path.is_dir():
+                        raise ValueError(f"交付目录不是普通文件夹，已停止迁移：{path}")
+                populated = [path for path in all_paths if _directory_has_data(path)]
+                if len(populated) > 1:
+                    raise ValueError(
+                        f"新旧交付目录均有文件，需先人工检查后再启动 Bridge：{legacy_name} / {current_name}"
+                    )
+                destinations.append((existing_sources, destination))
+
+            planned.append((project, root, legacy, workspace, target, destinations))
+
+        # Persist path mappings before moving files. On restart, the same
+        # journal can finish rebasing database references after an interruption.
+        for project, _root, legacy, workspace, target, destinations in planned:
+            if target is not None and target != legacy:
+                record = {"event_id": project.event_id, "old": str(legacy), "new": str(target)}
+                if record not in records:
+                    records.append(record)
+            for (legacy_name, current_name), (_sources, _destination) in zip(PROJECT_DIRECTORY_RENAMES, destinations):
+                record = {
+                    "event_id": project.event_id,
+                    "old": str(workspace / legacy_name),
+                    "new": str(workspace / current_name),
+                }
+                if record not in records:
+                    records.append(record)
+        if records and records != (json.loads(journal.read_text()) if journal.exists() else []):
+            _write_json_atomic(journal, records)
+
+        for project, root, legacy, workspace, target, destinations in planned:
+            if target is not None:
+                _assert_safe_delivery_path(root, target)
+                target.mkdir(parents=True, exist_ok=True)
+            for sources, destination in destinations:
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                populated_source = next((path for path in sources if path.exists() and _directory_has_data(path)), None)
+                if destination.exists() and not _directory_has_data(destination):
+                    destination.rmdir()
+                if populated_source is not None:
+                    populated_source.rename(destination)
+                elif not destination.exists():
+                    empty_source = next((path for path in sources if path.exists()), None)
+                    if empty_source is not None:
+                        empty_source.rename(destination)
+                for source in sources:
+                    if source.exists() and source != destination:
                         source.rmdir()
-                        continue
-                source.rename(destination)
-            current = legacy
-            while current != root:
-                try:
-                    current.rmdir()
-                except OSError:
-                    break
-                current = current.parent
-            project.selected = target / "03_SELECTED_RAW"
-            project.final = target / "04_FINAL"
-            project.history = target / "05_HISTORY"
-            changed = True
+
+            if target is not None and target != legacy:
+                current = legacy
+                while current != root:
+                    try:
+                        current.rmdir()
+                    except OSError:
+                        break
+                    current = current.parent
+                changed = True
+
+            new_selected = workspace / SELECTED_DIRECTORY
+            new_final = workspace / FINAL_DIRECTORY
+            new_history = workspace / HISTORY_DIRECTORY
+            changed = changed or (project.selected, project.final, project.history) != (
+                new_selected, new_final, new_history,
+            )
+            project.selected, project.final, project.history = new_selected, new_final, new_history
 
         if changed:
-            self.projects_file.parent.mkdir(parents=True, exist_ok=True)
             payload = [
                 {"name": p.name, "event_id": p.event_id, "raw": str(p.raw), "raw_dirs": [str(raw) for raw in p.raw_dirs],
                  "selected": str(p.selected), "final": str(p.final), "history": str(p.history)}
                 for p in self.projects
             ]
-            with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=self.projects_file.parent, delete=False) as file:
-                json.dump(payload, file, ensure_ascii=False, indent=2)
-                file.write("\n")
-                temporary = Path(file.name)
-            temporary.replace(self.projects_file)
+            _write_json_atomic(self.projects_file, payload)
 
     @classmethod
     def load(cls):
@@ -218,7 +301,7 @@ class Config:
             poll_seconds=float(os.getenv("POLL_SECONDS", "30")),
             stable_seconds=float(os.getenv("STABLE_SECONDS", "10")),
             max_bytes=int(os.getenv("MAX_FINAL_BYTES", str(100 * 1024 * 1024))),
-            history_keep=int(os.getenv("HISTORY_KEEP", "3")),
+            history_keep=int(os.getenv("HISTORY_KEEP", "1")),
             materialize_mode=os.getenv("RAW_MATERIALIZE_MODE", "auto"),
             projects=[ProjectConfig(**{
                 **p,

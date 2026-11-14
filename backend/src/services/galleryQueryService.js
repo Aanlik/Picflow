@@ -607,6 +607,7 @@ async function getGalleryPhotos({ event, query = {}, identity, accessLevel, admi
       url: photo.url,
       thumbnail_url: photo.thumbnail_url,
       preview_url: photo.preview_url,
+      slideshow_url: photo.slideshow_url,
       category_allow_downloads: photo.category_allow_downloads,
       download_allowed: photo.download_allowed,
       size: photo.size,
@@ -616,6 +617,7 @@ async function getGalleryPhotos({ event, query = {}, identity, accessLevel, admi
       media_type: photo.media_type,
       mime_type: photo.mime_type,
       duration: photo.duration,
+      type: photo.type,
     }));
   }
   return payload;

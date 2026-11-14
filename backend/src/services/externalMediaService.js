@@ -2,6 +2,7 @@ const fs = require('fs').promises;
 const fsSync = require('fs');
 const path = require('path');
 const { safePathJoin, assertRealpathUnder, assertRealpathUnderSync } = require('../utils/fileSecurityUtils');
+const { isDeliveryDirectoryName } = require('../utils/materialPathRules');
 
 let cachedRoot = null;
 
@@ -74,7 +75,7 @@ async function list(relativePath = '') {
     const stat = await fs.stat(full).catch(() => null);
     if (!stat) continue;
 
-    if (d.isDirectory() && d.name.toLocaleLowerCase() !== 'pixcakedelivery') {
+    if (d.isDirectory() && !isDeliveryDirectoryName(d.name)) {
       entries.push({ name: d.name, type: 'dir' });
     } else if (d.isFile()) {
       const ext = path.extname(d.name).toLowerCase();

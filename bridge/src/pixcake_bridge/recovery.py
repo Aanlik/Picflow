@@ -6,6 +6,7 @@ from .files import RAW_EXTENSIONS, FINAL_EXTENSIONS, index_files, safe_file, saf
 from .engine import index_source_roots
 from .models import Project, Photo, Delivery, Withdrawal, Error
 from .filenames import normalize_filename
+from .storage_layout import DELIVERY_ROOT_DIRECTORIES
 
 
 def relative_file(root, value, extensions):
@@ -38,7 +39,7 @@ async def recover(engine, event_id, photo_id, payload=None):
         if payload is None:
             # Missing-photo cleanup only needs the authoritative remote list,
             # not readable camera/final mounts or a full directory scan.
-            raw_index, _ = index_source_roots(cfg.raw_dirs, RAW_EXTENSIONS, {'PixCakeDelivery'}) if current else ({}, [])
+            raw_index, _ = index_source_roots(cfg.raw_dirs, RAW_EXTENSIONS, DELIVERY_ROOT_DIRECTORIES) if current else ({}, [])
             final_index = index_files(cfg.final, FINAL_EXTENSIONS) if current else {}
             return {'remote_present': current is not None, 'source_filename': source,
                     'previous_source': normalize_filename(photo.source_filename), 'next_version': version,

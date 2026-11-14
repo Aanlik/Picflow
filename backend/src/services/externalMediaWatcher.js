@@ -8,6 +8,7 @@ const { formatBoolean } = require('../utils/dbCompat');
 const logger = require('../utils/logger');
 const { setScanState, validateFolder } = require('./externalMediaSources');
 const { importExternalFolder, ImportInProgressError, IMAGE_EXTENSIONS } = require('./externalImportService');
+const { containsDeliveryDirectory } = require('../utils/materialPathRules');
 
 const envInt = (name, fallback) => {
   const parsed = Number.parseInt(process.env[name] || '', 10);
@@ -130,7 +131,7 @@ async function startWatching(source) {
     ignoreInitial: true,
     persistent: true,
     ignored: (p) => path.basename(p).startsWith('.')
-      || path.relative(absPath, p).split(path.sep).some((part) => part.toLocaleLowerCase() === 'pixcakedelivery'),
+      || containsDeliveryDirectory(path.relative(absPath, p).split(path.sep)),
     usePolling: USE_POLLING,
     interval: POLL_INTERVAL_MS,
     binaryInterval: POLL_INTERVAL_MS,

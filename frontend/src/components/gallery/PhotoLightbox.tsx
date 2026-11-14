@@ -42,6 +42,8 @@ interface PhotoLightboxProps {
   downloadChoices?: DownloadResolutionChoice[];
   /** Opens the parent gallery's resolution picker for the requested photo. */
   onPickResolution?: (photoIds: number[]) => void;
+  /** Skip the feedback-settings request for read-only surfaces that have no feedback controls. */
+  loadFeedbackSettings?: boolean;
 }
 
 export const PhotoLightbox: React.FC<PhotoLightboxProps> = ({
@@ -61,6 +63,7 @@ export const PhotoLightbox: React.FC<PhotoLightboxProps> = ({
   showOriginalFilename = false,
   downloadChoices,
   onPickResolution,
+  loadFeedbackSettings = true,
 }) => {
   const { t: tAudit } = useTranslation();
   const queryClient = useQueryClient();
@@ -314,6 +317,7 @@ export const PhotoLightbox: React.FC<PhotoLightboxProps> = ({
 
   // Load feedback settings once
   useEffect(() => {
+    if (!loadFeedbackSettings) return;
     let mounted = true;
     (async () => {
       try {
@@ -324,7 +328,7 @@ export const PhotoLightbox: React.FC<PhotoLightboxProps> = ({
       }
     })();
     return () => { mounted = false; };
-  }, [slug]);
+  }, [slug, loadFeedbackSettings]);
 
   // The toolbar and feedback panel share the same query cache. This keeps
   // feedback controls in sync regardless of which side the guest uses.

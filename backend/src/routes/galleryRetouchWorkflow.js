@@ -77,11 +77,6 @@ function selectionIdentity(settings, req, guestIdentifier) {
   };
 }
 
-async function requireRetouchWorkflow(eventId) {
-  const workflow = await getPublicPhotoStates(eventId);
-  return workflow.status === 200;
-}
-
 router.post('/:slug/photos/:photoId/retouch-selection',
   verifyGalleryAccess,
   denySlideshowToken,
@@ -101,7 +96,22 @@ router.post('/:slug/photos/:photoId/retouch-selection',
       if (settings.identity_mode === 'guest' && (!req.guest || req.guest.eventId !== event.id)) {
         return res.status(401).json({ error: 'Guest identity required', code: 'GUEST_IDENTITY_REQUIRED' });
       }
-      if (!(await requireRetouchWorkflow(event.id))) return res.status(503).json({ error: 'Retouch workflow is not connected' });
+      const workflow = await getPublicPhotoStates(event.id);
+      if (workflow.status !== 200 || !Array.isArray(workflow.data?.photos)) {
+        return res.status(503).json({ error: 'Retouch workflow is not connected' });
+      }
+      if (!req.body.selected) {
+        const workflowPhoto = workflow.data.photos.find((item) => Number(item.photo_id) === photoId);
+        if (workflowPhoto?.delivered) {
+          return res.status(409).json({
+            code: 'DELIVERED_SELECTION_WITHDRAWAL_REQUIRED',
+            error: 'Delivered photos must use the individual withdrawal flow',
+          });
+        }
+        if (workflowPhoto?.withdraw_pending) {
+          return res.status(409).json({ code: 'WITHDRAW_PENDING', error: '撤回任务仍在处理中，请稍后重新选片' });
+        }
+      }
 
       const guestIdentifier = await generateGuestIdentifier(req);
       await feedbackRateLimit('color_label')(req, res, (error) => { if (error) throw error; });

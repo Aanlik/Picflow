@@ -49,7 +49,7 @@ services:
       POLL_SECONDS: ${POLL_SECONDS:-30}
       STABLE_SECONDS: ${STABLE_SECONDS:-10}
       MAX_FINAL_BYTES: ${MAX_FINAL_BYTES:-104857600}
-      HISTORY_KEEP: ${HISTORY_KEEP:-3}
+      HISTORY_KEEP: ${HISTORY_KEEP:-1}
       RAW_MATERIALIZE_MODE: ${RAW_MATERIALIZE_MODE:-auto}
       WATCHFILES_FORCE_POLLING: 'true'
     ports:
@@ -58,8 +58,8 @@ services:
     - picflow-data:/data
     - picflow-bridge-data:/bridge-data
     # Camera (including RAW) stays read-only. Additional approved source roots
-    # can be mounted under /external-media with a Compose override. PixCakeDelivery
-    # may live under Camera on the NAS, but receives a separate writable mount.
+    # can be mounted under /external-media with a Compose override. 项目交付
+    # 可位于 NAS 的 Camera 下，但使用独立的可写挂载。
     - type: bind
       source: ${NAS_CAMERA_ROOT:?填写现有 NAS Camera 绝对路径}
       target: /external-media/Camera
@@ -67,14 +67,14 @@ services:
       bind:
         create_host_path: false
     - type: bind
-      source: ${NAS_DELIVERY_ROOT:?填写 NAS 交付目录绝对路径}
+      source: ${NAS_DELIVERY_ROOT:?填写 NAS 项目交付目录绝对路径}
       target: /delivery
       bind:
         create_host_path: false
     # Retained only for existing projects already using a dedicated bind.
     # New projects do not require this mount or a per-project Compose change.
     - type: bind
-      source: ${NAS_PROJECT_DELIVERY_ROOT:-${NAS_DELIVERY_ROOT:?填写 NAS 交付目录绝对路径}}
+      source: ${NAS_PROJECT_DELIVERY_ROOT:-${NAS_DELIVERY_ROOT:?填写 NAS 项目交付目录绝对路径}}
       target: /delivery-project
       bind:
         create_host_path: false

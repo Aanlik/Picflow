@@ -2,6 +2,7 @@ const path = require('path');
 const { db } = require('../database/db');
 const { getExternalMediaRoot } = require('./externalMediaService');
 const { bridgeRequest } = require('./photographyWorkflowBridge');
+const { containsDeliveryDirectory } = require('../utils/materialPathRules');
 
 function toMaterialRawSubdir(source, externalRoot = getExternalMediaRoot()) {
   if (source.root_id !== 'default' || source.purpose === 'gallery') return null;
@@ -9,7 +10,7 @@ function toMaterialRawSubdir(source, externalRoot = getExternalMediaRoot()) {
   const relative = path.relative(path.resolve(externalRoot), folder);
   if (!relative || relative === '.' || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return null;
   const parts = relative.split(path.sep);
-  if (parts.some((part) => part.toLocaleLowerCase() === 'pixcakedelivery')) return null;
+  if (containsDeliveryDirectory(parts)) return null;
   const leaf = parts[parts.length - 1]?.toLocaleLowerCase();
   if (leaf === '02_proof') parts[parts.length - 1] = '01_RAW';
   return parts.join('/');

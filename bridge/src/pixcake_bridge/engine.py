@@ -12,6 +12,7 @@ from .filenames import normalize_filename
 from .client import ApiError
 from .files import FINAL_EXTENSIONS, RAW_EXTENSIONS, Stability, index_files, match_raw, materialize, resolve_raw_override, resolve_uploaded_source, safe_file, safe_name, sha256, snapshot, stem_key
 from .models import Delivery, Error, Photo, Project, SyncRun, Withdrawal, now
+from .storage_layout import DELIVERY_ROOT_DIRECTORIES
 
 STAGES = ["SELECTING", "EDITING", "DELIVERED", "ARCHIVED"]
 logger = logging.getLogger(__name__)
@@ -68,6 +69,14 @@ class Engine:
                 row.state = "UNKNOWN"
                 row.updated = now()
             s.commit()
+            configs_by_event = {project.event_id: project for project in config.projects}
+            for project in list(s.scalars(select(Project))):
+                cfg = configs_by_event.get(project.event_id)
+                if cfg is None:
+                    continue
+                for photo in list(s.scalars(select(Photo).where(Photo.project_id == project.id))):
+                    self.prune_successful_snapshots(s, cfg, photo)
+            s.commit()
 
     def rebase_layout_paths(self):
         journal = self.config.projects_file.with_name("layout-migrations.json")
@@ -88,6 +97,7 @@ class Engine:
                         return value
                 for photo in s.scalars(select(Photo).where(Photo.project_id == project.id)):
                     photo.selected_path = rebased(photo.selected_path)
+                    photo.upload_snapshot_path = rebased(photo.upload_snapshot_path)
                     for delivery in s.scalars(select(Delivery).where(Delivery.photo_pk == photo.id)):
                         delivery.snapshot = rebased(delivery.snapshot)
                     task = s.scalar(select(Withdrawal).where(Withdrawal.photo_pk == photo.id))
@@ -217,11 +227,11 @@ class Engine:
                         remote = await self.client.photos(cfg.event_id)
                         photos_processed = len(remote)
                         project.connected = True
-                        # PixCakeDelivery lives inside the referenced shoot
+                        # The writable delivery workspace may live inside the shoot
                         # folder, but contains selected RAW copies and final
                         # JPEGs. Never index those as camera originals.
                         raw_index, unavailable_raw_roots = await asyncio.to_thread(
-                            index_source_roots, cfg.raw_dirs, RAW_EXTENSIONS, {"PixCakeDelivery"}
+                            index_source_roots, cfg.raw_dirs, RAW_EXTENSIONS, DELIVERY_ROOT_DIRECTORIES
                         )
                         for missing_root, detail in unavailable_raw_roots:
                             failed = True
@@ -419,20 +429,13 @@ class Engine:
             # on demand by the authenticated request endpoint (V2, V3, ...).
             if not photo.delivery_hash:
                 self.output_folder(cfg, 1, create=True)
-        elif project.stage == "SELECTING" and photo.selected_path:
-            if not project.has_entered_editing:
-                dest = Path(photo.selected_path)
-                if dest.exists() or dest.is_symlink():
-                    safe_file(dest, cfg.selected)
-                    if await asyncio.to_thread(sha256, dest) != photo.materialized_hash:
-                        raise ValueError("取消选片时待精修源文件已变更，保留文件待人工处理")
-                    dest.unlink()
-                photo.selected_path = None
-                photo.materialized_hash = None
-                photo.raw_path, photo.raw_hash = None, None
-                photo.source_kind = None
-        # Once editing has started, cancelled RAW remains available even if
-        # the photographer later rolls the project stage back to SELECTING.
+        elif not photo.delivery_hash and (photo.selected_path or photo.raw_path):
+            # Cancellation owns only this project's materialized working copy
+            # and its RAW association. The original camera RAW in its read-only
+            # source folder is never removed. A delivered image uses the
+            # explicit withdrawal flow instead.
+            self._remove_selected_raw(cfg, photo)
+            photo.source_kind = None
 
     def _remove_selected_raw(self, cfg, photo):
         if photo.selected_path:
@@ -539,7 +542,7 @@ class Engine:
                                 raise ValueError("找不到用户上传的原始照片，无法恢复")
                         else:
                             proof_index, unavailable_proof_roots = await asyncio.to_thread(
-                                index_source_roots, cfg.proof_roots, FINAL_EXTENSIONS, {"PixCakeDelivery"}
+                                index_source_roots, cfg.proof_roots, FINAL_EXTENSIONS, DELIVERY_ROOT_DIRECTORIES
                             )
                             if unavailable_proof_roots:
                                 logger.warning("event %s: %d proof source folder(s) unavailable", cfg.event_id, len(unavailable_proof_roots))
@@ -687,7 +690,7 @@ class Engine:
                     version = current_version + 1
                     candidates = await candidates_for(version)
                     # Keep compatibility with projects that exported their first
-                    # delivery directly into 04_FINAL before version folders were
+                    # delivery directly into the delivery folder before version folders were
                     # introduced. A V1 export always wins when it exists alone.
                     if version == 1 and not candidates:
                         if legacy_index is None:
@@ -782,18 +785,47 @@ class Engine:
                 s.commit()
         return failed
 
+    def prune_successful_snapshots(self, s, cfg, photo):
+        rows = list(s.scalars(
+            select(Delivery).where(Delivery.photo_pk == photo.id, Delivery.state == "SUCCESS")
+            .order_by(Delivery.updated.desc(), Delivery.id.desc())
+        ))
+        retained = {row.snapshot for row in rows[:self.config.history_keep]}
+        protected = {
+            row.snapshot for row in s.scalars(
+                select(Delivery).where(Delivery.photo_pk == photo.id, Delivery.state != "SUCCESS")
+            ) if row.snapshot
+        }
+        protected.update(
+            task.snapshot for task in s.scalars(
+                select(Withdrawal).where(Withdrawal.photo_pk == photo.id, Withdrawal.state != "SUCCESS")
+            ) if task.snapshot
+        )
+        if photo.upload_snapshot_path:
+            protected.add(photo.upload_snapshot_path)
+
+        for old in rows[self.config.history_keep:]:
+            if old.snapshot in retained or old.snapshot in protected:
+                continue
+            snapshot_path = Path(old.snapshot)
+            if snapshot_path.name.startswith("source-original"):
+                continue
+            if not (snapshot_path.exists() or snapshot_path.is_symlink()):
+                continue
+            try:
+                safe_file(snapshot_path, cfg.history)
+                snapshot_path.unlink()
+            except (OSError, ValueError) as exc:
+                logger.warning("event %s photo %s: could not prune successful snapshot %s: %s",
+                               cfg.event_id, photo.photo_id, snapshot_path, exc)
+
     def success(self, s, cfg, photo, delivery, complete_task=False):
         photo.delivery_hash, photo.remote_filename = delivery.sha256, delivery.marker
         if complete_task:
             photo.added_during_editing = False
         delivery.state, delivery.error, delivery.updated = "SUCCESS", None, now()
         s.commit()
-        rows = list(s.scalars(select(Delivery).where(Delivery.photo_pk == photo.id, Delivery.state == "SUCCESS").order_by(Delivery.updated.desc())))
-        for old in rows[self.config.history_keep:]:
-            p = Path(old.snapshot)
-            if p.exists():
-                safe_file(p, cfg.history)
-                p.unlink()
+        self.prune_successful_snapshots(s, cfg, photo)
         # A crash during snapshot->DB commit can leave an unreferenced staged
         # file; cleanup only the per-photo Bridge-owned history namespace.
         referenced = {d.snapshot for d in s.scalars(select(Delivery).where(Delivery.photo_pk == photo.id))}

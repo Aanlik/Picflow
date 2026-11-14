@@ -1,6 +1,7 @@
 const path = require('path');
 const { formatBoolean } = require('../../src/utils/dbCompat');
 const { parseBooleanInput } = require('../../src/utils/parsers');
+const { containsDeliveryDirectory } = require('../../src/utils/materialPathRules');
 
 function normalizeLegacyPath(value) {
   if (typeof value !== 'string' || !value.trim()) return null;
@@ -10,7 +11,7 @@ function normalizeLegacyPath(value) {
   const normalized = input.replace(/\/+$/g, '');
   const parts = normalized.split('/');
   if (!normalized || parts.some((part) => !part || part === '.' || part === '..')
-      || parts.some((part) => part.toLocaleLowerCase() === 'pixcakedelivery')) return null;
+      || containsDeliveryDirectory(parts)) return null;
   return normalized;
 }
 

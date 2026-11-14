@@ -5,6 +5,7 @@ from pathlib import Path
 from sqlalchemy import select
 from .models import Delivery, Error, Photo, Project, SyncRun, Withdrawal
 from .state_backup import atomic_json
+from .storage_layout import FINAL_DIRECTORY, HISTORY_DIRECTORY, SELECTED_DIRECTORY
 
 
 def delete_project_rows(sessions, event_id):
@@ -29,9 +30,9 @@ def delete_project_delivery(config, project):
     root = root.resolve(strict=True)
 
     expected = (
-        (Path(project.selected), "03_SELECTED_RAW"),
-        (Path(project.final), "04_FINAL"),
-        (Path(project.history), "05_HISTORY"),
+        (Path(project.selected), SELECTED_DIRECTORY),
+        (Path(project.final), FINAL_DIRECTORY),
+        (Path(project.history), HISTORY_DIRECTORY),
     )
     targets = []
     scope = None
@@ -45,7 +46,7 @@ def delete_project_delivery(config, project):
         try:
             relative = target.relative_to(root)
         except ValueError as error:
-            raise ValueError("项目交付目录越出了 NAS PixCakeDelivery 根目录，未删除项目文件") from error
+            raise ValueError("项目交付目录越出了 NAS‘项目交付’根目录，未删除项目文件") from error
         if not relative.parts or any(part in {".", ".."} for part in relative.parts):
             raise ValueError("项目交付目录路径无效，未删除项目文件")
 
@@ -64,7 +65,7 @@ def delete_project_delivery(config, project):
         if any(raw == resolved_target or raw in resolved_target.parents or resolved_target in raw.parents for raw in raw_roots):
             raise ValueError("RAW 源目录与待删除交付目录重叠，已保护 RAW 源文件")
 
-    # rmtree unlinks hardlinks in 03_SELECTED_RAW; the original inode remains
+    # rmtree unlinks hardlinks in the selected-work folder; the original inode remains
     # present in the separately mounted, read-only source directory.
     for target in targets:
         if target.exists():

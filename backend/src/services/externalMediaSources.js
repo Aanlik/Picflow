@@ -3,6 +3,7 @@ const { db } = require('../database/db');
 const { getExternalMediaRoot } = require('./externalMediaService');
 const { safePathJoin, assertRealpathUnder } = require('../utils/fileSecurityUtils');
 const { isUniqueViolation } = require('../utils/dbErrors');
+const { containsDeliveryDirectory } = require('../utils/materialPathRules');
 
 const DEFAULT_ROOT_ID = 'default';
 const PURPOSES = new Set(['gallery', 'raw', 'both']);
@@ -23,7 +24,7 @@ function normalizeRelativePath(value) {
   if (trimmed.split('/').some((part) => part === '..' || part === '.')) {
     throw Object.assign(new Error('Material folder path contains an invalid segment'), { code: 'INVALID_MATERIAL_PATH' });
   }
-  if (trimmed.split('/').some((part) => part.toLocaleLowerCase() === 'pixcakedelivery')) {
+  if (containsDeliveryDirectory(trimmed.split('/'))) {
     throw Object.assign(new Error('Delivery folders cannot be used as source material'), { code: 'INVALID_MATERIAL_PATH' });
   }
   const normalized = path.posix.normalize(trimmed);

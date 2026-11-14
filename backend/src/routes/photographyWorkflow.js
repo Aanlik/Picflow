@@ -9,6 +9,7 @@ const { db, logActivity } = require('../database/db');
 const { bridgeRequest, getProjectDetail, setWorkflowStage } = require('../services/photographyWorkflowBridge');
 const { getExternalMediaRoot, resolveExternalPath } = require('../services/externalMediaService');
 const { parseBooleanInput } = require('../utils/parsers');
+const { containsDeliveryDirectory } = require('../utils/materialPathRules');
 const { listBridgeRawSubdirs } = require('../services/externalMediaBridgeSources');
 const { inspectRawMounts } = require('../services/photographyWorkflowAutoBind');
 const logger = require('../utils/logger');
@@ -56,7 +57,7 @@ function materialSubdirectory(event) {
     const relative = path.relative(materialRoot, eventRoot);
     if (!relative || relative === '.' || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return null;
     const parts = relative.split(path.sep);
-    if (parts.some((part) => part.toLocaleLowerCase() === 'pixcakedelivery')) return null;
+    if (containsDeliveryDirectory(parts)) return null;
     // Picflow references the proof folder so clients see JPG previews, while
     // Bridge must index RAW files from its sibling directory. Keep the
     // standard <mount>/<project>/01_RAW + 02_PROOF layout connected correctly.

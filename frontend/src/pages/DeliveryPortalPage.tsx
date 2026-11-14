@@ -1,15 +1,17 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { FormEvent } from 'react';
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { Download, ImageOff, LockKeyhole, LogOut, RefreshCw } from 'lucide-react';
+import { Check, Download, ImageOff, LockKeyhole, LogOut, Maximize2, RefreshCw, Square, X } from 'lucide-react';
 import { toast } from 'react-toastify';
 import { useTranslation } from 'react-i18next';
 import { useGalleryAuth } from '../contexts';
 import { galleryService } from '../services/gallery.service';
 import { DownloadQueue } from '../components/gallery/DownloadQueue';
 import { DownloadResolutionModal } from '../components/gallery/DownloadResolutionModal';
+import { PhotoLightbox } from '../components/gallery/PhotoLightbox';
 import { Loading } from '../components/common';
+import { getDownloadableSelectedPhotoIds, getPhotoDownloadFilenames } from '../components/gallery/downloadSelection';
 import { versionedRetouchUrl } from '../utils/versionedRetouchUrl';
 import type { RetouchWorkflow } from '../services/gallery.service';
 
@@ -22,7 +24,10 @@ export function DeliveryPortalPage() {
   const [password, setPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [loginError, setLoginError] = useState('');
-  const [showResolutionPicker, setShowResolutionPicker] = useState(false);
+  const [isSelectionMode, setIsSelectionMode] = useState(false);
+  const [selectedPhotoIds, setSelectedPhotoIds] = useState<Set<number>>(new Set());
+  const [previewIndex, setPreviewIndex] = useState<number | null>(null);
+  const [resolutionPhotoIds, setResolutionPhotoIds] = useState<number[] | null>(null);
   const shareToken = searchParams.get('token')
     || new URLSearchParams(window.location.hash.replace(/^#/, '')).get('token')
     || '';
@@ -42,6 +47,43 @@ export function DeliveryPortalPage() {
     refetchInterval: 15000,
     retry: 1,
   });
+  const photos = useMemo(() => data?.photos || [], [data?.photos]);
+  const workflowByPhotoId = new Map((workflow?.photos || []).map((photo) => [photo.photo_id, photo]));
+  const allowDownloads = data?.event?.allow_downloads !== false;
+  const downloadChoices = data?.event?.download_resolution?.picker_enabled
+    ? data.event.download_resolution.choices || []
+    : [];
+  const downloadable = useMemo(
+    () => allowDownloads
+      ? photos.filter((photo) => photo.download_allowed !== false && photo.category_allow_downloads !== false)
+      : [],
+    [photos, allowDownloads],
+  );
+  const downloadableIds = useMemo(() => downloadable.map((photo) => photo.id), [downloadable]);
+  const downloadableIdKey = downloadableIds.join(',');
+  const downloadableSelectedIds = useMemo(
+    () => getDownloadableSelectedPhotoIds(photos, selectedPhotoIds),
+    [photos, selectedPhotoIds],
+  );
+  const lightboxPhotos = useMemo(() => {
+    const states = new Map((workflow?.photos || []).map((photo) => [photo.photo_id, photo]));
+    return photos.map((photo) => {
+      const deliveredState = states.get(photo.id);
+      const version = deliveredState?.current_version || 0;
+      const revision = deliveredState?.current_revision || 0;
+      return {
+        ...photo,
+        thumbnail_url: versionedRetouchUrl(photo.thumbnail_url, version, revision),
+        preview_url: versionedRetouchUrl(photo.preview_url, version, revision),
+        slideshow_url: versionedRetouchUrl(photo.slideshow_url, version, revision),
+      };
+    });
+  }, [photos, workflow]);
+
+  useEffect(() => {
+    const allowed = new Set(downloadableIdKey ? downloadableIdKey.split(',').map(Number) : []);
+    setSelectedPhotoIds((current) => new Set([...current].filter((id) => allowed.has(id))));
+  }, [downloadableIdKey]);
 
   const handleLogin = async (submitEvent: FormEvent) => {
     submitEvent.preventDefault();
@@ -104,28 +146,26 @@ export function DeliveryPortalPage() {
     );
   }
 
-  const photos = data?.photos || [];
-  const workflowByPhotoId = new Map((workflow?.photos || []).map((photo) => [photo.photo_id, photo]));
-  const allowDownloads = data?.event?.allow_downloads !== false;
-  const downloadChoices = data?.event?.download_resolution?.picker_enabled
-    ? data.event.download_resolution.choices || []
-    : [];
-  const downloadable = photos.filter((photo) => photo.download_allowed !== false && photo.category_allow_downloads !== false);
-
-  const downloadPhoto = async (photoId: number, filename: string) => {
+  const downloadPhotos = async (photoIds: number[]) => {
+    if (!allowDownloads || photoIds.length === 0) return;
+    if (downloadChoices.length > 1) {
+      setResolutionPhotoIds(photoIds);
+      return;
+    }
     try {
-      await galleryService.downloadPhoto(slug, photoId, filename);
+      await galleryService.downloadSelectedPhotos(slug, photoIds, undefined, getPhotoDownloadFilenames(photos, photoIds));
+      toast.info(t('gallery.downloadStarted', { photoCount: photoIds.length }));
     } catch (error: any) {
       const code = error?.response?.data?.code;
       toast.error(code === 'CLOUD_DOWNLOAD_NOT_READY'
         ? t('downloadManager.errors.CLOUD_DOWNLOAD_NOT_READY')
-        : t('gallery.photoDownloadFailed'));
+        : t('gallery.downloadError'));
     }
   };
 
   const downloadAll = async () => {
     if (downloadChoices.length > 1) {
-      setShowResolutionPicker(true);
+      setResolutionPhotoIds(downloadable.map((photo) => photo.id));
       return;
     }
     try {
@@ -135,6 +175,22 @@ export function DeliveryPortalPage() {
       toast.error(t('gallery.allDownloadsFailed'));
     }
   };
+
+  const togglePhotoSelection = (photoId: number) => {
+    setSelectedPhotoIds((current) => {
+      const next = new Set(current);
+      if (next.has(photoId)) next.delete(photoId);
+      else next.add(photoId);
+      return next;
+    });
+  };
+
+  const toggleSelectionMode = () => {
+    setIsSelectionMode((current) => !current);
+    setSelectedPhotoIds(new Set());
+  };
+
+  const selectAllDownloadable = () => setSelectedPhotoIds(new Set(downloadableIds));
 
   return (
     <main className="min-h-screen bg-neutral-50 pb-24 dark:bg-neutral-950">
@@ -159,9 +215,26 @@ export function DeliveryPortalPage() {
             <h2 className="text-base font-semibold text-neutral-900 dark:text-white">{t('deliveryPortal.photoCount', { count: photos.length })}</h2>
             <p className="mt-1 text-sm text-neutral-500">{t('deliveryPortal.adminHelp')}</p>
           </div>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             {isError && <button type="button" onClick={() => void refetch()} className="inline-flex min-h-10 items-center gap-2 rounded-lg border border-neutral-300 px-3 text-sm font-medium dark:border-neutral-700"><RefreshCw className="h-4 w-4" />{t('common.tryAgain')}</button>}
-            <button type="button" onClick={() => void downloadAll()} disabled={!allowDownloads || !downloadable.length} className="inline-flex min-h-10 items-center gap-2 rounded-lg bg-emerald-700 px-4 text-sm font-semibold text-white hover:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-50">
+            {downloadable.length > 1 && (isSelectionMode ? (
+              <>
+                <button type="button" onClick={() => selectedPhotoIds.size === downloadableIds.length ? setSelectedPhotoIds(new Set()) : selectAllDownloadable()} className="inline-flex min-h-10 items-center gap-2 rounded-lg border border-neutral-300 px-3 text-sm font-medium text-neutral-700 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-200 dark:hover:bg-neutral-800">
+                  {selectedPhotoIds.size === downloadableIds.length ? t('deliveryPortal.deselectAll') : t('deliveryPortal.selectAll')}
+                </button>
+                <button type="button" onClick={() => void downloadPhotos(downloadableSelectedIds)} disabled={!allowDownloads || downloadableSelectedIds.length === 0} className="inline-flex min-h-10 items-center gap-2 rounded-lg bg-emerald-700 px-4 text-sm font-semibold text-white hover:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-50">
+                  <Download className="h-4 w-4" />{t('deliveryPortal.downloadSelected', { count: downloadableSelectedIds.length })}
+                </button>
+                <button type="button" onClick={toggleSelectionMode} className="inline-flex min-h-10 items-center gap-2 rounded-lg border border-neutral-300 px-3 text-sm font-medium text-neutral-700 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-200 dark:hover:bg-neutral-800">
+                  <X className="h-4 w-4" />{t('deliveryPortal.cancelSelection')}
+                </button>
+              </>
+            ) : (
+              <button type="button" onClick={toggleSelectionMode} className="inline-flex min-h-10 items-center gap-2 rounded-lg border border-neutral-300 px-3 text-sm font-medium text-neutral-700 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-200 dark:hover:bg-neutral-800">
+                <Square className="h-4 w-4" />{t('deliveryPortal.selectPhotos')}
+              </button>
+            ))}
+            <button type="button" onClick={() => void downloadAll()} disabled={!allowDownloads || !downloadable.length} className={`inline-flex min-h-10 items-center gap-2 rounded-lg px-4 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 ${isSelectionMode ? 'border border-neutral-300 text-neutral-700 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-200 dark:hover:bg-neutral-800' : 'bg-emerald-700 text-white hover:bg-emerald-800'}`}>
               <Download className="h-4 w-4" />{t('deliveryPortal.downloadAll')}{downloadable.length ? ` (${downloadable.length})` : ''}
             </button>
           </div>
@@ -177,20 +250,29 @@ export function DeliveryPortalPage() {
           </div>
         ) : (
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-            {photos.map((photo) => {
+            {photos.map((photo, index) => {
               const canDownload = allowDownloads && photo.download_allowed !== false && photo.category_allow_downloads !== false;
               const filename = photo.original_filename || photo.source_filename || photo.filename;
               const deliveredState = workflowByPhotoId.get(photo.id);
               const thumbnailUrl = versionedRetouchUrl(photo.thumbnail_url, deliveredState?.current_version || 0, deliveredState?.current_revision || 0);
               const previewUrl = versionedRetouchUrl(photo.preview_url, deliveredState?.current_version || 0, deliveredState?.current_revision || 0);
+              const isSelected = selectedPhotoIds.has(photo.id);
               return (
-                <article key={photo.id} className="overflow-hidden rounded-xl border border-neutral-200 bg-white shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
-                  <div className="aspect-[4/3] bg-neutral-100 dark:bg-neutral-800">
-                    <img src={thumbnailUrl || previewUrl} alt={filename} loading="lazy" decoding="async" className="h-full w-full object-cover" />
+                <article key={photo.id} className={`relative overflow-hidden rounded-xl border bg-white shadow-sm transition dark:bg-neutral-900 ${isSelected ? 'border-emerald-600 ring-2 ring-emerald-600/30' : 'border-neutral-200 dark:border-neutral-800'}`}>
+                  <div className="relative aspect-[4/3] bg-neutral-100 dark:bg-neutral-800">
+                    <button type="button" onClick={() => setPreviewIndex(index)} aria-label={t('deliveryPortal.viewPhoto', { filename })} className="block h-full w-full cursor-zoom-in">
+                      <img src={thumbnailUrl || previewUrl} alt="" loading="lazy" decoding="async" className="h-full w-full object-cover" />
+                      <span className="absolute bottom-2 right-2 grid h-8 w-8 place-items-center rounded-full bg-black/60 text-white opacity-90 transition hover:bg-black/75" aria-hidden="true"><Maximize2 className="h-4 w-4" /></span>
+                    </button>
+                    {isSelectionMode && canDownload && (
+                      <button type="button" onClick={() => togglePhotoSelection(photo.id)} aria-pressed={isSelected} aria-label={t(isSelected ? 'deliveryPortal.deselectPhoto' : 'deliveryPortal.selectPhoto', { filename })} className={`absolute left-2 top-2 grid h-9 w-9 place-items-center rounded-full shadow-md ring-2 ring-white transition ${isSelected ? 'bg-emerald-700 text-white' : 'bg-white/95 text-neutral-700 hover:bg-white'}`}>
+                        {isSelected ? <Check className="h-5 w-5" /> : <Square className="h-5 w-5" />}
+                      </button>
+                    )}
                   </div>
                   <div className="p-3">
                     <p className="truncate text-xs text-neutral-600 dark:text-neutral-300" title={filename}>{filename}</p>
-                    <button type="button" disabled={!canDownload} onClick={() => void downloadPhoto(photo.id, filename)} className="mt-2 inline-flex min-h-10 w-full items-center justify-center gap-2 rounded-lg border border-emerald-700 px-3 py-2 text-sm font-semibold text-emerald-800 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-40 dark:text-emerald-300 dark:hover:bg-emerald-950/40">
+                    <button type="button" disabled={!canDownload} onClick={() => void downloadPhotos([photo.id])} className="mt-2 inline-flex min-h-10 w-full items-center justify-center gap-2 rounded-lg border border-emerald-700 px-3 py-2 text-sm font-semibold text-emerald-800 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-40 dark:text-emerald-300 dark:hover:bg-emerald-950/40">
                       <Download className="h-4 w-4" />{t('deliveryPortal.downloadPhoto')}
                     </button>
                   </div>
@@ -201,11 +283,25 @@ export function DeliveryPortalPage() {
         )}
       </section>
       <DownloadQueue slug={slug} historyEnabled={false} />
-      {showResolutionPicker && (
+      {previewIndex !== null && lightboxPhotos.length > 0 && (
+        <PhotoLightbox
+          photos={lightboxPhotos}
+          initialIndex={previewIndex}
+          slug={slug}
+          onClose={() => setPreviewIndex(null)}
+          allowDownloads={allowDownloads}
+          showOriginalFilename={data?.event?.use_original_filenames === true}
+          downloadChoices={downloadChoices}
+          onPickResolution={setResolutionPhotoIds}
+          loadFeedbackSettings={false}
+        />
+      )}
+      {resolutionPhotoIds !== null && (
         <DownloadResolutionModal
           slug={slug}
           choices={downloadChoices}
-          onClose={() => setShowResolutionPicker(false)}
+          photoIds={resolutionPhotoIds}
+          onClose={() => setResolutionPhotoIds(null)}
         />
       )}
     </main>

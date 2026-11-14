@@ -19,8 +19,9 @@ class Project(Base):
     name: Mapped[str] = mapped_column(String(255))
     stage: Mapped[str] = mapped_column(String(16), default="SELECTING")
     previous_stage: Mapped[str | None] = mapped_column(String(16), nullable=True)
-    # Once editing has started, moving the visible stage backwards must never
-    # make cancellation delete a RAW that may already be in an editor.
+    # Records whether the project entered editing, even if its visible stage
+    # later moves back to selection. Cancellation removes only Bridge's
+    # materialized work copy; the read-only camera RAW remains untouched.
     has_entered_editing: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     connected: Mapped[bool] = mapped_column(Boolean, default=False)
     last_sync: Mapped[datetime | None] = mapped_column(DateTime)

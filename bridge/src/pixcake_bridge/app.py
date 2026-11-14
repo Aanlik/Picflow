@@ -21,6 +21,12 @@ from .engine import Engine, STAGES
 from .models import Delivery, Error, Photo, Project, SyncRun, Withdrawal, database
 from . import checkpoints
 from .state_backup import atomic_json
+from .storage_layout import (
+    DELIVERY_ROOT_DIRECTORY,
+    FINAL_DIRECTORY,
+    HISTORY_DIRECTORY,
+    SELECTED_DIRECTORY,
+)
 
 templates = Environment(loader=FileSystemLoader(Path(__file__).parent / "templates"), autoescape=select_autoescape())
 STAGE_NAMES = {"SELECTING": "客户选片", "EDITING": "精修中", "DELIVERED": "已交付", "ARCHIVED": "已归档"}
@@ -54,7 +60,7 @@ def delivery_scope_for(raw_relative: Path, project_name: str | None = None) -> P
     RAW references are relative to the read-only material namespace and may
     look like ``Camera/RAW/26-10-04`` or ``Studio/2026/26-10-04/01_RAW``.
     The delivery tree should contain
-    ``PixCakeDelivery/26-10-04`` in either case, never another ``RAW`` layer
+    ``项目交付/26-10-04`` in either case, never another ``RAW`` layer
     or unrelated year/category parents.
     """
     parts = [part for part in raw_relative.parts if part not in {"", "."}]
@@ -100,7 +106,7 @@ def has_symlink_or_non_directory_component(root: Path, relative: Path) -> bool:
 def ensure_delivery_scope(root: Path, relative: Path) -> Path:
     """Create a project directory beneath the one writable delivery mount."""
     if root.is_symlink() or not root.is_dir():
-        raise ValueError("统一 PixCakeDelivery 目录未挂载或不能是符号链接")
+        raise ValueError("统一‘项目交付’目录未挂载或不能是符号链接")
     current = root
     for part in relative.parts:
         if part in {".", ".."}:
@@ -114,7 +120,7 @@ def ensure_delivery_scope(root: Path, relative: Path) -> Path:
     resolved_root = root.resolve(strict=True)
     resolved_current = current.resolve(strict=True)
     if resolved_current != resolved_root and resolved_root not in resolved_current.parents:
-        raise ValueError("项目交付目录越出了统一 PixCakeDelivery 根目录")
+        raise ValueError("项目交付目录越出了统一挂载根目录")
     return resolved_current
 
 
@@ -295,9 +301,12 @@ def create_app(config=None, client=None, start_workers=True):
                 # Camera directory. New material mounts use the shared
                 # writable delivery root instead.
                 camera_relative = legacy_camera_relative_path(relative)
-                expected_host = (
-                    cfg.raw_host_root / legacy_delivery_scope_for(camera_relative) / "PixCakeDelivery"
-                    if cfg.raw_host_root and camera_relative else None
+                expected_hosts = (
+                    {
+                        os.path.normpath(str(Path(cfg.raw_host_root) / legacy_delivery_scope_for(camera_relative) / name))
+                        for name in ("PixCakeDelivery", DELIVERY_ROOT_DIRECTORY)
+                    }
+                    if cfg.raw_host_root and camera_relative else set()
                 )
                 ready = (
                     raw_path.is_dir()
@@ -306,8 +315,7 @@ def create_app(config=None, client=None, start_workers=True):
                     and camera_relative is not None
                     and cfg.delivery_root_for(event_id).is_dir()
                     and bool(actual_host)
-                    and expected_host is not None
-                    and os.path.normpath(str(expected_host)) == os.path.normpath(str(actual_host))
+                    and os.path.normpath(str(actual_host)) in expected_hosts
                 )
             else:
                 scope = delivery_scope_for(relative)
@@ -385,7 +393,7 @@ def create_app(config=None, client=None, start_workers=True):
                 "current_revision": revisions_by_photo.get(photo.id, 0),
                 "next_version": version + 1,
                 "next_version_folder": str(
-                    (host_project_path(delivery_host_root, delivery_container_root, project_cfg.selected.parent) / "04_FINAL" / f"V{version + 1}")
+                    (host_project_path(delivery_host_root, delivery_container_root, project_cfg.final.parent) / project_cfg.final.name / f"V{version + 1}")
                     if delivery_host_root
                     else project_cfg.final / f"V{version + 1}"
                 ),
@@ -766,7 +774,7 @@ def create_app(config=None, client=None, start_workers=True):
         use_shared_delivery_scope = auto_mount and event_id not in cfg.project_delivery_mounts
         if use_shared_delivery_scope:
             if not delivery_host_root or not writable_directory(cfg.delivery_root):
-                return setup_error("统一 PixCakeDelivery 目录不可写，请检查 NAS Compose 挂载与权限")
+                return setup_error("统一‘项目交付’目录不可写，请检查 NAS Compose 挂载与权限")
             if has_symlink_or_non_directory_component(cfg.delivery_root, delivery_scope):
                 return setup_error("项目交付目录包含符号链接或非文件夹，已停止自动绑定")
             delivery_root = cfg.delivery_root / delivery_scope
@@ -774,19 +782,22 @@ def create_app(config=None, client=None, start_workers=True):
             # Legacy, explicitly configured per-project binds remain supported
             # for projects already deployed with the old Compose layout.
             camera_relative = legacy_camera_relative_path(workspace_source)
-            expected_mount = (
-                Path(cfg.raw_host_root) / legacy_delivery_scope_for(camera_relative) / "PixCakeDelivery"
-                if cfg.raw_host_root and camera_relative else None
+            expected_mounts = (
+                {
+                    os.path.normpath(str(Path(cfg.raw_host_root) / legacy_delivery_scope_for(camera_relative) / name))
+                    for name in ("PixCakeDelivery", DELIVERY_ROOT_DIRECTORY)
+                }
+                if cfg.raw_host_root and camera_relative else set()
             )
             actual_mount = Path(delivery_host_root) if delivery_host_root else None
-            if not expected_mount or not actual_mount or os.path.normpath(str(expected_mount)) != os.path.normpath(str(actual_mount)):
+            if not expected_mounts or not actual_mount or os.path.normpath(str(actual_mount)) not in expected_mounts:
                 return setup_error("旧版项目专属挂载路径与 Camera 项目目录不一致，请检查 NAS Compose")
         if not delivery_root.is_dir() or delivery_root.is_symlink():
             if not use_shared_delivery_scope:
-                return setup_error("项目 PixCakeDelivery 挂载不可用，请检查 NAS Compose 路径")
+                return setup_error("项目交付挂载不可用，请检查 NAS Compose 路径")
 
         # New projects get an isolated folder derived from the selected
-        # material path inside the single writable PixCakeDelivery mount. This avoids
+        # material path inside the single writable delivery mount. This avoids
         # both per-project Compose edits and a writable RAW source mount.
         project_root = delivery_root
         try:
@@ -803,9 +814,9 @@ def create_app(config=None, client=None, start_workers=True):
             event_id=event_id,
             raw=resolved_raw_paths[0],
             raw_dirs=resolved_raw_paths,
-            selected=project_root / "03_SELECTED_RAW",
-            final=project_root / "04_FINAL",
-            history=project_root / "05_HISTORY",
+            selected=project_root / SELECTED_DIRECTORY,
+            final=project_root / FINAL_DIRECTORY,
+            history=project_root / HISTORY_DIRECTORY,
         )
         try:
             # Verify the token can see this Picflow event before persisting a

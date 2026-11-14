@@ -37,6 +37,12 @@ export function WorkflowPhotoAction({
     if (error?.response?.data?.code === 'GUEST_IDENTITY_REQUIRED') {
       return t('photographyWorkflow.identityRequired');
     }
+    if (error?.response?.data?.code === 'DELIVERED_SELECTION_WITHDRAWAL_REQUIRED') {
+      return t('photographyWorkflow.deliveredWithdrawalRequired');
+    }
+    if (error?.response?.data?.code === 'WITHDRAW_PENDING') {
+      return t('photographyWorkflow.withdrawPending');
+    }
     if (error?.response?.status === 503) {
       return t('photographyWorkflow.workflowUnavailable');
     }
