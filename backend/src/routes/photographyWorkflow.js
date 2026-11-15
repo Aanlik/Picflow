@@ -6,7 +6,12 @@ const { requireEventOwnership, scopeEventsListQuery } = require('../middleware/o
 const { adminAuth } = require('../middleware/auth');
 const { requirePermission } = require('../middleware/permissions');
 const { db, logActivity } = require('../database/db');
-const { bridgeRequest, getProjectDetail, setWorkflowStage } = require('../services/photographyWorkflowBridge');
+const {
+  bridgeRequest,
+  getProjectDetail,
+  resolveCurrentDeliveryFolder,
+  setWorkflowStage,
+} = require('../services/photographyWorkflowBridge');
 const { getExternalMediaRoot, resolveExternalPath } = require('../services/externalMediaService');
 const { parseBooleanInput } = require('../utils/parsers');
 const { containsDeliveryDirectory } = require('../utils/materialPathRules');
@@ -47,6 +52,17 @@ function bridgeFailure(result) {
     return { code: 'BRIDGE_UNREACHABLE', error: '无法连接精修同步服务，请检查容器运行状态和内部地址' };
   }
   return { code: 'BRIDGE_ERROR', error: '精修同步服务暂时不可用' };
+}
+
+async function withCurrentDeliveryFolders(eventId, requests) {
+  const bridge = await bridgeRequest(`/api/projects/${Number(eventId)}/detail`);
+  const currentFinalPath = bridge.status === 200 ? bridge.data?.delivery_final_path : null;
+  return requests.map((request) => ({
+    ...request,
+    // Persisted paths are historical snapshots. Resolve version slots against
+    // Bridge's current workspace so renames cannot surface stale NAS paths.
+    delivery_folder: resolveCurrentDeliveryFolder(currentFinalPath, request.target_version),
+  }));
 }
 
 function materialSubdirectory(event) {
@@ -144,12 +160,13 @@ router.get('/:eventId', (req, res, next) => parseId(req.params.eventId) ? next()
 
 router.get('/:eventId/requests', (req, res, next) => parseId(req.params.eventId) ? next() : res.sendStatus(400), requireEventOwnership, async (req, res) => {
   try {
+    const eventId = Number(req.params.eventId);
     const rows = await db('photo_retouch_requests as r')
       .join('photos as p', 'p.id', 'r.photo_id')
-      .where('r.event_id', Number(req.params.eventId))
+      .where('r.event_id', eventId)
       .select('r.id', 'r.photo_id', 'p.filename', 'p.original_filename', 'p.source_filename', 'r.guest_name', 'r.request_type', 'r.base_version', 'r.target_version', 'r.delivery_folder', 'r.customer_message', 'r.status', 'r.photographer_reply', 'r.created_at', 'r.updated_at')
       .orderBy('r.created_at', 'desc');
-    res.json({ requests: rows });
+    res.json({ requests: await withCurrentDeliveryFolders(eventId, rows) });
   } catch {
     res.status(500).json({ error: '无法读取客户精修需求' });
   }
@@ -288,7 +305,7 @@ router.patch('/:eventId/requests/:requestId', requirePermission('events.edit'), 
   });
   await logActivity('photo_retouch_request_updated', { request_id: id, status }, eventId, { type: 'admin', id: req.admin.id, name: req.admin.username || 'admin' });
   const updated = await db('photo_retouch_requests').where({ id }).first();
-  res.json({ request: updated });
+  res.json({ request: (await withCurrentDeliveryFolders(eventId, [updated]))[0] });
 });
 
 module.exports = router;

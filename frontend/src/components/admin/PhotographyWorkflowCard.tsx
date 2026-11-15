@@ -342,7 +342,11 @@ export function PhotographyWorkflowCard({ eventId, isArchived = false }: { event
               <div className="min-w-0">
                 <div className="truncate text-sm font-medium" title={photoName}>{photoName}</div>
                 <div className="text-xs text-neutral-500">{request.guest_name ? `${request.guest_name} · ` : ''}{t('photographyWorkflow.photoNumber', { id: request.photo_id })} · {t(`photographyWorkflow.requestType.${request.request_type}`)}{request.base_version ? ` V${request.base_version}` : ''}</div>
-                {request.target_version && request.delivery_folder && <div className="mt-1 max-w-[32rem] truncate text-xs text-emerald-700 dark:text-emerald-300" title={request.delivery_folder}>{t('photographyWorkflow.exportToVersion', { version: request.target_version })}：{request.delivery_folder}</div>}
+                {request.target_version && <div className="mt-1 max-w-[32rem] truncate text-xs text-emerald-700 dark:text-emerald-300" title={request.delivery_folder || undefined}>
+                  {request.delivery_folder
+                    ? `${t('photographyWorkflow.exportToVersion', { version: request.target_version })}：${request.delivery_folder}`
+                    : t('photographyWorkflow.exportToVersionUnavailable', { version: request.target_version })}
+                </div>}
               </div>
             </div>
             <select aria-label={t('photographyWorkflow.requestStatus')} value={request.status} onChange={(event) => void perform(() => api.patch(`/admin/photography-workflow/${eventId}/requests/${request.id}`, { status: event.target.value, photographer_reply: replies[request.id] || '' }))} className="rounded-md border border-neutral-300 bg-white px-2 py-1 text-xs dark:border-neutral-700 dark:bg-neutral-900">

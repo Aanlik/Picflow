@@ -4037,6 +4037,7 @@
     "requestPhotoAlt": "需求对应照片：{{name}}",
     "photoNumber": "照片编号 {{id}}",
     "exportToVersion": "请导出到 V{{version}}",
+    "exportToVersionUnavailable": "V{{version}} 的 NAS 路径暂不可用，请检查精修同步服务后刷新。",
     "requestStatus": "需求状态",
     "replyPlaceholder": "给客户的处理说明（可选）",
     "saveReply": "保存回复",

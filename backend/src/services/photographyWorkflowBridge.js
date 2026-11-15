@@ -1,4 +1,5 @@
 const { randomUUID } = require('crypto');
+const path = require('path');
 const { db } = require('../database/db');
 const logger = require('../utils/logger');
 const BRIDGE_TIMEOUT_MS = Number(process.env.PIXCAKE_BRIDGE_TIMEOUT_MS) || 20000;
@@ -49,6 +50,14 @@ async function prepareVersionFolder(eventId, photoId, expectedCurrentVersion) {
     method: 'POST',
     body: { expected_current_version: Number(expectedCurrentVersion) || 0 },
   });
+}
+
+function resolveCurrentDeliveryFolder(deliveryFinalPath, targetVersion) {
+  const version = Number(targetVersion);
+  if (!Number.isSafeInteger(version) || version < 1
+    || typeof deliveryFinalPath !== 'string'
+    || !path.posix.isAbsolute(deliveryFinalPath)) return null;
+  return path.posix.join(deliveryFinalPath, `V${version}`);
 }
 
 const executing = new Map();
@@ -230,6 +239,10 @@ async function getPublicPhotoStates(eventId) {
     ready_for_editing: Boolean(photo.ready_for_editing),
     withdraw_pending: Boolean(photo.withdraw_pending),
   }));
+  // Delivery paths are NAS-side operational details for the admin workflow,
+  // never fields for customer-facing workflow responses.
+  delete result.data.delivery_path;
+  delete result.data.delivery_final_path;
   delete result.data.summary;
   delete result.data.name;
   delete result.data.connected;
@@ -239,6 +252,6 @@ async function getPublicPhotoStates(eventId) {
 module.exports = {
   bridgeRequest, persistUnbindIntent, persistDeleteDeliveryIntent, flushUnbindIntent, flushUnbindIntentInBackground, flushUnbindIntents, recoverInterruptedArchives,
   bridgeConfig, getProjectDetail, getPublicPhotoStates,
-  prepareVersionFolder, withdrawPhotoSelection, persistWithdrawalIntent, triggerWorkflowSync,
+  prepareVersionFolder, resolveCurrentDeliveryFolder, withdrawPhotoSelection, persistWithdrawalIntent, triggerWorkflowSync,
   setWorkflowStage, restoreWorkflowStage, flushWorkflowIntents, startWorkflowReconciler,
 };

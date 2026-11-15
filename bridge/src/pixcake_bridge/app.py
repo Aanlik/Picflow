@@ -45,6 +45,20 @@ def host_project_path(host_root, container_root, project_root):
     return Path(host_root) / relative
 
 
+def host_delivery_path(host_root, container_root, delivery_path):
+    """Translate a configured Bridge delivery directory to its NAS path."""
+    path = Path(delivery_path)
+    if not host_root:
+        return str(path)
+    try:
+        relative = path.relative_to(Path(container_root))
+    except ValueError:
+        # Match the version-folder endpoint: paths outside the writable mount
+        # cannot be translated to a NAS host path.
+        return str(path)
+    return str(Path(host_root) / relative)
+
+
 def is_file_reference(value):
     if not value:
         return False
@@ -366,6 +380,16 @@ def create_app(config=None, client=None, start_workers=True):
         project_cfg = next((item for item in engine.config.projects if item.event_id == event_id), None)
         delivery_host_root = engine.config.delivery_host_root_for(event_id)
         delivery_container_root = engine.config.delivery_root_for(event_id)
+        delivery_final_path = None
+        if project_cfg is not None:
+            delivery_final_path = host_delivery_path(
+                delivery_host_root,
+                delivery_container_root,
+                project_cfg.final,
+            )
+        display_final_root = Path(delivery_final_path) if delivery_final_path else (
+            project_cfg.final if project_cfg is not None else None
+        )
         photos = []
         for photo in entry["photos"]:
             version = versions_by_photo.get(photo.id, 0)
@@ -399,11 +423,7 @@ def create_app(config=None, client=None, start_workers=True):
                 # the displayed version but still need a fresh browser URL.
                 "current_revision": revisions_by_photo.get(photo.id, 0),
                 "next_version": version + 1,
-                "next_version_folder": str(
-                    (host_project_path(delivery_host_root, delivery_container_root, project_cfg.final.parent) / project_cfg.final.name / f"V{version + 1}")
-                    if delivery_host_root
-                    else project_cfg.final / f"V{version + 1}"
-                ),
+                "next_version_folder": str(display_final_root / f"V{version + 1}") if display_final_root else None,
                 "delivered": version > 0 and photo.selected and not photo.cancelled and not photo.added_during_editing,
                 "error": bool(photo.error or pending_withdrawals.get(photo.id) or not getattr(photo, "remote_present", True) or (latest_delivery and latest_delivery.state in {"FAILED", "UNKNOWN"})),
                 "error_message": photo.error or pending_withdrawals.get(photo.id) or ("Picflow 中的照片已不存在" if not getattr(photo, "remote_present", True) else None) or (latest_delivery.error if latest_delivery else None),
@@ -421,6 +441,7 @@ def create_app(config=None, client=None, start_workers=True):
             "connected": bool(project.connected),
             "connection_state": entry["connection_state"],
             "delivery_path": delivery_path,
+            "delivery_final_path": delivery_final_path,
             "summary": entry["summary"],
             "photos": photos,
             "errors": [{"message": error.message, "created_at": error.created.isoformat() if error.created else None} for error in entry["errors"]] + ([{"message": engine.maintenance_reason, "created_at": None}] if engine.maintenance_reason else []),
