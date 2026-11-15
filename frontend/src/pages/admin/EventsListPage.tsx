@@ -4,12 +4,9 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Plus,
   Search,
-  Archive,
   AlertTriangle,
-  MoreVertical,
   ExternalLink,
   Edit,
-  Trash2,
   Copy,
   CheckCircle,
   ChevronLeft,
@@ -19,6 +16,8 @@ import {
   UserRound,
   ArrowDownWideNarrow,
   ArrowUpRight,
+  LayoutGrid,
+  List,
 } from 'lucide-react';
 import { parseISO } from 'date-fns';
 import { toast } from 'react-toastify';
@@ -28,6 +27,7 @@ import { useLocalizedDate } from '../../hooks/useLocalizedDate';
 import { Button, Input, Card, ErrorBoundary } from '../../components/common';
 import { BulkArchiveModal } from '../../components/admin/BulkArchiveModal';
 import { BulkDeleteModal } from '../../components/admin/BulkDeleteModal';
+import { ProjectActionsMenu } from '../../components/admin/ProjectActionsMenu';
 import { PermissionGate } from '../../components/admin/PermissionGate';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { eventsService, type EventStatusFilter } from '../../services/events.service';
@@ -37,6 +37,7 @@ import { buildAdminPreviewUrl, buildShareLinkUrl } from '../../utils/url';
 import type { Event } from '../../types';
 import { useTranslation } from 'react-i18next';
 import { STORAGE_INFO_QUERY_KEY } from '../../features/settings/hooks/useStorageInfo';
+import { getEventViewMode, setEventViewMode, type EventViewMode } from '../../utils/eventViewPrefs';
 
 const PAGE_SIZE = 20;
 const EVENT_SORTS = {
@@ -66,15 +67,17 @@ export const EventsListPage: React.FC = () => {
     next.set('sort', value);
     setSearchParams(next);
   };
+  const chooseViewMode = (mode: EventViewMode) => {
+    setViewMode(mode);
+    setEventViewMode(mode);
+  };
 
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedEvents, setSelectedEvents] = useState<number[]>([]);
   const [cloudArchivePromptIds, setCloudArchivePromptIds] = useState<number[]>([]);
   const [pendingDeleteEvent, setPendingDeleteEvent] = useState<Event | null>(null);
   const [deleteCloudCopies, setDeleteCloudCopies] = useState(false);
-  // const [showFilters, setShowFilters] = useState(false);
-  const [activeDropdown, setActiveDropdown] = useState<number | null>(null);
-  const [dropdownPosition, setDropdownPosition] = useState<{ top: number; left: number } | null>(null);
+  const [viewMode, setViewMode] = useState<EventViewMode>(() => getEventViewMode());
   const bulkArchiveModal = useModal();
   const bulkDeleteModal = useModal();
   const [copiedEventId, setCopiedEventId] = useState<number | null>(null);
@@ -143,40 +146,6 @@ export const EventsListPage: React.FC = () => {
   useEffect(() => {
     setSelectedEvents([]);
   }, [statusFilter, debouncedSearchTerm, sortKey, page]);
-
-  // Close dropdown when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      const target = event.target as HTMLElement;
-      if (!target.closest('.dropdown-container')) {
-        setActiveDropdown(null);
-        setDropdownPosition(null);
-      }
-    };
-
-    if (activeDropdown !== null) {
-      document.addEventListener('mousedown', handleClickOutside);
-      return () => document.removeEventListener('mousedown', handleClickOutside);
-    }
-  }, [activeDropdown]);
-
-  // Update dropdown position on scroll/resize
-  useEffect(() => {
-    const handleScrollOrResize = () => {
-      if (activeDropdown !== null) {
-        setActiveDropdown(null);
-        setDropdownPosition(null);
-      }
-    };
-
-    window.addEventListener('scroll', handleScrollOrResize, true);
-    window.addEventListener('resize', handleScrollOrResize);
-
-    return () => {
-      window.removeEventListener('scroll', handleScrollOrResize, true);
-      window.removeEventListener('resize', handleScrollOrResize);
-    };
-  }, [activeDropdown]);
 
   // Fetch events — fully server-side: pagination, status filter, and search
   // (#346 — counters and search were previously bounded to the first 100 rows).
@@ -352,19 +321,32 @@ export const EventsListPage: React.FC = () => {
             <p className="text-neutral-600 dark:text-neutral-400 mt-1">{t('events.subtitle')}</p>
           </div>
         </div>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
-          {Array.from({ length: 6 }, (_, index) => (
-            <div key={index} className="h-56 animate-pulse rounded-2xl border border-neutral-200 bg-white p-5 dark:border-neutral-800 dark:bg-neutral-900">
-              <div className="h-5 w-24 rounded bg-neutral-200 dark:bg-neutral-700" />
-              <div className="mt-6 h-6 w-3/4 rounded bg-neutral-200 dark:bg-neutral-700" />
-              <div className="mt-3 h-4 w-1/2 rounded bg-neutral-100 dark:bg-neutral-800" />
-              <div className="mt-7 grid grid-cols-2 gap-3">
-                <div className="h-16 rounded-xl bg-neutral-100 dark:bg-neutral-800" />
-                <div className="h-16 rounded-xl bg-neutral-100 dark:bg-neutral-800" />
+        {viewMode === 'cards' ? (
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3" aria-busy="true">
+            {Array.from({ length: 6 }, (_, index) => (
+              <div key={index} className="h-56 animate-pulse rounded-2xl border border-neutral-200 bg-white p-5 dark:border-neutral-800 dark:bg-neutral-900">
+                <div className="h-5 w-24 rounded bg-neutral-200 dark:bg-neutral-700" />
+                <div className="mt-6 h-6 w-3/4 rounded bg-neutral-200 dark:bg-neutral-700" />
+                <div className="mt-3 h-4 w-1/2 rounded bg-neutral-100 dark:bg-neutral-800" />
+                <div className="mt-7 grid grid-cols-2 gap-3">
+                  <div className="h-16 rounded-xl bg-neutral-100 dark:bg-neutral-800" />
+                  <div className="h-16 rounded-xl bg-neutral-100 dark:bg-neutral-800" />
+                </div>
               </div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        ) : (
+          <div className="overflow-hidden rounded-xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900" aria-busy="true">
+            {Array.from({ length: 8 }, (_, index) => (
+              <div key={index} className="flex h-14 animate-pulse items-center gap-4 border-b border-neutral-100 px-4 last:border-b-0 dark:border-neutral-800">
+                <div className="h-4 w-4 rounded bg-neutral-200 dark:bg-neutral-700" />
+                <div className="h-4 w-48 rounded bg-neutral-200 dark:bg-neutral-700" />
+                <div className="h-4 w-32 rounded bg-neutral-100 dark:bg-neutral-800" />
+                <div className="ml-auto h-4 w-20 rounded bg-neutral-100 dark:bg-neutral-800" />
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     );
   }
@@ -459,6 +441,32 @@ export const EventsListPage: React.FC = () => {
                 <option value="name">{t('events.sortName', '项目名称')}</option>
               </select>
             </label>
+            <div
+              className="inline-flex h-10 shrink-0 overflow-hidden rounded-lg border border-neutral-200 bg-white dark:border-neutral-700 dark:bg-neutral-900"
+              role="group"
+              aria-label={t('events.viewMode', '视图方式')}
+            >
+              <button
+                type="button"
+                aria-pressed={viewMode === 'cards'}
+                title={t('events.cardView', '卡片视图')}
+                onClick={() => chooseViewMode('cards')}
+                className={`inline-flex items-center gap-1.5 px-3 text-sm transition-colors ${viewMode === 'cards' ? 'bg-primary-500 text-white' : 'text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800'}`}
+              >
+                <LayoutGrid className="h-4 w-4" />
+                {t('events.cardView', '卡片')}
+              </button>
+              <button
+                type="button"
+                aria-pressed={viewMode === 'list'}
+                title={t('events.listView', '列表视图')}
+                onClick={() => chooseViewMode('list')}
+                className={`inline-flex items-center gap-1.5 border-l border-neutral-200 px-3 text-sm transition-colors dark:border-neutral-700 ${viewMode === 'list' ? 'bg-primary-500 text-white' : 'text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800'}`}
+              >
+                <List className="h-4 w-4" />
+                {t('events.listView', '列表')}
+              </button>
+            </div>
           </div>
         </div>
 
@@ -505,17 +513,20 @@ export const EventsListPage: React.FC = () => {
         <>
           <div className="mb-3 flex items-center justify-between px-1 text-sm text-neutral-500 dark:text-neutral-400">
             <span>{t('events.projectsOnPage', '本页项目 {{count}} 个', { count: events.length })}</span>
-            <label className="inline-flex cursor-pointer items-center gap-2">
-              <input
-                type="checkbox"
-                checked={events.length > 0 && events.every((event) => selectedEvents.includes(event.id))}
-                onChange={handleSelectAll}
-                aria-label={t('events.selectAllOnPage', '选择本页全部项目')}
-                className="h-4 w-4 rounded border-neutral-300 text-accent focus:ring-primary-500 dark:border-neutral-600 dark:bg-neutral-700"
-              />
-              {t('events.selectAllOnPage', '选择本页')}
-            </label>
+            {viewMode === 'cards' && (
+              <label className="inline-flex cursor-pointer items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={events.length > 0 && events.every((event) => selectedEvents.includes(event.id))}
+                  onChange={handleSelectAll}
+                  aria-label={t('events.selectAllOnPage', '选择本页全部项目')}
+                  className="h-4 w-4 rounded border-neutral-300 text-accent focus:ring-primary-500 dark:border-neutral-600 dark:bg-neutral-700"
+                />
+                {t('events.selectAllOnPage', '选择本页')}
+              </label>
+            )}
           </div>
+          {viewMode === 'cards' ? (
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
             {events.map((event) => {
               const status = getEventStatus(event);
@@ -543,45 +554,17 @@ export const EventsListPage: React.FC = () => {
                             className="h-4 w-4 rounded border-neutral-300 text-accent focus:ring-primary-500 dark:border-neutral-600 dark:bg-neutral-700"
                           />
                         </label>
-                        <div className="relative inline-block text-left dropdown-container">
-                          <button
-                            type="button"
-                            aria-label={t('events.moreActions', '更多操作')}
-                            onClick={(clickEvent) => {
-                              if (activeDropdown === event.id) {
-                                setActiveDropdown(null);
-                                setDropdownPosition(null);
-                                return;
-                              }
-                              const rect = clickEvent.currentTarget.getBoundingClientRect();
-                              setActiveDropdown(event.id);
-                              setDropdownPosition({
-                                top: rect.bottom + 4,
-                                left: Math.max(8, Math.min(rect.right - 224, window.innerWidth - 232)),
-                              });
-                            }}
-                            className="flex h-8 w-8 items-center justify-center rounded-lg text-neutral-400 transition hover:bg-neutral-100 hover:text-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
-                          >
-                            <MoreVertical className="h-4 w-4" />
-                          </button>
-                          {activeDropdown === event.id && dropdownPosition && (
-                            <div className="fixed z-50 w-56 rounded-xl bg-white py-1 shadow-xl ring-1 ring-black/10 dark:bg-neutral-800 dark:ring-white/10" style={{ top: dropdownPosition.top, left: dropdownPosition.left }}>
-                              <button type="button" onClick={() => { navigate(`/admin/events/${event.id}`); setActiveDropdown(null); }} className="flex w-full items-center gap-2 px-4 py-2.5 text-left text-sm text-neutral-700 hover:bg-neutral-100 dark:text-neutral-200 dark:hover:bg-neutral-700">
-                                <Edit className="h-4 w-4" />{t('events.viewDetails')}
-                              </button>
-                              <PermissionGate permission="events.archive">
-                                <button type="button" onClick={() => { if (window.confirm(t('events.archiveConfirm'))) archiveMutation.mutate(event.id); setActiveDropdown(null); }} className="flex w-full items-center gap-2 px-4 py-2.5 text-left text-sm text-neutral-700 hover:bg-neutral-100 dark:text-neutral-200 dark:hover:bg-neutral-700">
-                                  <Archive className="h-4 w-4" />{t('events.archiveEventAction')}
-                                </button>
-                              </PermissionGate>
-                              <PermissionGate permission="events.delete">
-                                <button type="button" onClick={() => { setPendingDeleteEvent(event); setDeleteCloudCopies(false); setActiveDropdown(null); }} className="flex w-full items-center gap-2 px-4 py-2.5 text-left text-sm text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/30">
-                                  <Trash2 className="h-4 w-4" />{t('events.deleteEvent')}
-                                </button>
-                              </PermissionGate>
-                            </div>
-                          )}
-                        </div>
+                        <ProjectActionsMenu
+                          event={event}
+                          onViewDetails={() => navigate(`/admin/events/${event.id}`)}
+                          onArchive={() => {
+                            if (window.confirm(t('events.archiveConfirm'))) archiveMutation.mutate(event.id);
+                          }}
+                          onDelete={() => {
+                            setPendingDeleteEvent(event);
+                            setDeleteCloudCopies(false);
+                          }}
+                        />
                       </div>
                     </div>
 
@@ -644,6 +627,139 @@ export const EventsListPage: React.FC = () => {
               );
             })}
           </div>
+          ) : (
+            <div className="overflow-hidden rounded-xl border border-neutral-200 bg-white dark:border-neutral-700 dark:bg-neutral-800">
+              <div className="overflow-x-auto">
+                <table className="min-w-[980px] w-full text-left">
+                  <caption className="sr-only">{t('events.title')}</caption>
+                  <thead className="border-b border-neutral-200 bg-neutral-50 dark:border-neutral-700 dark:bg-neutral-800">
+                    <tr>
+                      <th scope="col" className="w-12 px-4 py-3 text-left text-xs font-semibold text-neutral-500 dark:text-neutral-400">
+                        <input
+                          type="checkbox"
+                          checked={events.length > 0 && events.every((event) => selectedEvents.includes(event.id))}
+                          onChange={handleSelectAll}
+                          aria-label={t('events.selectAllOnPage', '选择本页全部项目')}
+                          className="h-4 w-4 rounded border-neutral-300 text-accent focus:ring-primary-500 dark:border-neutral-600 dark:bg-neutral-700"
+                        />
+                      </th>
+                      <th scope="col" className="min-w-48 px-4 py-3 text-left text-xs font-semibold text-neutral-500 dark:text-neutral-400">{t('events.event', '项目')}</th>
+                      <th scope="col" className="min-w-36 px-4 py-3 text-left text-xs font-semibold text-neutral-500 dark:text-neutral-400">{t('events.customer', '客户')}</th>
+                      <th scope="col" className="min-w-32 px-4 py-3 text-left text-xs font-semibold text-neutral-500 dark:text-neutral-400">{t('events.date', '日期')}</th>
+                      <th scope="col" className="w-20 px-4 py-3 text-right text-xs font-semibold text-neutral-500 dark:text-neutral-400">{t('events.photos', '照片')}</th>
+                      <th scope="col" className="min-w-28 px-4 py-3 text-left text-xs font-semibold text-neutral-500 dark:text-neutral-400">{t('events.status', '状态')}</th>
+                      <th scope="col" className="min-w-28 px-4 py-3 text-left text-xs font-semibold text-neutral-500 dark:text-neutral-400">{t('events.access', '访问方式')}</th>
+                      <th scope="col" className="min-w-36 px-4 py-3 text-left text-xs font-semibold text-neutral-500 dark:text-neutral-400">{t('events.expires', '到期时间')}</th>
+                      <th scope="col" className="w-36 px-4 py-3 text-right text-xs font-semibold text-neutral-500 dark:text-neutral-400">{t('events.actions', '操作')}</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-neutral-100 dark:divide-neutral-700">
+                    {events.map((event) => {
+                      const status = getEventStatus(event);
+                      const galleryUrl = event.share_link
+                        ? event.is_draft ? buildAdminPreviewUrl(event.share_link) : buildShareLinkUrl(event.share_link)
+                        : undefined;
+
+                      return (
+                        <tr
+                          key={event.id}
+                          className={`transition-colors ${selectedEvents.includes(event.id) ? 'bg-primary-50/70 dark:bg-primary-900/10' : 'hover:bg-neutral-50 dark:hover:bg-neutral-700/40'}`}
+                        >
+                          <td className="px-4 py-3">
+                            <input
+                              type="checkbox"
+                              checked={selectedEvents.includes(event.id)}
+                              onChange={() => handleSelectEvent(event.id)}
+                              aria-label={t('events.selectProject', '选择项目 {{name}}', { name: event.event_name })}
+                              className="h-4 w-4 rounded border-neutral-300 text-accent focus:ring-primary-500 dark:border-neutral-600 dark:bg-neutral-700"
+                            />
+                          </td>
+                          <td className="max-w-64 px-4 py-3">
+                            <button
+                              type="button"
+                              onClick={() => navigate(`/admin/events/${event.id}`)}
+                              className="block max-w-full truncate text-left text-sm font-semibold text-neutral-900 hover:text-emerald-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 dark:text-neutral-100 dark:hover:text-emerald-300"
+                              title={event.event_name}
+                            >
+                              {event.event_name}
+                            </button>
+                          </td>
+                          <td className="max-w-48 truncate px-4 py-3 text-sm text-neutral-600 dark:text-neutral-300" title={event.customer_name || undefined}>
+                            {event.customer_name || t('events.customerNotSet', '未填写客户名称')}
+                          </td>
+                          <td className="whitespace-nowrap px-4 py-3 text-sm text-neutral-600 dark:text-neutral-300">
+                            {event.event_date ? format(parseISO(event.event_date)) : t('events.dateNotSet', '未设置')}
+                          </td>
+                          <td className="px-4 py-3 text-right text-sm tabular-nums text-neutral-700 dark:text-neutral-200">
+                            {event.photo_count ?? 0}
+                          </td>
+                          <td className="px-4 py-3">
+                            <span className={`inline-flex whitespace-nowrap items-center rounded-full px-2.5 py-1 text-xs font-medium ${status.color}`}>
+                              {status.label}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3">
+                            <span className={`inline-flex whitespace-nowrap items-center rounded-full px-2 py-1 text-xs ${isGalleryPublic(event.require_password) ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300' : 'bg-neutral-100 text-neutral-600 dark:bg-neutral-700 dark:text-neutral-300'}`}>
+                              {isGalleryPublic(event.require_password) ? t('events.publicAccess', '公开访问') : t('events.passwordProtected', '密码保护')}
+                            </span>
+                          </td>
+                          <td className="whitespace-nowrap px-4 py-3 text-sm text-neutral-600 dark:text-neutral-300">
+                            {event.expires_at ? format(parseISO(event.expires_at)) : t('events.noExpiry', '不设到期')}
+                          </td>
+                          <td className="px-4 py-3">
+                            <div className="flex items-center justify-end gap-1" onClick={(clickEvent) => clickEvent.stopPropagation()}>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                aria-label={t('events.viewDetails')}
+                                title={t('events.viewDetails')}
+                                onClick={() => navigate(`/admin/events/${event.id}`)}
+                              >
+                                <Edit className="h-4 w-4" />
+                              </Button>
+                              {galleryUrl && (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  aria-label={t('events.viewGallery')}
+                                  title={t('events.viewGallery')}
+                                  onClick={() => window.open(galleryUrl, '_blank', 'noopener,noreferrer')}
+                                >
+                                  <ExternalLink className="h-4 w-4" />
+                                </Button>
+                              )}
+                              {event.share_link && !event.is_draft && (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  aria-label={t('events.copyLink', '复制链接')}
+                                  title={t('events.copyLink', '复制链接')}
+                                  onClick={() => void copyShareLink(event)}
+                                >
+                                  {copiedEventId === event.id ? <CheckCircle className="h-4 w-4 text-emerald-600" /> : <Copy className="h-4 w-4" />}
+                                </Button>
+                              )}
+                              <ProjectActionsMenu
+                                event={event}
+                                onViewDetails={() => navigate(`/admin/events/${event.id}`)}
+                                onArchive={() => {
+                                  if (window.confirm(t('events.archiveConfirm'))) archiveMutation.mutate(event.id);
+                                }}
+                                onDelete={() => {
+                                  setPendingDeleteEvent(event);
+                                  setDeleteCloudCopies(false);
+                                }}
+                              />
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
         </>
       )}
 
