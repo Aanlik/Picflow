@@ -31,6 +31,16 @@ class Picflow:
     async def close(self):
         await self.http.aclose()
 
+    async def project_metadata(self, event_id: int):
+        response = await self.http.get(f"events/{event_id}/metadata")
+        if response.status_code >= 400:
+            raise ApiError(response.status_code)
+        payload = response.json()
+        name = payload.get("event_name") if isinstance(payload, dict) else None
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("Picflow 项目没有有效名称")
+        return {"event_id": int(payload.get("event_id") or event_id), "event_name": name.strip()}
+
     async def photos(self, event_id: int):
         photos, page, pages, expected = [], 1, 1, None
         while page <= pages:

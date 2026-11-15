@@ -33,12 +33,11 @@
 <h2>绑定一个 Picflow 项目</h2>
 {% if setup_error %}<p class="error">{{setup_error}}</p>{% endif %}
 <form class="setup" method="post" action="/projects">
-  <label>项目名称<input name="name" required maxlength="120" placeholder="例如：林先生婚礼" /></label>
   <label>Picflow 项目编号<input name="event_id" required type="number" min="1" placeholder="在 Picflow 项目详情中查看" /></label>
   <label>RAW 子目录（相对只读素材根目录）<input name="raw_subdir" placeholder="例如：Camera/2026/林先生婚礼 或 Studio/2026/林先生婚礼" /></label>
   <button class="primary" type="submit">验证并绑定目录</button>
 </form>
-<p class="muted">Bridge 只会从已挂载的只读素材目录读取 RAW；绑定后会在 NAS“项目交付”根目录自动创建 <code>已选 Raw 文件</code>、<code>交付文件</code>、<code>临时文件</code>。Proof 与 RAW 的主文件名必须能唯一对应；无法对应时工作台会提示异常。</p>
+<p class="muted">绑定时会从 Picflow 读取项目名称，并在 NAS“项目交付”下按此名称创建工作区；之后在 Picflow 修改项目名，NAS 文件夹会随 Bridge 同步重命名。Bridge 只会从已挂载的只读素材目录读取 RAW；工作区包含 <code>已选 Raw 文件</code>、<code>交付文件</code>、<code>临时文件</code>。Proof 与 RAW 的主文件名必须能唯一对应；无法对应时工作台会提示异常。</p>
 </section>
 {% else %}
 <section><h2>项目绑定尚未就绪</h2><p class="error">Compose 尚未同时挂载 RAW 素材目录（只读）和交付根目录（可写）。请按部署说明设置素材与交付目录后重启服务。</p></section>

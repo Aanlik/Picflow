@@ -49,6 +49,18 @@ async function receiveReplacement(req, res, next) {
   });
 }
 
+router.get('/events/:id/metadata', integratedBridgeAuth, requirePermission('photos.view'), async (req, res) => {
+  try {
+    const eventId = Number.parseInt(req.params.id, 10);
+    const event = await db('events').where({ id: eventId }).first('id', 'event_name');
+    if (!event) return res.status(404).json({ error: '项目不存在' });
+    return res.json({ event_id: event.id, event_name: event.event_name });
+  } catch (error) {
+    logger.error('Integrated Bridge project metadata read failed', { error: error.message });
+    return res.status(500).json({ error: '读取项目名称失败' });
+  }
+});
+
 router.get('/events/:id/photos', integratedBridgeAuth, requirePermission('photos.view'), async (req, res) => {
   try {
     const eventId = Number.parseInt(req.params.id, 10);

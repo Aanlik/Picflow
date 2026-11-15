@@ -26,6 +26,7 @@ from .storage_layout import (
     FINAL_DIRECTORY,
     HISTORY_DIRECTORY,
     SELECTED_DIRECTORY,
+    project_folder_name,
 )
 
 templates = Environment(loader=FileSystemLoader(Path(__file__).parent / "templates"), autoescape=select_autoescape())
@@ -57,12 +58,11 @@ def is_file_reference(value):
 def delivery_scope_for(raw_relative: Path, project_name: str | None = None) -> Path:
     """Return one project folder directly beneath the shared delivery mount.
 
-    RAW references are relative to the read-only material namespace and may
-    look like ``Camera/RAW/26-10-04`` or ``Studio/2026/26-10-04/01_RAW``.
-    The delivery tree should contain
-    ``项目交付/26-10-04`` in either case, never another ``RAW`` layer
-    or unrelated year/category parents.
+    New workspaces use the Picflow project title. A source-folder fallback is
+    retained only for callers that are checking legacy layouts without a name.
     """
+    if project_name is not None:
+        return Path(project_folder_name(project_name))
     parts = [part for part in raw_relative.parts if part not in {"", "."}]
     if parts and parts[-1].casefold() in {"raw", "01_raw"}:
         parts.pop()
@@ -281,11 +281,17 @@ def create_app(config=None, client=None, start_workers=True):
         return [{"event_id": x["project"].event_id, "name": x["project"].name, "stage": x["project"].stage, "connected": x["project"].connected, "connection_state": x["connection_state"], "summary": x["summary"]} for x in view(request.app.state.engine)]
 
     @app.get("/api/projects/{event_id}/mount-status", dependencies=[Depends(protect_request)])
-    def project_mount_status(request: Request, event_id: int):
+    async def project_mount_status(request: Request, event_id: int):
         cfg = request.app.state.config
+        engine = request.app.state.engine
         raw_subdir = request.query_params.get("raw_subdir", "").strip()
         relative = Path(raw_subdir)
         ready = False
+        project = next((item for item in cfg.projects if item.event_id == event_id), None)
+        try:
+            project_name = project.name if project else (await engine.client.project_metadata(event_id))["event_name"]
+        except Exception:
+            project_name = None
         if (raw_subdir and not relative.is_absolute()
                 and relative.parts and ".." not in relative.parts):
             raw_path = cfg.raw_root / relative
@@ -318,11 +324,12 @@ def create_app(config=None, client=None, start_workers=True):
                     and os.path.normpath(str(actual_host)) in expected_hosts
                 )
             else:
-                scope = delivery_scope_for(relative)
+                scope = delivery_scope_for(relative, project_name)
                 ready = (
                     raw_path.is_dir()
                     and not raw_path.is_symlink()
                     and no_symlink_components
+                    and project_name is not None
                     and writable_directory(cfg.delivery_root)
                     and bool(actual_host)
                     and not has_symlink_or_non_directory_component(cfg.delivery_root, scope)
@@ -713,7 +720,6 @@ def create_app(config=None, client=None, start_workers=True):
     @app.post("/projects", dependencies=[Depends(protect_request)])
     async def add_project(
         request: Request,
-        name: str = Form(...),
         event_id: int = Form(...),
         raw_subdir: str = Form(...),
         raw_subdirs: str = Form(""),
@@ -724,14 +730,20 @@ def create_app(config=None, client=None, start_workers=True):
         def setup_error(message):
             return RedirectResponse("/?" + urlencode({"setup_error": message}), status_code=303)
 
-        name = name.strip()
         if (not cfg.raw_root.is_dir() or cfg.raw_root.is_symlink() or
                 not cfg.delivery_root.is_dir() or cfg.delivery_root.is_symlink()):
             return setup_error("未挂载 RAW 源目录或交付目录，请检查 NAS Compose 挂载")
-        if not name or len(name) > 120 or event_id < 1:
-            return setup_error("项目名称或 Picflow 项目编号无效")
+        if event_id < 1:
+            return setup_error("Picflow 项目编号无效")
         if any(project.event_id == event_id for project in cfg.projects):
             return setup_error("这个 Picflow 项目已经绑定")
+
+        try:
+            name = (await engine.client.project_metadata(event_id))["event_name"]
+        except Exception:
+            return setup_error("无法读取 Picflow 项目名称，请确认项目编号和连接状态")
+        if not name or len(name) > 255:
+            return setup_error("Picflow 项目名称无效")
 
         try:
             requested = json.loads(raw_subdirs) if raw_subdirs.strip() else [raw_subdir]
@@ -771,12 +783,21 @@ def create_app(config=None, client=None, start_workers=True):
         delivery_root = cfg.delivery_root_for(event_id)
         delivery_host_root = cfg.delivery_host_root_for(event_id)
         delivery_scope = delivery_scope_for(workspace_source, name)
-        use_shared_delivery_scope = auto_mount and event_id not in cfg.project_delivery_mounts
+        # Fresh project bindings always use the shared writable delivery
+        # mount. The form no longer asks operators to toggle this: only an
+        # explicit legacy PROJECT_DELIVERY_MOUNTS entry keeps a dedicated
+        # per-project bind, whose path cannot safely follow a Picflow rename.
+        use_shared_delivery_scope = event_id not in cfg.project_delivery_mounts
         if use_shared_delivery_scope:
             if not delivery_host_root or not writable_directory(cfg.delivery_root):
                 return setup_error("统一‘项目交付’目录不可写，请检查 NAS Compose 挂载与权限")
             if has_symlink_or_non_directory_component(cfg.delivery_root, delivery_scope):
                 return setup_error("项目交付目录包含符号链接或非文件夹，已停止自动绑定")
+            project_root = cfg.delivery_root / delivery_scope
+            if any(item.selected.parent == project_root for item in cfg.projects):
+                return setup_error("同名项目已使用这个交付文件夹，请先调整已绑定项目名称")
+            if project_root.exists() and any(project_root.iterdir()):
+                return setup_error(f"项目交付目录已存在且含有文件，已停止绑定，请先检查：{project_root.name}")
             delivery_root = cfg.delivery_root / delivery_scope
         elif cfg.raw_host_root or auto_mount:
             # Legacy, explicitly configured per-project binds remain supported
@@ -796,9 +817,8 @@ def create_app(config=None, client=None, start_workers=True):
             if not use_shared_delivery_scope:
                 return setup_error("项目交付挂载不可用，请检查 NAS Compose 路径")
 
-        # New projects get an isolated folder derived from the selected
-        # material path inside the single writable delivery mount. This avoids
-        # both per-project Compose edits and a writable RAW source mount.
+        # New shared-mount workspaces are named after Picflow's project title;
+        # the read-only material path remains independent from the NAS layout.
         project_root = delivery_root
         try:
             resolved_delivery = delivery_root.resolve(strict=not use_shared_delivery_scope)

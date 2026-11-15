@@ -13,14 +13,19 @@ import {
   Copy,
   CheckCircle,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  CalendarDays,
+  Image as ImageIcon,
+  UserRound,
+  ArrowDownWideNarrow,
+  ArrowUpRight,
 } from 'lucide-react';
 import { parseISO } from 'date-fns';
 import { toast } from 'react-toastify';
 import { useModal, useMutationWithToast } from '../../hooks';
 import { useLocalizedDate } from '../../hooks/useLocalizedDate';
 
-import { Button, Input, Card, SkeletonTable, ErrorBoundary } from '../../components/common';
+import { Button, Input, Card, ErrorBoundary } from '../../components/common';
 import { BulkArchiveModal } from '../../components/admin/BulkArchiveModal';
 import { BulkDeleteModal } from '../../components/admin/BulkDeleteModal';
 import { PermissionGate } from '../../components/admin/PermissionGate';
@@ -34,6 +39,12 @@ import { useTranslation } from 'react-i18next';
 import { STORAGE_INFO_QUERY_KEY } from '../../features/settings/hooks/useStorageInfo';
 
 const PAGE_SIZE = 20;
+const EVENT_SORTS = {
+  recent: { sortBy: 'updated_at', sortOrder: 'desc' as const },
+  created: { sortBy: 'created_at', sortOrder: 'desc' as const },
+  name: { sortBy: 'event_name', sortOrder: 'asc' as const },
+};
+type EventSort = keyof typeof EVENT_SORTS;
 
 export const EventsListPage: React.FC = () => {
   const { t } = useTranslation();
@@ -41,6 +52,20 @@ export const EventsListPage: React.FC = () => {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
+  const sortParam = searchParams.get('sort') as EventSort | null;
+  const sortKey: EventSort = sortParam && Object.prototype.hasOwnProperty.call(EVENT_SORTS, sortParam) ? sortParam : 'recent';
+  const sort = EVENT_SORTS[sortKey];
+  const updateFilter = (filter?: string) => {
+    const next = new URLSearchParams(searchParams);
+    if (filter) next.set('filter', filter);
+    else next.delete('filter');
+    setSearchParams(next);
+  };
+  const updateSort = (value: EventSort) => {
+    const next = new URLSearchParams(searchParams);
+    next.set('sort', value);
+    setSearchParams(next);
+  };
 
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedEvents, setSelectedEvents] = useState<number[]>([]);
@@ -110,7 +135,14 @@ export const EventsListPage: React.FC = () => {
   // get stuck on a page index that no longer exists in the new result set.
   useEffect(() => {
     setPage(1);
-  }, [statusFilter, debouncedSearchTerm]);
+  }, [statusFilter, debouncedSearchTerm, sortKey]);
+
+  // Bulk actions name and confirm only the visible result set. Clear prior
+  // selections when its page or query changes so no off-screen project can be
+  // archived or deleted without appearing in the confirmation dialog.
+  useEffect(() => {
+    setSelectedEvents([]);
+  }, [statusFilter, debouncedSearchTerm, sortKey, page]);
 
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -148,9 +180,9 @@ export const EventsListPage: React.FC = () => {
 
   // Fetch events — fully server-side: pagination, status filter, and search
   // (#346 — counters and search were previously bounded to the first 100 rows).
-  const { data, isLoading, error, refetch } = useQuery({
-    queryKey: ['admin-events', statusFilter ?? 'all', debouncedSearchTerm, page],
-    queryFn: () => eventsService.getEvents(page, PAGE_SIZE, statusFilter, debouncedSearchTerm || undefined),
+  const { data, isLoading, isPlaceholderData, error, refetch } = useQuery({
+    queryKey: ['admin-events', statusFilter ?? 'all', debouncedSearchTerm, sortKey, page],
+    queryFn: () => eventsService.getEvents(page, PAGE_SIZE, statusFilter, debouncedSearchTerm || undefined, sort.sortBy, sort.sortOrder),
     placeholderData: (prev) => prev,
   });
 
@@ -275,10 +307,12 @@ export const EventsListPage: React.FC = () => {
   const isFilteringOrSearching = !!statusFilter || !!debouncedSearchTerm;
 
   const handleSelectAll = () => {
-    if (selectedEvents.length === events.length) {
+    const visibleIds = events.map((event) => event.id);
+    const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedEvents.includes(id));
+    if (allVisibleSelected) {
       setSelectedEvents([]);
     } else {
-      setSelectedEvents(events.map(e => e.id));
+      setSelectedEvents(visibleIds);
     }
   };
 
@@ -309,7 +343,7 @@ export const EventsListPage: React.FC = () => {
     return { label: t('events.active'), color: 'text-green-600 dark:text-green-400 bg-green-100 dark:bg-green-900/40' };
   };
 
-  if (isLoading) {
+  if (isLoading || (isPlaceholderData && !error)) {
     return (
       <div>
         <div className="flex justify-between items-center mb-6">
@@ -318,7 +352,19 @@ export const EventsListPage: React.FC = () => {
             <p className="text-neutral-600 dark:text-neutral-400 mt-1">{t('events.subtitle')}</p>
           </div>
         </div>
-        <SkeletonTable rows={5} />
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+          {Array.from({ length: 6 }, (_, index) => (
+            <div key={index} className="h-56 animate-pulse rounded-2xl border border-neutral-200 bg-white p-5 dark:border-neutral-800 dark:bg-neutral-900">
+              <div className="h-5 w-24 rounded bg-neutral-200 dark:bg-neutral-700" />
+              <div className="mt-6 h-6 w-3/4 rounded bg-neutral-200 dark:bg-neutral-700" />
+              <div className="mt-3 h-4 w-1/2 rounded bg-neutral-100 dark:bg-neutral-800" />
+              <div className="mt-7 grid grid-cols-2 gap-3">
+                <div className="h-16 rounded-xl bg-neutral-100 dark:bg-neutral-800" />
+                <div className="h-16 rounded-xl bg-neutral-100 dark:bg-neutral-800" />
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
     );
   }
@@ -369,28 +415,25 @@ export const EventsListPage: React.FC = () => {
           </div>
 
           {/* Filter Buttons */}
-          <div className="flex gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Button
               variant={!statusFilter ? 'primary' : 'outline'}
               size="md"
-              onClick={() => {
-                searchParams.delete('filter');
-                setSearchParams(searchParams);
-              }}
+              onClick={() => updateFilter()}
             >
               {t('events.all')} ({pagination?.total ?? 0})
             </Button>
             <Button
               variant={statusFilter === 'active' ? 'primary' : 'outline'}
               size="md"
-              onClick={() => setSearchParams({ filter: 'active' })}
+              onClick={() => updateFilter('active')}
             >
               {t('events.active')}
             </Button>
             <Button
               variant={isExpiringFilter ? 'primary' : 'outline'}
               size="md"
-              onClick={() => setSearchParams({ filter: 'expiring' })}
+              onClick={() => updateFilter('expiring')}
               leftIcon={<AlertTriangle className="w-4 h-4" />}
             >
               {t('events.expiring')}
@@ -398,10 +441,24 @@ export const EventsListPage: React.FC = () => {
             <Button
               variant={isDraftFilter ? 'primary' : 'outline'}
               size="md"
-              onClick={() => setSearchParams({ filter: 'draft' })}
+              onClick={() => updateFilter('draft')}
             >
               {t('events.draft')}
             </Button>
+            <label className="ml-1 flex h-10 items-center gap-2 rounded-lg border border-neutral-200 bg-white px-3 text-sm text-neutral-600 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300">
+              <ArrowDownWideNarrow className="h-4 w-4 shrink-0" />
+              <span className="sr-only">{t('events.sortBy', '排序')}</span>
+              <select
+                value={sortKey}
+                onChange={(event) => updateSort(event.target.value as EventSort)}
+                aria-label={t('events.sortBy', '排序')}
+                className="max-w-[9rem] border-0 bg-transparent p-0 text-sm focus:ring-0 dark:bg-neutral-900"
+              >
+                <option value="recent">{t('events.sortRecent', '最近更新')}</option>
+                <option value="created">{t('events.sortCreated', '创建时间')}</option>
+                <option value="name">{t('events.sortName', '项目名称')}</option>
+              </select>
+            </label>
           </div>
         </div>
 
@@ -439,252 +496,156 @@ export const EventsListPage: React.FC = () => {
         )}
       </Card>
 
-      {/* Events Table */}
-      <Card className="overflow-visible">
-        <div className="overflow-x-auto overflow-y-visible">
-          <table className="w-full">
-            <thead className="bg-neutral-50 dark:bg-neutral-800 border-b border-neutral-200 dark:border-neutral-700">
-              <tr>
-                <th className="px-6 py-3 text-left">
-                  <input
-                    type="checkbox"
-                    checked={selectedEvents.length === events.length && events.length > 0}
-                    onChange={handleSelectAll}
-                    className="w-4 h-4 text-accent border-neutral-300 dark:border-neutral-600 rounded focus:ring-primary-500 dark:bg-neutral-700"
-                  />
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">
-                  {t('events.event')}
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">
-                  {t('events.date')}
-                </th>
-                <th className="px-6 py-3 text-right text-xs font-medium text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">
-                  {t('events.photos', 'Photos')}
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">
-                  {t('events.status')}
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">
-                  {t('events.expires')}
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">
-                  {t('events.actions')}
-                </th>
-              </tr>
-            </thead>
-            <tbody className="bg-white dark:bg-neutral-800 divide-y divide-neutral-200 dark:divide-neutral-700">
-              {events.length === 0 ? (
-                <tr>
-                  <td colSpan={8} className="px-6 py-12 text-center text-neutral-500 dark:text-neutral-400">
-                    {t('events.noEventsFound')}
-                  </td>
-                </tr>
-              ) : (
-                events.map((event) => {
-                  const status = getEventStatus(event);
+      {/* Project cards: scanning the work state takes priority over dense rows. */}
+      {events.length === 0 ? (
+        <Card className="py-16 text-center text-sm text-neutral-500 dark:text-neutral-400">
+          {t('events.noEventsFound')}
+        </Card>
+      ) : (
+        <>
+          <div className="mb-3 flex items-center justify-between px-1 text-sm text-neutral-500 dark:text-neutral-400">
+            <span>{t('events.projectsOnPage', '本页项目 {{count}} 个', { count: events.length })}</span>
+            <label className="inline-flex cursor-pointer items-center gap-2">
+              <input
+                type="checkbox"
+                checked={events.length > 0 && events.every((event) => selectedEvents.includes(event.id))}
+                onChange={handleSelectAll}
+                aria-label={t('events.selectAllOnPage', '选择本页全部项目')}
+                className="h-4 w-4 rounded border-neutral-300 text-accent focus:ring-primary-500 dark:border-neutral-600 dark:bg-neutral-700"
+              />
+              {t('events.selectAllOnPage', '选择本页')}
+            </label>
+          </div>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+            {events.map((event) => {
+              const status = getEventStatus(event);
+              const accent = event.is_draft
+                ? 'bg-amber-400'
+                : event.is_active
+                  ? 'bg-emerald-500'
+                  : 'bg-neutral-400';
 
-                  return (
-                    <tr
-                      key={event.id}
-                      className="hover:bg-neutral-50 dark:hover:bg-neutral-700/50 cursor-pointer"
-                      onClick={() => navigate(`/admin/events/${event.id}`)}
-                    >
-                      <td className="px-6 py-4" onClick={(e) => e.stopPropagation()}>
-                        <input
-                          type="checkbox"
-                          checked={selectedEvents.includes(event.id)}
-                          onChange={() => handleSelectEvent(event.id)}
-                          className="w-4 h-4 text-accent border-neutral-300 dark:border-neutral-600 rounded focus:ring-primary-500 dark:bg-neutral-700"
-                        />
-                      </td>
-                      <td className="px-6 py-4">
-                        <div>
-                          <p className="text-sm font-medium text-neutral-900 dark:text-neutral-100">{event.event_name}</p>
-                          <div className="mt-1">
-                            <span
-                              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium ${
-                                isGalleryPublic(event.require_password)
-                                  ? 'bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300'
-                                  : 'bg-neutral-100 dark:bg-neutral-700 text-neutral-700 dark:text-neutral-300'
-                              }`}
-                            >
-                              {isGalleryPublic(event.require_password) ? t('events.publicAccess', 'Public access') : t('events.passwordProtected', 'Password protected')}
-                            </span>
-                          </div>
+              return (
+                <Card key={event.id} padding="none" variant="hover" className="group relative flex h-full flex-col overflow-visible rounded-2xl">
+                  <div className={`h-1.5 rounded-t-2xl ${accent}`} />
+                  <div className="flex flex-1 flex-col p-5">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${status.color}`}>
+                        {status.label}
+                      </span>
+                      <div className="flex items-center gap-2">
+                        <label className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-lg hover:bg-neutral-100 dark:hover:bg-neutral-800">
+                          <input
+                            type="checkbox"
+                            checked={selectedEvents.includes(event.id)}
+                            onChange={() => handleSelectEvent(event.id)}
+                            aria-label={t('events.selectProject', '选择项目 {{name}}', { name: event.event_name })}
+                            className="h-4 w-4 rounded border-neutral-300 text-accent focus:ring-primary-500 dark:border-neutral-600 dark:bg-neutral-700"
+                          />
+                        </label>
+                        <div className="relative inline-block text-left dropdown-container">
+                          <button
+                            type="button"
+                            aria-label={t('events.moreActions', '更多操作')}
+                            onClick={(clickEvent) => {
+                              if (activeDropdown === event.id) {
+                                setActiveDropdown(null);
+                                setDropdownPosition(null);
+                                return;
+                              }
+                              const rect = clickEvent.currentTarget.getBoundingClientRect();
+                              setActiveDropdown(event.id);
+                              setDropdownPosition({
+                                top: rect.bottom + 4,
+                                left: Math.max(8, Math.min(rect.right - 224, window.innerWidth - 232)),
+                              });
+                            }}
+                            className="flex h-8 w-8 items-center justify-center rounded-lg text-neutral-400 transition hover:bg-neutral-100 hover:text-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
+                          >
+                            <MoreVertical className="h-4 w-4" />
+                          </button>
+                          {activeDropdown === event.id && dropdownPosition && (
+                            <div className="fixed z-50 w-56 rounded-xl bg-white py-1 shadow-xl ring-1 ring-black/10 dark:bg-neutral-800 dark:ring-white/10" style={{ top: dropdownPosition.top, left: dropdownPosition.left }}>
+                              <button type="button" onClick={() => { navigate(`/admin/events/${event.id}`); setActiveDropdown(null); }} className="flex w-full items-center gap-2 px-4 py-2.5 text-left text-sm text-neutral-700 hover:bg-neutral-100 dark:text-neutral-200 dark:hover:bg-neutral-700">
+                                <Edit className="h-4 w-4" />{t('events.viewDetails')}
+                              </button>
+                              <PermissionGate permission="events.archive">
+                                <button type="button" onClick={() => { if (window.confirm(t('events.archiveConfirm'))) archiveMutation.mutate(event.id); setActiveDropdown(null); }} className="flex w-full items-center gap-2 px-4 py-2.5 text-left text-sm text-neutral-700 hover:bg-neutral-100 dark:text-neutral-200 dark:hover:bg-neutral-700">
+                                  <Archive className="h-4 w-4" />{t('events.archiveEventAction')}
+                                </button>
+                              </PermissionGate>
+                              <PermissionGate permission="events.delete">
+                                <button type="button" onClick={() => { setPendingDeleteEvent(event); setDeleteCloudCopies(false); setActiveDropdown(null); }} className="flex w-full items-center gap-2 px-4 py-2.5 text-left text-sm text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/30">
+                                  <Trash2 className="h-4 w-4" />{t('events.deleteEvent')}
+                                </button>
+                              </PermissionGate>
+                            </div>
+                          )}
                         </div>
-                      </td>
-                      <td className="px-6 py-4 text-sm text-neutral-700 dark:text-neutral-300">
-                        {event.event_date ? format(parseISO(event.event_date)) : 'N/A'}
-                      </td>
-                      <td className="px-6 py-4 text-sm text-right tabular-nums text-neutral-700 dark:text-neutral-300">
-                        {event.photo_count ?? 0}
-                      </td>
-                      <td className="px-6 py-4">
-                        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${status.color}`}>
-                          {status.label}
-                        </span>
-                      </td>
-                      <td className="px-6 py-4 text-sm text-neutral-700 dark:text-neutral-300">
-                        {event.expires_at ? format(parseISO(event.expires_at)) : 'N/A'}
-                      </td>
-                      <td className="px-6 py-4" onClick={(e) => e.stopPropagation()}>
-                        <div className="flex items-center gap-1">
-                          {/* Inline action buttons - hidden on mobile */}
-                          <div className="hidden md:flex items-center gap-1">
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => navigate(`/admin/events/${event.id}`)}
-                              title={t('events.viewDetails')}
-                            >
-                              <Edit className="w-4 h-4" />
-                            </Button>
-                            {event.share_link && (
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => {
-                                  const url = event.is_draft
-                                    ? buildAdminPreviewUrl(event.share_link)
-                                    : buildShareLinkUrl(event.share_link);
-                                  window.open(url, '_blank', 'noopener,noreferrer');
-                                }}
-                                title={t('events.viewGallery')}
-                              >
-                                <ExternalLink className="w-4 h-4" />
-                              </Button>
-                            )}
-                            {event.share_link && !event.is_draft && (
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => copyShareLink(event)}
-                                title={t('events.copyLink', 'Copy Link')}
-                              >
-                                {copiedEventId === event.id ? (
-                                  <CheckCircle className="w-4 h-4 text-green-600" />
-                                ) : (
-                                  <Copy className="w-4 h-4" />
-                                )}
-                              </Button>
-                            )}
-                          </div>
+                      </div>
+                    </div>
 
-                          {/* Context menu for additional actions */}
-                          <div className="relative inline-block text-left dropdown-container">
-                            <button
-                              aria-label={t('events.moreActions', 'More actions')}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                if (activeDropdown === event.id) {
-                                  setActiveDropdown(null);
-                                  setDropdownPosition(null);
-                                } else {
-                                  const rect = e.currentTarget.getBoundingClientRect();
-                                  setActiveDropdown(event.id);
-                                  setDropdownPosition({
-                                    top: rect.bottom + window.scrollY,
-                                    left: rect.right - 224 + window.scrollX // 224px = 14rem (w-56)
-                                  });
-                                }
-                              }}
-                              className="text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 p-1"
-                            >
-                              <MoreVertical className="w-5 h-5" />
-                            </button>
+                    <div className="mt-4 min-w-0">
+                      <button type="button" onClick={() => navigate(`/admin/events/${event.id}`)} className="block max-w-full text-left">
+                        <h2 className="line-clamp-2 text-lg font-semibold leading-6 text-neutral-950 transition group-hover:text-emerald-800 dark:text-neutral-100 dark:group-hover:text-emerald-300" title={event.event_name}>{event.event_name}</h2>
+                      </button>
+                      <div className="mt-1.5 flex items-center gap-1.5 text-sm text-neutral-500 dark:text-neutral-400">
+                        <UserRound className="h-3.5 w-3.5 shrink-0" />
+                        <span className="truncate">{event.customer_name || t('events.customerNotSet', '未填写客户名称')}</span>
+                      </div>
+                    </div>
 
-                            {activeDropdown === event.id && dropdownPosition && (
-                              <div
-                                className="fixed z-50 w-56 rounded-md shadow-lg bg-white dark:bg-neutral-800 ring-1 ring-black ring-opacity-5 dark:ring-neutral-700"
-                                style={{ top: `${dropdownPosition.top}px`, left: `${dropdownPosition.left}px` }}
-                              >
-                                <div className="py-1">
-                                  {/* Show Edit/View on mobile only (already visible inline on desktop) */}
-                                  <button
-                                    onClick={() => {
-                                      navigate(`/admin/events/${event.id}`);
-                                      setActiveDropdown(null);
-                                      setDropdownPosition(null);
-                                    }}
-                                    className="md:hidden w-full text-left px-4 py-2 text-sm text-neutral-700 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-700 flex items-center gap-2"
-                                  >
-                                    <Edit className="w-4 h-4" />
-                                    {t('events.viewDetails')}
-                                  </button>
-                                  {event.share_link ? (
-                                    <a
-                                      href={event.is_draft ? buildAdminPreviewUrl(event.share_link) : buildShareLinkUrl(event.share_link)}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                      className="md:hidden w-full text-left px-4 py-2 text-sm text-neutral-700 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-700 flex items-center gap-2"
-                                      onClick={() => {
-                                        setActiveDropdown(null);
-                                        setDropdownPosition(null);
-                                      }}
-                                    >
-                                      <ExternalLink className="w-4 h-4" />
-                                      {t('events.viewGallery')}
-                                    </a>
-                                  ) : null}
-                                  {event.share_link ? (
-                                    <button
-                                      disabled={Boolean(event.is_draft)}
-                                      title={event.is_draft ? t('events.draftNotShareable', '草稿尚未发布，不能分享给客户。') : undefined}
-                                      onClick={() => {
-                                        copyShareLink(event);
-                                        setActiveDropdown(null);
-                                        setDropdownPosition(null);
-                                      }}
-                                      className="md:hidden w-full text-left px-4 py-2 text-sm text-neutral-700 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-700 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-                                    >
-                                      <Copy className="w-4 h-4" />
-                                      {t('events.copyLink', 'Copy Link')}
-                                    </button>
-                                  ) : null}
-                                  <PermissionGate permission="events.archive">
-                                    <button
-                                      onClick={() => {
-                                        if (window.confirm(t('events.archiveConfirm'))) {
-                                          archiveMutation.mutate(event.id);
-                                          setActiveDropdown(null);
-                                          setDropdownPosition(null);
-                                        }
-                                      }}
-                                      className="w-full text-left px-4 py-2 text-sm text-neutral-700 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-700 flex items-center gap-2"
-                                    >
-                                      <Archive className="w-4 h-4" />
-                                      {t('events.archiveEventAction')}
-                                    </button>
-                                  </PermissionGate>
-                                  <PermissionGate permission="events.delete">
-                                    <button
-                                      onClick={() => {
-                                        setPendingDeleteEvent(event);
-                                        setDeleteCloudCopies(false);
-                                        setActiveDropdown(null);
-                                        setDropdownPosition(null);
-                                      }}
-                                      className="w-full text-left px-4 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 flex items-center gap-2"
-                                    >
-                                      <Trash2 className="w-4 h-4" />
-                                      {t('events.deleteEvent')}
-                                    </button>
-                                  </PermissionGate>
-                                </div>
-                              </div>
-                            )}
-                          </div>
+                    <div className="mt-5 grid grid-cols-2 gap-3">
+                      <div className="rounded-xl bg-neutral-50 p-3.5 dark:bg-neutral-800/80">
+                        <div className="flex items-center gap-1.5 text-xs text-neutral-500 dark:text-neutral-400">
+                          <ImageIcon className="h-3.5 w-3.5" />{t('events.photos', '照片')}
                         </div>
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-      </Card>
+                        <div className="mt-1 text-xl font-semibold tabular-nums text-neutral-900 dark:text-neutral-100">{event.photo_count ?? 0}</div>
+                      </div>
+                      <div className="rounded-xl bg-neutral-50 p-3.5 dark:bg-neutral-800/80">
+                        <div className="flex items-center gap-1.5 text-xs text-neutral-500 dark:text-neutral-400">
+                          <CalendarDays className="h-3.5 w-3.5" />{t('events.date')}
+                        </div>
+                        <div className="mt-1 truncate text-sm font-medium text-neutral-900 dark:text-neutral-100" title={event.event_date ? format(parseISO(event.event_date)) : undefined}>
+                          {event.event_date ? format(parseISO(event.event_date)) : t('events.dateNotSet', '未设置')}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-neutral-100 pt-3 text-xs dark:border-neutral-800">
+                      <span className={`inline-flex items-center rounded-full px-2 py-1 ${isGalleryPublic(event.require_password) ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300' : 'bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300'}`}>
+                        {isGalleryPublic(event.require_password) ? t('events.publicAccess', '公开访问') : t('events.passwordProtected', '密码保护')}
+                      </span>
+                      <span className="text-neutral-500 dark:text-neutral-400">
+                        {event.expires_at ? t('events.expiresAtShort', '到期 {{date}}', { date: format(parseISO(event.expires_at)) }) : t('events.noExpiry', '不设到期')}
+                      </span>
+                    </div>
+
+                    <div className="mt-auto flex items-center gap-2 pt-5">
+                      <Button className="min-w-0 flex-1" size="sm" onClick={() => navigate(`/admin/events/${event.id}`)} rightIcon={<ArrowUpRight className="h-4 w-4" />}>
+                        {t('events.openProject', '打开项目')}
+                      </Button>
+                      {event.share_link && (
+                        <Button variant="outline" size="sm" aria-label={t('events.viewGallery')} title={t('events.viewGallery')} onClick={() => {
+                          const url = event.is_draft ? buildAdminPreviewUrl(event.share_link) : buildShareLinkUrl(event.share_link);
+                          window.open(url, '_blank', 'noopener,noreferrer');
+                        }}>
+                          <ExternalLink className="h-4 w-4" />
+                        </Button>
+                      )}
+                      {event.share_link && !event.is_draft && (
+                        <Button variant="outline" size="sm" aria-label={t('events.copyLink', '复制链接')} title={t('events.copyLink', '复制链接')} onClick={() => void copyShareLink(event)}>
+                          {copiedEventId === event.id ? <CheckCircle className="h-4 w-4 text-emerald-600" /> : <Copy className="h-4 w-4" />}
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                </Card>
+              );
+            })}
+          </div>
+        </>
+      )}
 
       {/* Pagination — only when the current filter has more than one page */}
       {totalPages > 1 && (

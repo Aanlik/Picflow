@@ -2,6 +2,7 @@
 import json
 import os
 import tempfile
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 from sqlalchemy import DateTime, select
@@ -46,14 +47,30 @@ def restore_state(payload, config, sessions, *, journal=True):
     tables = {table.name: table for table in Base.metadata.sorted_tables}
     if set(payload.get('tables', {})) != set(tables):
         raise ValueError('精修状态备份缺少数据表')
-    projects = []
+    # Reconcile an older checkpoint with the currently configured workspace.
+    # A Picflow rename moves the NAS directory; restoring a checkpoint created
+    # before that rename must not point the Bridge database back at the now
+    # missing old path or create a misleading empty workspace there.
+    payload = deepcopy(payload)
+    backup_projects = {}
     for value in payload.get('projects', []):
-        project = ProjectConfig(**{
+        backup_projects[int(value['event_id'])] = ProjectConfig(**{
             key: [Path(path) for path in item] if key == 'raw_dirs'
             else Path(item) if key in {'raw', 'selected', 'final', 'history'}
             else item for key, item in value.items()
         })
-        old = next((p for p in config.projects if p.event_id == project.event_id), None)
+    backup_workspace_paths = {
+        event_id: (project.selected, project.history)
+        for event_id, project in backup_projects.items()
+    }
+    current_projects = {project.event_id: project for project in config.projects}
+    projects = []
+    for value in payload.get('projects', []):
+        project = backup_projects[int(value['event_id'])]
+        old = current_projects.get(project.event_id)
+        if old is not None:
+            project.name = old.name
+            project.selected, project.final, project.history = old.selected, old.final, old.history
         raw_roots = [config.raw_root] + ([old.raw] if old else [])
         if not all(any(raw.resolve().is_relative_to(root.resolve()) for root in raw_roots) for raw in project.raw_dirs):
             raise ValueError('备份 RAW 路径不在已授权挂载内')
@@ -75,6 +92,40 @@ def restore_state(payload, config, sessions, *, journal=True):
     configured = {p.event_id: p for p in projects}
     if set(project_ids.values()) != set(configured):
         raise ValueError('备份项目配置与数据库不一致')
+    for row in payload['tables']['projects']:
+        row['name'] = configured[row['event_id']].name
+
+    photo_events = {}
+    for photo in payload['tables']['photos']:
+        event_id = project_ids[photo['project_id']]
+        photo_events[photo['id']] = event_id
+        current = current_projects.get(event_id)
+        if current is None:
+            continue
+        backup_selected, backup_history = backup_workspace_paths[event_id]
+        for key, source_root, target_root in (
+            ('selected_path', backup_selected, current.selected),
+            ('upload_snapshot_path', backup_history, current.history),
+        ):
+            value = photo.get(key)
+            if value:
+                try:
+                    photo[key] = str(target_root / Path(value).relative_to(source_root))
+                except ValueError:
+                    pass
+
+    for name in ('deliveries', 'withdrawals'):
+        for row in payload['tables'][name]:
+            value = row.get('snapshot')
+            event_id = photo_events.get(row['photo_pk'])
+            current = current_projects.get(event_id) if event_id is not None else None
+            if value and current is not None:
+                _, backup_history = backup_workspace_paths[event_id]
+                try:
+                    row['snapshot'] = str(current.history / Path(value).relative_to(backup_history))
+                except ValueError:
+                    pass
+
     photo_roots = {}
     for photo in payload['tables']['photos']:
         cfg = configured[project_ids[photo['project_id']]]
@@ -141,6 +192,15 @@ def restore_state(payload, config, sessions, *, journal=True):
         if journal:
             atomic_json(journal_path, payload)
         session.commit()
+    payload['projects'] = [{
+        'name': project.name,
+        'event_id': project.event_id,
+        'raw': str(project.raw),
+        'raw_dirs': [str(raw) for raw in project.raw_dirs],
+        'selected': str(project.selected),
+        'final': str(project.final),
+        'history': str(project.history),
+    } for project in projects]
     atomic_json(config.projects_file, payload['projects'])
     config.projects = projects
     journal_path.unlink(missing_ok=True)

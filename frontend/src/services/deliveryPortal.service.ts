@@ -9,6 +9,10 @@ export interface DeliveryPortalShare {
   expired: boolean;
 }
 
+export interface DeliveryPortalShareLink {
+  share_url: string;
+}
+
 export interface CreatedDeliveryPortalShare {
   id: number;
   recipient_name: string;
@@ -25,5 +29,8 @@ export const deliveryPortalService = {
   },
   async revoke(eventId: number, shareId: number): Promise<void> {
     await api.delete(`/admin/events/${eventId}/delivery-portal/shares/${shareId}`);
+  },
+  async getLink(eventId: number, shareId: number): Promise<DeliveryPortalShareLink> {
+    return (await api.get<DeliveryPortalShareLink>(`/admin/events/${eventId}/delivery-portal/shares/${shareId}/link`)).data;
   },
 };

@@ -12,7 +12,14 @@ from .filenames import normalize_filename
 from .client import ApiError
 from .files import FINAL_EXTENSIONS, RAW_EXTENSIONS, Stability, index_files, match_raw, materialize, resolve_raw_override, resolve_uploaded_source, safe_file, safe_name, sha256, snapshot, stem_key
 from .models import Delivery, Error, Photo, Project, SyncRun, Withdrawal, now
-from .storage_layout import DELIVERY_ROOT_DIRECTORIES
+from .state_backup import atomic_json
+from .storage_layout import (
+    DELIVERY_ROOT_DIRECTORIES,
+    FINAL_DIRECTORY,
+    HISTORY_DIRECTORY,
+    SELECTED_DIRECTORY,
+    project_folder_name,
+)
 
 STAGES = ["SELECTING", "EDITING", "DELIVERED", "ARCHIVED"]
 logger = logging.getLogger(__name__)
@@ -63,6 +70,9 @@ class Engine:
                 else:
                     row.name = p.name
             s.commit()
+        self.recover_pending_project_folder_renames()
+        with sessions() as s:
+            s.commit()
             # A crash between request and response must enter reconciliation,
             # never blindly repeat the mutation on restart.
             for row in s.scalars(select(Delivery).where(Delivery.state == "UPLOADING")):
@@ -104,6 +114,218 @@ class Engine:
                     if task:
                         task.snapshot = rebased(task.snapshot)
             s.commit()
+
+    def _project_name_journal(self):
+        return self.config.projects_file.with_name("project-name-migrations.json")
+
+    def _read_project_name_journal(self):
+        journal = self._project_name_journal()
+        if not journal.exists():
+            return []
+        if journal.is_symlink():
+            raise ValueError("项目名称迁移记录不能是符号链接")
+        payload = json.loads(journal.read_text(encoding="utf-8"))
+        if not isinstance(payload, list):
+            raise ValueError("项目名称迁移记录格式无效")
+        return payload
+
+    def _write_project_name_journal(self, records):
+        atomic_json(self._project_name_journal(), records)
+
+    def _project_config_payload(self, renamed_event_id, new_name, new_root):
+        payload = []
+        for project in self.config.projects:
+            selected = new_root / SELECTED_DIRECTORY if project.event_id == renamed_event_id and new_root else project.selected
+            final = new_root / FINAL_DIRECTORY if project.event_id == renamed_event_id and new_root else project.final
+            history = new_root / HISTORY_DIRECTORY if project.event_id == renamed_event_id and new_root else project.history
+            payload.append({
+                "name": new_name if project.event_id == renamed_event_id else project.name,
+                "event_id": project.event_id,
+                "raw": str(project.raw),
+                "raw_dirs": [str(raw) for raw in project.raw_dirs],
+                "selected": str(selected),
+                "final": str(final),
+                "history": str(history),
+            })
+        return payload
+
+    @staticmethod
+    def _rebase_path(value, old_root, new_root):
+        if not value:
+            return value
+        try:
+            return str(new_root / Path(value).relative_to(old_root))
+        except ValueError:
+            return value
+
+    def _rebase_project_workspace(self, event_id, old_root, new_root, new_name):
+        with self.sessions() as session:
+            project = session.scalar(select(Project).where(Project.event_id == event_id))
+            if project is not None:
+                project.name = new_name
+                for photo in session.scalars(select(Photo).where(Photo.project_id == project.id)):
+                    photo.selected_path = self._rebase_path(photo.selected_path, old_root, new_root)
+                    photo.upload_snapshot_path = self._rebase_path(photo.upload_snapshot_path, old_root, new_root)
+                    for delivery in session.scalars(select(Delivery).where(Delivery.photo_pk == photo.id)):
+                        delivery.snapshot = self._rebase_path(delivery.snapshot, old_root, new_root)
+                    withdrawal = session.scalar(select(Withdrawal).where(Withdrawal.photo_pk == photo.id))
+                    if withdrawal is not None:
+                        withdrawal.snapshot = self._rebase_path(withdrawal.snapshot, old_root, new_root)
+            session.commit()
+
+    @staticmethod
+    def _directory_has_entries(path):
+        if not path.exists():
+            return False
+        if path.is_symlink() or not path.is_dir():
+            raise ValueError(f"项目交付路径不是普通文件夹：{path}")
+        return next(path.iterdir(), None) is not None
+
+    def _complete_project_folder_rename(self, record, cfg):
+        event_id = int(record["event_id"])
+        old_root = Path(record["old"])
+        new_root = Path(record["new"])
+        new_name = str(record["name"]).strip()
+        delivery_root = self.config.delivery_root
+        if delivery_root.is_symlink() or not delivery_root.is_dir():
+            raise ValueError("NAS 项目交付根目录不可用，名称同步已暂缓")
+        root_resolved = delivery_root.resolve(strict=True)
+        for candidate in (old_root, new_root):
+            try:
+                relative = candidate.relative_to(delivery_root)
+            except ValueError as error:
+                raise ValueError("项目交付文件夹必须位于统一项目交付根目录中") from error
+            if not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
+                raise ValueError("项目交付文件夹路径无效")
+            parent = candidate.parent
+            if parent.is_symlink() or not parent.resolve(strict=True).is_relative_to(root_resolved):
+                raise ValueError("项目交付文件夹包含符号链接或越出挂载根目录")
+            if candidate.is_symlink() or (candidate.exists() and not candidate.is_dir()):
+                raise ValueError("项目交付文件夹不是普通目录")
+
+        source_existed = bool(record.get("source_existed"))
+        if old_root != new_root:
+            new_has_data = self._directory_has_entries(new_root)
+            # Validate managed children before moving the project root. If an
+            # old workspace contains a symlink, leave the whole tree where it
+            # is and keep the journal pending for an operator to resolve.
+            if old_root.exists():
+                for directory in (SELECTED_DIRECTORY, FINAL_DIRECTORY, HISTORY_DIRECTORY):
+                    child = old_root / directory
+                    if child.is_symlink() or (child.exists() and not child.is_dir()):
+                        raise ValueError(f"项目工作目录不是普通文件夹：{directory}")
+            if old_root.exists():
+                if new_root.exists():
+                    if new_has_data:
+                        raise ValueError(f"目标项目文件夹已有内容，未合并或覆盖：{new_root.name}")
+                    new_root.rmdir()
+                old_root.rename(new_root)
+            elif new_root.exists():
+                if not source_existed and new_has_data:
+                    raise ValueError(f"目标项目文件夹已有内容，不能确认归属：{new_root.name}")
+            elif source_existed:
+                raise ValueError(f"项目原目录和目标目录都不存在，已停止自动迁移：{old_root.name}")
+            else:
+                new_root.mkdir(parents=False, exist_ok=False)
+
+            for directory in (SELECTED_DIRECTORY, FINAL_DIRECTORY, HISTORY_DIRECTORY):
+                child = new_root / directory
+                if child.is_symlink() or (child.exists() and not child.is_dir()):
+                    raise ValueError(f"项目工作目录不是普通文件夹：{directory}")
+                child.mkdir(exist_ok=True)
+
+        self._rebase_project_workspace(event_id, old_root, new_root, new_name)
+        atomic_json(self.config.projects_file, self._project_config_payload(event_id, new_name, new_root))
+        cfg.name = new_name
+        cfg.selected = new_root / SELECTED_DIRECTORY
+        cfg.final = new_root / FINAL_DIRECTORY
+        cfg.history = new_root / HISTORY_DIRECTORY
+        pending = [item for item in self._read_project_name_journal() if int(item.get("event_id", -1)) != event_id]
+        self._write_project_name_journal(pending)
+
+    def _recover_project_folder_rename(self, record, cfg):
+        if cfg is None:
+            return
+        self._complete_project_folder_rename(record, cfg)
+
+    def recover_pending_project_folder_renames(self):
+        try:
+            records = self._read_project_name_journal()
+        except Exception as error:
+            logger.error("Unable to read project-name migration journal", extra={"error": str(error)})
+            return
+        configs = {project.event_id: project for project in self.config.projects}
+        for record in records:
+            try:
+                self._recover_project_folder_rename(record, configs.get(int(record.get("event_id", -1))))
+            except Exception as error:
+                logger.warning("Project delivery-folder rename remains pending", extra={
+                    "event_id": record.get("event_id"), "error": str(error),
+                })
+
+    def sync_project_name(self, cfg, new_name):
+        """Rename this project's shared NAS workspace after a Picflow rename."""
+        new_name = str(new_name or "").strip()
+        if not new_name:
+            raise ValueError("Picflow 项目名称为空，未更改 NAS 文件夹")
+        pending = next((item for item in self._read_project_name_journal()
+                        if int(item.get("event_id", -1)) == cfg.event_id), None)
+        if pending:
+            self._recover_project_folder_rename(pending, cfg)
+
+        # Older explicit per-project Compose mounts cannot be renamed safely:
+        # changing their host path would invalidate the bind mount itself.
+        if cfg.event_id in self.config.project_delivery_mounts:
+            if cfg.name != new_name:
+                cfg.name = new_name
+                atomic_json(self.config.projects_file, self._project_config_payload(cfg.event_id, new_name, None))
+                with self.sessions() as session:
+                    row = session.scalar(select(Project).where(Project.event_id == cfg.event_id))
+                    if row is not None:
+                        row.name = new_name
+                    session.commit()
+            return
+
+        root = self.config.delivery_root
+        old_root = cfg.selected.parent
+        try:
+            relative = old_root.relative_to(root)
+        except ValueError:
+            # Preserve manually configured legacy paths outside the shared
+            # writable root; only auto-mounted workspaces follow project names.
+            if cfg.name != new_name:
+                cfg.name = new_name
+                atomic_json(self.config.projects_file, self._project_config_payload(cfg.event_id, new_name, None))
+                with self.sessions() as session:
+                    row = session.scalar(select(Project).where(Project.event_id == cfg.event_id))
+                    if row is not None:
+                        row.name = new_name
+                    session.commit()
+            return
+        if not relative.parts:
+            raise ValueError("项目工作区不能直接使用项目交付根目录")
+
+        new_root = root / project_folder_name(new_name)
+        if old_root == new_root and cfg.name == new_name:
+            return
+        for other in self.config.projects:
+            if other.event_id != cfg.event_id and other.selected.parent == new_root:
+                raise ValueError(f"另一个 Picflow 项目已使用同名交付文件夹：{new_root.name}")
+        if new_root != old_root and new_root.exists() and self._directory_has_entries(new_root):
+            raise ValueError(f"目标项目文件夹已有内容，未覆盖或合并：{new_root.name}")
+
+        record = {
+            "event_id": cfg.event_id,
+            "name": new_name,
+            "old": str(old_root),
+            "new": str(new_root),
+            "source_existed": old_root.exists(),
+        }
+        records = self._read_project_name_journal()
+        records = [item for item in records if int(item.get("event_id", -1)) != cfg.event_id]
+        records.append(record)
+        self._write_project_name_journal(records)
+        self._complete_project_folder_rename(record, cfg)
 
     def require_writable(self):
         from .checkpoints import refresh
@@ -204,6 +426,23 @@ class Engine:
             for cfg in self.config.projects:
                 if event_id is not None and cfg.event_id != event_id:
                     continue
+                name_sync_error = None
+                try:
+                    metadata = await self.client.project_metadata(cfg.event_id)
+                    expected_root = self.config.delivery_root / project_folder_name(metadata["event_name"])
+                    path_needs_rename = (
+                        cfg.event_id not in self.config.project_delivery_mounts
+                        and cfg.selected.parent != expected_root
+                    )
+                    if metadata["event_name"] != cfg.name or path_needs_rename:
+                        try:
+                            self.sync_project_name(cfg, metadata["event_name"])
+                        except Exception as error:
+                            name_sync_error = f"Picflow 项目名称已更新，但 NAS 文件夹同步失败：{error}"
+                except Exception as error:
+                    logger.warning("Unable to read current Picflow project name", extra={
+                        "event_id": cfg.event_id, "error": str(error),
+                    })
                 with self.sessions() as s:
                     project = s.scalar(select(Project).where(Project.event_id == cfg.event_id))
                     if project is None:
@@ -218,7 +457,9 @@ class Engine:
                     run = SyncRun(project_id=project.id)
                     s.add(run)
                     s.commit()
-                    failed = withdrawal_failed
+                    failed = withdrawal_failed or bool(name_sync_error)
+                    if name_sync_error:
+                        self.record_error(s, project, name_sync_error)
                     photos_processed = 0
                     try:
                         # Use a complete, unfiltered snapshot: filtering green

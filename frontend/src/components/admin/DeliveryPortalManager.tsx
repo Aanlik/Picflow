@@ -46,10 +46,35 @@ export function DeliveryPortalManager({ eventId, isArchived = false, isShareable
 
   const copy = async (value: string) => {
     try {
-      await navigator.clipboard.writeText(value);
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(value);
+      } else {
+        const textArea = document.createElement('textarea');
+        textArea.value = value;
+        textArea.style.position = 'fixed';
+        textArea.style.left = '-999999px';
+        document.body.appendChild(textArea);
+        textArea.select();
+        const copied = document.execCommand('copy');
+        document.body.removeChild(textArea);
+        if (!copied) throw new Error('Copy failed');
+      }
       toast.success(t('common.copied'));
     } catch {
       toast.error(t('common.copyFailed'));
+    }
+  };
+
+  const copyExistingLink = async (shareId: number) => {
+    try {
+      const { share_url: shareUrl } = await deliveryPortalService.getLink(eventId, shareId);
+      await copy(shareUrl);
+    } catch (error: any) {
+      if (error?.response?.data?.code === 'DELIVERY_PORTAL_LINK_NOT_RECOVERABLE') {
+        toast.info(t('deliveryPortal.linkNotRecoverable'));
+      } else {
+        toast.error(error?.response?.data?.error || t('deliveryPortal.copyFailed'));
+      }
     }
   };
 
@@ -105,7 +130,11 @@ export function DeliveryPortalManager({ eventId, isArchived = false, isShareable
         </div>
       )}
 
-      <div className="mt-4 space-y-2">
+      <div className="mb-2 mt-5">
+        <h3 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">{t('deliveryPortal.manageTitle')}</h3>
+        <p className="mt-1 text-xs leading-5 text-neutral-500 dark:text-neutral-400">{t('deliveryPortal.manageHelp')}</p>
+      </div>
+      <div className="space-y-2">
         {isLoading && <p className="text-sm text-neutral-500">{t('common.loading')}</p>}
         {!isLoading && shares.length === 0 && <p className="text-sm text-neutral-500">{t('deliveryPortal.empty')}</p>}
         {shares.map((share) => {
@@ -116,17 +145,26 @@ export function DeliveryPortalManager({ eventId, isArchived = false, isShareable
               <LockKeyhole className="h-4 w-4 shrink-0 text-neutral-500" />
               <div className="min-w-0 flex-1">
                 <div className="font-medium text-neutral-900 dark:text-neutral-100">{share.recipient_name}</div>
-                <div className="text-xs text-neutral-500">{revoked ? t('deliveryPortal.revoked') : expired ? t('deliveryPortal.expired') : t('deliveryPortal.expiresAt', { date: new Date(share.expires_at).toLocaleString() })}</div>
+                <div className="text-xs text-neutral-500">
+                  {t('deliveryPortal.createdAt', { date: new Date(share.created_at).toLocaleString() })}
+                  <span className="mx-1">·</span>
+                  {revoked ? t('deliveryPortal.revoked') : expired ? t('deliveryPortal.expired') : t('deliveryPortal.expiresAt', { date: new Date(share.expires_at).toLocaleString() })}
+                </div>
               </div>
-              {canEdit && !isArchived && !revoked && !expired && (
-                <Button type="button" variant="ghost" size="sm" leftIcon={<XCircle className="h-4 w-4" />} onClick={async () => {
-                  if (!window.confirm(t('deliveryPortal.revokeConfirm', { name: share.recipient_name }))) return;
-                  try {
-                    await deliveryPortalService.revoke(eventId, share.id);
-                    await queryClient.invalidateQueries({ queryKey: ['delivery-portal-shares', eventId] });
-                    toast.success(t('deliveryPortal.revoked'));
-                  } catch { toast.error(t('deliveryPortal.revokeFailed')); }
-                }}>{t('deliveryPortal.revoke')}</Button>
+              {canEdit && !revoked && !expired && (
+                <div className="flex items-center gap-1">
+                  <Button type="button" variant="ghost" size="sm" leftIcon={<Copy className="h-4 w-4" />} onClick={() => void copyExistingLink(share.id)}>
+                    {t('deliveryPortal.copyLink')}
+                  </Button>
+                  <Button type="button" variant="ghost" size="sm" leftIcon={<XCircle className="h-4 w-4" />} onClick={async () => {
+                    if (!window.confirm(t('deliveryPortal.revokeConfirm', { name: share.recipient_name }))) return;
+                    try {
+                      await deliveryPortalService.revoke(eventId, share.id);
+                      await queryClient.invalidateQueries({ queryKey: ['delivery-portal-shares', eventId] });
+                      toast.success(t('deliveryPortal.revoked'));
+                    } catch { toast.error(t('deliveryPortal.revokeFailed')); }
+                  }}>{t('deliveryPortal.revoke')}</Button>
+                </div>
               )}
             </div>
           );

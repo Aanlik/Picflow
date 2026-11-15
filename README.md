@@ -45,7 +45,7 @@ Picflow 保留项目照片记录及客户反馈；同一照片的精修版本会
 | 目录 | 用途 | 挂载权限 |
 | --- | --- | --- |
 | `Camera` | 样片与 RAW 等素材 | 只读；Picflow 和 Bridge 均需可读取 |
-| `项目交付` | 已选精修素材、交付成片和临时快照 | 可写；Bridge 需可写入 |
+| `项目交付` | 按 Picflow 项目名称建立的工作区，包含已选精修素材、交付成片和临时快照 | 可写；Bridge 需可写入 |
 
 `项目交付` 可以位于 `Camera` 内，但必须作为独立的可写挂载；`Camera` 素材挂载仍保持只读。Compose 不会创建缺失的宿主机目录。
 
@@ -67,6 +67,7 @@ cp .env.example .env
 | `NAS_CAMERA_UID`、`NAS_CAMERA_GID` | Camera 所有者的 UID/GID；Picflow 默认使用这组身份读取素材 |
 | `PICFLOW_UID`、`PICFLOW_GID` | 可选，覆盖 Picflow 的运行身份 |
 | `BRIDGE_UID`、`BRIDGE_GID` | Bridge 运行身份，须能读取素材并写入交付目录 |
+| `DELIVERY_PORTAL_TOKEN_ENCRYPTION_KEY` | 可选；加密保存已交付专区链接凭证，留空时由应用密钥派生。设置后需在数据库恢复和迁移时保持一致 |
 
 宿主机目录名使用 `项目交付`；Compose 内的挂载点仍是 `/delivery`，无需改动容器内路径。
 
@@ -101,7 +102,7 @@ PLATFORM=linux/arm64 ./scripts/build-picflow.sh
 
 1. 打开 `http://NAS局域网IP:3000/setup`，创建管理员账号。如果修改了端口，使用配置的端口。
 2. 新建项目，选择已挂载的样片文件夹。一个项目可以添加多个素材文件夹。
-3. 在项目详情的「选片与精修进度」中选择「自动关联项目文件夹」，检查 RAW 匹配结果。系统会在统一交付根目录下为项目创建一个工作区。
+3. 在项目详情的「选片与精修进度」中选择「自动关联项目文件夹」，检查 RAW 匹配结果。系统按 Picflow 项目名称在统一交付根目录下创建工作区；在 Picflow 改名后，Bridge 会在下一次同步时同步重命名 NAS 文件夹。
 4. 获取项目分享链接，交给客户选片。
 
 健康检查地址为 `http://NAS局域网IP:3000/health`。首次初始化建议在局域网完成；外网分享需要为 Picflow 网页配置客户可访问的 HTTPS 地址，并验证匿名客户能打开分享页。
@@ -175,7 +176,7 @@ Camera/
 │   └── 02_PROOF/                  # 样片，只读
 │       └── DSC00125.JPG
 └── 项目交付/                      # 单独可写挂载
-    └── 26-10-04/                  # 项目唯一交付工作区
+    └── 林先生婚礼/                # 使用 Picflow 项目名称；改名后随下次同步更新
         ├── 已选 Raw 文件/         # 待精修文件
         ├── 交付文件/
         │   ├── V1/                # 首次成片
@@ -296,7 +297,7 @@ docker compose -f compose.yaml -f compose.nas-camera.yaml logs --tail=100 picflo
 | `/external-media/<别名>` | Camera 和其他显式配置的只读素材根目录 |
 | `/delivery` | 可写的精修交付根目录 |
 
-旧项目专属交付挂载可按 `.env.example` 中的 `PROJECT_DELIVERY_MOUNTS` 等兼容配置保留；新项目在统一交付根目录下创建工作区。
+旧项目专属交付挂载可按 `.env.example` 中的 `PROJECT_DELIVERY_MOUNTS` 等兼容配置保留；新项目在统一交付根目录下按 Picflow 项目名称创建工作区。Picflow 改名后，Bridge 在下一次同步时改名工作区；如果目标名称已被其他文件占用，会保留旧目录并报告同步异常，不会合并或覆盖。
 
 ## 开发与检查
 

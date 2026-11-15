@@ -15,6 +15,7 @@ services:
     environment:
       PORT: '3000'
       OBJECT_STORAGE_ENCRYPTION_KEY: ${OBJECT_STORAGE_ENCRYPTION_KEY:-}
+      DELIVERY_PORTAL_TOKEN_ENCRYPTION_KEY: ${DELIVERY_PORTAL_TOKEN_ENCRYPTION_KEY:-}
       PICFLOW_GITHUB_REPOSITORY: ${PICFLOW_GITHUB_REPOSITORY:-${PHOFLOW_GITHUB_REPOSITORY:-Aanlik/Picflow}}
       # Axios uses these standard variables for installations where the NAS
       # needs an outbound proxy to reach GitHub's releases API.
@@ -43,7 +44,7 @@ services:
       RAW_HOST_ROOT: ${NAS_RAW_ROOT:-${NAS_CAMERA_ROOT:?填写 NAS Camera 绝对路径}}
       DELIVERY_ROOT: /delivery
       DELIVERY_HOST_ROOT: ${NAS_DELIVERY_ROOT:-}
-      # New projects are scoped by their material-relative folder under this one
+      # New projects are scoped by their Picflow event name under this one
       # writable mount; existing PROJECT_DELIVERY_MOUNTS remain compatible.
       PROJECT_DELIVERY_MOUNTS: ${PROJECT_DELIVERY_MOUNTS:-}
       POLL_SECONDS: ${POLL_SECONDS:-30}

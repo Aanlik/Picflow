@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const { db } = require('../database/db');
 const { AppError } = require('../utils/errors');
+const tokenVault = require('../utils/deliveryPortalTokenVault');
 const { getPublicPhotoStates } = require('./photographyWorkflowBridge');
 const { isCurrentDeliveredWorkflowPhoto } = require('./retouchWorkflowState');
 
@@ -79,4 +80,14 @@ function invalidatePhotoScope(eventId) {
   photoScopeCache.delete(Number(eventId));
 }
 
-module.exports = { tokenDigest, newPortalToken, getCurrentDeliveredIds, selectDeliveredPortalPhotoIds, getDeliveredPhotoIds, isDeliveredPhoto, invalidatePhotoScope };
+module.exports = {
+  tokenDigest,
+  newPortalToken,
+  encryptToken: tokenVault.encryptToken,
+  decryptToken: tokenVault.decryptToken,
+  getCurrentDeliveredIds,
+  selectDeliveredPortalPhotoIds,
+  getDeliveredPhotoIds,
+  isDeliveredPhoto,
+  invalidatePhotoScope,
+};
