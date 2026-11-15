@@ -96,7 +96,7 @@ docker compose -f compose.yaml -f compose.nas-camera.yaml up -d
 PLATFORM=linux/arm64 ./scripts/build-picflow.sh
 ```
 
-当前 [Compose 文件](compose.yaml)使用固定镜像标签 `picflow:1.7.1`；构建脚本从 Compose 读取标签。如果在其他 Docker 主机上构建，需先将同版本镜像转移并加载到 NAS，再启动服务。
+当前 [Compose 文件](compose.yaml)使用固定镜像标签 `picflow:1.7.2`；构建脚本从 Compose 读取标签。如果在其他 Docker 主机上构建，需先将同版本镜像转移并加载到 NAS，再启动服务。
 
 ### 3. 初始化项目
 
