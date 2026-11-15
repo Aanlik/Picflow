@@ -91,6 +91,7 @@ export function PhotographyWorkflowCard({ eventId, isArchived = false }: { event
   const [error, setError] = useState('');
   const [replies, setReplies] = useState<Record<number, string>>({});
   const [photoFilter, setPhotoFilter] = useState<PhotoFilter>('all');
+  const [photoListOpen, setPhotoListOpen] = useState(false);
   const replyDrafts = useRef<Record<number, string>>({});
   const activeEvent = useRef(eventId);
   activeEvent.current = eventId;
@@ -122,7 +123,11 @@ export function PhotographyWorkflowCard({ eventId, isArchived = false }: { event
     }
   }, [eventId, t]);
 
-  useEffect(() => { replyDrafts.current = {}; setReplies({}); }, [eventId]);
+  useEffect(() => {
+    replyDrafts.current = {};
+    setReplies({});
+    setPhotoListOpen(false);
+  }, [eventId]);
 
   useEffect(() => {
     void refresh();
@@ -194,6 +199,12 @@ export function PhotographyWorkflowCard({ eventId, isArchived = false }: { event
     )),
     [photos, photoFilter, stage, activeRequestPhotoIds],
   );
+  const summaryEntries = Object.entries(workflow?.summary || {});
+  const primaryMetricKeys = ['客户已选', '待精修', '已精修', '异常'];
+  const primaryMetrics = primaryMetricKeys
+    .map((key) => summaryEntries.find(([summaryKey]) => summaryKey === key))
+    .filter((entry): entry is [string, number] => Boolean(entry));
+  const additionalMetrics = summaryEntries.filter(([key]) => !primaryMetricKeys.includes(key));
   return <Card><div className="p-6 space-y-5">
     <div className="flex flex-wrap items-center justify-between gap-3">
       <div>
@@ -254,23 +265,44 @@ export function PhotographyWorkflowCard({ eventId, isArchived = false }: { event
     </div>}
 
     {isBound && <>
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-        {Object.entries(workflow?.summary || {}).map(([key, count]) => <div key={key} className="rounded-lg bg-neutral-100 p-3 dark:bg-neutral-800"><span className="text-xs text-neutral-500">{t(`photographyWorkflow.metric.${metricNames[key] || key}`, { defaultValue: key })}</span><strong className="block text-xl">{count}</strong></div>)}
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        {primaryMetrics.map(([key, count]) => <div key={key} className={`rounded-lg px-3 py-2.5 ${key === '异常' && count > 0 ? 'bg-red-50 dark:bg-red-950/30' : 'bg-neutral-50 dark:bg-neutral-800'}`}>
+          <span className="block text-xs text-neutral-500 dark:text-neutral-400">{t(`photographyWorkflow.metric.${metricNames[key] || key}`, { defaultValue: key })}</span>
+          <strong className={`mt-0.5 block text-xl leading-6 ${key === '异常' && count > 0 ? 'text-red-700 dark:text-red-300' : 'text-neutral-900 dark:text-neutral-100'}`}>{count}</strong>
+        </div>)}
       </div>
-      <div className="rounded-lg bg-neutral-50 p-3 text-sm dark:bg-neutral-900">
-        <p className="font-medium">{t('photographyWorkflow.photographerStepsTitle')}</p>
-        <ol className="mt-2 list-decimal space-y-1 pl-5 text-neutral-600 dark:text-neutral-300">
-          <li>{t('photographyWorkflow.stepImport')}</li>
-          <li>{t('photographyWorkflow.stepExport')}</li>
-        </ol>
-        {workflow?.delivery_path && <p className="mt-2 break-all"><span className="font-medium">{t('photographyWorkflow.deliveryFolder')}：</span>{workflow.delivery_path}</p>}
-      </div>
+      {additionalMetrics.length > 0 && <details className="rounded-lg border border-neutral-200 px-3 py-2 dark:border-neutral-700">
+        <summary className="cursor-pointer text-sm font-medium text-neutral-700 dark:text-neutral-200">{t('photographyWorkflow.moreProgress', '更多进度指标')}</summary>
+        <div className="mt-3 flex flex-wrap gap-2">
+          {additionalMetrics.map(([key, count]) => <span key={key} className="inline-flex items-center gap-1.5 rounded-full bg-neutral-100 px-3 py-1.5 text-xs text-neutral-700 dark:bg-neutral-800 dark:text-neutral-200">
+            <span className="text-neutral-500 dark:text-neutral-400">{t(`photographyWorkflow.metric.${metricNames[key] || key}`, { defaultValue: key })}</span>
+            <strong>{count}</strong>
+          </span>)}
+        </div>
+      </details>}
+      <details className="rounded-lg border border-neutral-200 px-3 py-2 dark:border-neutral-700">
+        <summary className="cursor-pointer text-sm font-medium text-neutral-700 dark:text-neutral-200">{t('photographyWorkflow.photographerStepsTitle')}</summary>
+        <div className="mt-3 text-sm">
+          <ol className="list-decimal space-y-1 pl-5 text-neutral-600 dark:text-neutral-300">
+            <li>{t('photographyWorkflow.stepImport')}</li>
+            <li>{t('photographyWorkflow.stepExport')}</li>
+          </ol>
+          {workflow?.delivery_path && <p className="mt-2 break-all"><span className="font-medium">{t('photographyWorkflow.deliveryFolder')}：</span>{workflow.delivery_path}</p>}
+        </div>
+      </details>
       {!!workflow?.errors?.length && <details className="rounded-lg border border-red-200 px-3 py-2 dark:border-red-900">
         <summary className="cursor-pointer text-sm font-medium text-red-700 dark:text-red-300">{t('photographyWorkflow.errorTitle')}（{workflow.errors.length}）</summary>
         <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-red-700 dark:text-red-300">{workflow.errors.map((item, index) => <li key={`${item.created_at || 'error'}-${index}`}>{item.message}</li>)}</ul>
       </details>}
-      <section className="space-y-2">
-        <h4 className="font-medium">{t('photographyWorkflow.photoList')}</h4>
+      <details
+        open={photoListOpen}
+        onToggle={(event) => setPhotoListOpen(event.currentTarget.open)}
+        className="rounded-lg border border-neutral-200 dark:border-neutral-700"
+      >
+        <summary className="cursor-pointer px-3 py-2.5 text-sm font-medium text-neutral-800 dark:text-neutral-100">
+          {t('photographyWorkflow.photoList')}（{photos.length}）
+        </summary>
+        {photoListOpen && <section className="space-y-3 border-t border-neutral-200 p-3 dark:border-neutral-700">
         <div className="flex flex-wrap gap-2" role="group" aria-label={t('photographyWorkflow.quickFilterTitle')}>
           {photoFilters.map((filter) => <button
             key={filter}
@@ -295,10 +327,11 @@ export function PhotographyWorkflowCard({ eventId, isArchived = false }: { event
             </tbody>
           </table>
         </div>
-      </section>
-      <section className="space-y-3">
+        </section>}
+      </details>
+      {requests.length > 0 && <section className="space-y-3">
         <h4 className="font-medium">{t('photographyWorkflow.requestsTitle')} <span className="text-sm text-neutral-500">({requests.length})</span></h4>
-        {requests.length ? requests.map((request) => {
+        {requests.map((request) => {
           const currentPhoto = photos.find((photo) => photo.photo_id === request.photo_id);
           const photoName = request.source_filename || request.original_filename || request.filename;
           const thumbnail = `/api/admin/photos/${eventId}/thumbnail/${request.photo_id}?retouch_v=${currentPhoto?.current_version || 0}`;
@@ -322,8 +355,8 @@ export function PhotographyWorkflowCard({ eventId, isArchived = false }: { event
             <Button variant="outline" size="sm" disabled={busy || (replies[request.id] || '').trim() === (request.photographer_reply || '').trim()} aria-label={t('photographyWorkflow.saveReply')} onClick={() => void perform(() => saveReply(request.id, request.status))}><Save className="h-4 w-4" /></Button>
           </div>
         </div>;
-        }) : <p className="text-sm text-neutral-500">{t('photographyWorkflow.noRequests')}</p>}
-      </section>
+        })}
+      </section>}
     </>}
     {repairPhoto !== null && <WorkflowRecoveryDialog eventId={eventId} photoId={repairPhoto} onClose={() => setRepairPhoto(null)} onSaved={refresh} />}
   </div></Card>;

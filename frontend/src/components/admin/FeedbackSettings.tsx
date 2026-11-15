@@ -8,6 +8,7 @@ interface FeedbackSettingsProps {
   settings: FeedbackSettings;
   onChange: (settings: FeedbackSettings) => void;
   className?: string;
+  compact?: boolean;
 }
 
 interface FeedbackSettings {
@@ -29,7 +30,8 @@ interface FeedbackSettings {
 export const FeedbackSettings: React.FC<FeedbackSettingsProps> = ({
   settings,
   onChange,
-  className = ''
+  className = '',
+  compact = false,
 }) => {
   const { t } = useTranslation();
 
@@ -41,8 +43,11 @@ export const FeedbackSettings: React.FC<FeedbackSettingsProps> = ({
   };
 
   return (
-    <Card className={className}>
-      <div className="p-6 space-y-6">
+    <Card
+      className={compact ? `border-0 bg-transparent shadow-none ${className}` : className}
+      padding={compact ? 'none' : 'md'}
+    >
+      <div className={compact ? 'space-y-6' : 'p-6 space-y-6'}>
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100 flex items-center gap-2">
             <MessageSquare className="w-5 h-5" />

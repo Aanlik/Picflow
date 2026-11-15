@@ -1,6 +1,8 @@
+import React, { useId, useState } from 'react';
+import { ChevronDown } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { PhotographyWorkflowCard } from '../../../components/admin/PhotographyWorkflowCard';
 import { PHOTO_WORKFLOW_MODE } from '../../../config/photography';
-import React from 'react';
 import type { Event } from '../../../types';
 import { PermissionGate } from '../../../components/admin/PermissionGate';
 import { SlideshowSettingsCard } from '../../../components/admin/SlideshowSettingsCard';
@@ -55,6 +57,42 @@ interface OverviewTabProps {
   cssTemplates: EnabledTemplate[];
 }
 
+interface OverviewSectionProps {
+  title: string;
+  description: string;
+  defaultOpen?: boolean;
+  children: React.ReactNode;
+}
+
+/** Keep the overview scannable and avoid loading hidden panels until needed. */
+const OverviewSection: React.FC<OverviewSectionProps> = ({ title, description, defaultOpen = false, children }) => {
+  const [isOpen, setIsOpen] = useState(defaultOpen);
+  const contentId = useId();
+
+  return (
+    <section className="overflow-hidden rounded-xl border border-neutral-200 bg-white dark:border-neutral-700 dark:bg-neutral-900">
+      <h2>
+        <button
+          type="button"
+          aria-expanded={isOpen}
+          aria-controls={contentId}
+          onClick={() => setIsOpen((open) => !open)}
+          className="flex w-full items-center justify-between gap-4 px-4 py-4 text-left transition-colors hover:bg-neutral-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent dark:hover:bg-neutral-800 sm:px-5"
+        >
+          <span className="min-w-0">
+            <span className="block text-base font-semibold text-neutral-900 dark:text-neutral-100">{title}</span>
+            <span className="mt-0.5 block text-sm text-neutral-500 dark:text-neutral-400">{description}</span>
+          </span>
+          <ChevronDown className={`h-5 w-5 shrink-0 text-neutral-500 transition-transform ${isOpen ? 'rotate-180' : ''}`} aria-hidden="true" />
+        </button>
+      </h2>
+      <div id={contentId} hidden={!isOpen} className="border-t border-neutral-200 p-4 dark:border-neutral-700 sm:p-5">
+        {isOpen ? children : null}
+      </div>
+    </section>
+  );
+};
+
 export const OverviewTab: React.FC<OverviewTabProps> = ({
   event,
   id,
@@ -88,114 +126,141 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
   cssTemplates
 }) => {
   const { flags } = useFeatureFlags();
+  const { t } = useTranslation();
+
+  const downloadResolution = (
+    <DownloadResolutionCard
+      ref={downloadResolutionRef}
+      eventId={event.id}
+      isEditing={isEditing}
+      compact={isEditing}
+      onChanged={() => refetchEvent()}
+    />
+  );
+
+  const eventInformation = (
+    <EventInformationCard
+      event={event}
+      id={id}
+      isEditing={isEditing}
+      editForm={editForm}
+      setEditForm={setEditForm}
+      showNewPassword={showNewPassword}
+      setShowNewPassword={setShowNewPassword}
+      feedbackSettings={feedbackSettings}
+      setFeedbackSettings={setFeedbackSettings}
+      categories={categories}
+      photos={photos}
+      phoneFieldEnabled={phoneFieldEnabled}
+      daysUntilExpiration={daysUntilExpiration}
+      onRevealNow={onRevealNow}
+      downloadResolution={isEditing ? downloadResolution : undefined}
+    />
+  );
+
+  const theme = (
+    <EventThemeSection
+      event={event}
+      isEditing={isEditing}
+      editForm={editForm}
+      setEditForm={setEditForm}
+      currentTheme={currentTheme}
+      setCurrentTheme={setCurrentTheme}
+      currentPresetName={currentPresetName}
+      setCurrentPresetName={setCurrentPresetName}
+      setThemeChanged={setThemeChanged}
+      cssTemplates={cssTemplates}
+    />
+  );
+
+  if (isEditing) {
+    return (
+      <div className="mx-auto max-w-5xl space-y-5">
+        {eventInformation}
+        {theme}
+      </div>
+    );
+  }
 
   return (
-    <div className="grid grid-cols-1 items-start gap-6 xl:grid-cols-2">
-      {/* Keep the workflow visible first, with room for its progress table and requests. */}
-      <div className="xl:col-span-2">
-        <PhotographyWorkflowCard eventId={event.id} isArchived={event.is_archived} />
-      </div>
+    <div className="space-y-5">
+      <PhotographyWorkflowCard eventId={event.id} isArchived={event.is_archived} />
 
-      {/* Project information and sharing tools. */}
-      <div className="space-y-6">
-        {/* Event Information */}
-        <EventInformationCard
-          event={event}
-          id={id}
-          isEditing={isEditing}
-          editForm={editForm}
-          setEditForm={setEditForm}
-          showNewPassword={showNewPassword}
-          setShowNewPassword={setShowNewPassword}
-          feedbackSettings={feedbackSettings}
-          setFeedbackSettings={setFeedbackSettings}
-          categories={categories}
-          photos={photos}
-          phoneFieldEnabled={phoneFieldEnabled}
-          daysUntilExpiration={daysUntilExpiration}
-          onRevealNow={onRevealNow}
-        />
-
-        <PermissionGate permission="photos.view"><DownloadSourceReview eventId={event.id} /></PermissionGate>
-
-        {/* Share Link */}
-        <ShareLinkCard event={event} setShowPasswordReset={setShowPasswordReset} passwordVersion={passwordVersion} />
-
-        {/* Branded short URLs (#699). Sits between the canonical share-link
-            card and the Client Access card — same "things you share with
-            the customer" cluster. */}
-        {!PHOTO_WORKFLOW_MODE && <ShortUrlsCard eventId={event.id} />}
-
-        {/* Actions */}
-        {!event.is_archived && (
-          <PermissionGate permissions={['events.edit', 'events.archive', 'events.create']}>
-            <EventActionsCard
-              event={event}
-              onArchive={onArchive}
-              isArchiving={isArchiving}
-              setShowPublishDialog={setShowPublishDialog}
-              isPublishing={isPublishing}
-              setShowDuplicateDialog={setShowDuplicateDialog}
-              isDuplicating={isDuplicating}
-            />
+      <OverviewSection
+        title={t('events.overviewSections.accessTitle')}
+        description={t('events.overviewSections.accessDescription')}
+      >
+        <div className="grid grid-cols-1 items-start gap-5 xl:grid-cols-2">
+          <ShareLinkCard event={event} setShowPasswordReset={setShowPasswordReset} passwordVersion={passwordVersion} />
+          <ClientAccessCard event={event} refetchEvent={refetchEvent} />
+          <PermissionGate permission="events.view">
+            <DeliveryPortalManager eventId={event.id} isArchived={event.is_archived} isShareable={event.is_active} />
           </PermissionGate>
-        )}
-      </div>
+          {!PHOTO_WORKFLOW_MODE && <ShortUrlsCard eventId={event.id} />}
+        </div>
+      </OverviewSection>
 
-      {/* Presentation, client access, and delivery settings keep the second
-          column useful instead of leaving it with only the theme card. */}
-      <div className="space-y-6">
-        <EventThemeSection
-          event={event}
-          isEditing={isEditing}
-          editForm={editForm}
-          setEditForm={setEditForm}
-          currentTheme={currentTheme}
-          setCurrentTheme={setCurrentTheme}
-          currentPresetName={currentPresetName}
-          setCurrentPresetName={setCurrentPresetName}
-          setThemeChanged={setThemeChanged}
-          cssTemplates={cssTemplates}
-        />
+      <OverviewSection
+        title={t('events.overviewSections.deliveryTitle')}
+        description={t('events.overviewSections.deliveryDescription')}
+      >
+        <div className="grid grid-cols-1 items-start gap-5 xl:grid-cols-2">
+          <PermissionGate permission="photos.view"><DownloadSourceReview eventId={event.id} /></PermissionGate>
+          {downloadResolution}
+          <ObjectDeliveryCard eventId={event.id} isArchived={event.is_archived} />
+        </div>
+      </OverviewSection>
 
-        {/* Client Access (#172) */}
-        <ClientAccessCard event={event} refetchEvent={refetchEvent} />
+      <OverviewSection
+        title={t('events.overviewSections.presentationTitle')}
+        description={t('events.overviewSections.presentationDescription')}
+      >
+        <div className="grid grid-cols-1 items-start gap-5 xl:grid-cols-2">
+          {eventInformation}
+          {theme}
+          {flags.slideshow && (
+            <SlideshowSettingsCard
+              eventId={event.id}
+              slug={event.slug}
+              isArchived={event.is_archived}
+              initial={{
+                show_share_token: event.show_share_token,
+                show_interval_ms: event.show_interval_ms,
+                show_transition: event.show_transition,
+                show_transition_ms: event.show_transition_ms,
+                show_watermark: event.show_watermark,
+                show_qr: event.show_qr,
+                show_colorfilter: event.show_colorfilter,
+                show_order: event.show_order,
+                show_category_id: event.show_category_id,
+              }}
+              onChanged={() => refetchEvent()}
+            />
+          )}
+        </div>
+      </OverviewSection>
 
-        <PermissionGate permission="events.view">
-          <DeliveryPortalManager eventId={event.id} isArchived={event.is_archived} isShareable={event.is_active} />
-        </PermissionGate>
-
-        {/* Per-gallery download resolution override (#858). */}
-        <DownloadResolutionCard ref={downloadResolutionRef} eventId={event.id} isEditing={isEditing} onChanged={() => refetchEvent()} />
-
-        <ObjectDeliveryCard eventId={event.id} isArchived={event.is_archived} />
-
-        {/* Optional modules remain grouped with the gallery settings. */}
-        {flags.slideshow && (
-          <SlideshowSettingsCard
-            eventId={event.id}
-            slug={event.slug}
-            isArchived={event.is_archived}
-            initial={{
-              show_share_token: event.show_share_token,
-              show_interval_ms: event.show_interval_ms,
-              show_transition: event.show_transition,
-              show_transition_ms: event.show_transition_ms,
-              show_watermark: event.show_watermark,
-              show_qr: event.show_qr,
-              show_colorfilter: event.show_colorfilter,
-              show_order: event.show_order,
-              show_category_id: event.show_category_id,
-            }}
-            onChanged={() => refetchEvent()}
-          />
-        )}
-
-        {/* Archive Status */}
-        {event.is_archived ? (
-          <ArchiveStatusCard event={event} id={id} />
-        ) : null}
-      </div>
+      <OverviewSection
+        title={t('events.overviewSections.managementTitle')}
+        description={t('events.overviewSections.managementDescription')}
+      >
+        <div className="grid grid-cols-1 items-start gap-5 xl:grid-cols-2">
+          {!event.is_archived && (
+            <PermissionGate permissions={['events.edit', 'events.archive', 'events.create']}>
+              <EventActionsCard
+                event={event}
+                onArchive={onArchive}
+                isArchiving={isArchiving}
+                setShowPublishDialog={setShowPublishDialog}
+                isPublishing={isPublishing}
+                setShowDuplicateDialog={setShowDuplicateDialog}
+                isDuplicating={isDuplicating}
+              />
+            </PermissionGate>
+          )}
+          {event.is_archived ? <ArchiveStatusCard event={event} id={id} /> : null}
+        </div>
+      </OverviewSection>
     </div>
   );
 };

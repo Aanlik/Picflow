@@ -13,7 +13,7 @@
  * overrides, the globals, and the resolved effective policy) and saves through
  * PATCH on the same path.
  */
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useState } from 'react';
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Download } from 'lucide-react';
@@ -51,6 +51,7 @@ export interface DownloadResolutionCardProps {
   eventId: number;
   isEditing: boolean;
   onChanged?: () => void;
+  compact?: boolean;
 }
 
 export interface DownloadResolutionEditorHandle {
@@ -76,11 +77,12 @@ const triToSelect = (v: boolean | number | string | null | undefined) => {
 const selectToTri = (v: string) => (v === INHERIT ? null : v === 'true');
 
 export const DownloadResolutionCard = forwardRef<DownloadResolutionEditorHandle, DownloadResolutionCardProps>(
-  ({ eventId, isEditing, onChanged }, ref) => {
+  ({ eventId, isEditing, onChanged, compact = false }, ref) => {
   const { t } = useTranslation();
   const [draft, setDraft] = useState<Draft>({ standard: INHERIT, picker: INHERIT, allowOriginal: INHERIT });
   const [saved, setSaved] = useState<Draft>({ standard: INHERIT, picker: INHERIT, allowOriginal: INHERIT });
   const [saving, setSaving] = useState(false);
+  const initializedEventId = useRef<number | null>(null);
 
   const { data, isLoading, refetch } = useQuery<Payload>({
     queryKey: ['event-download-resolutions', eventId],
@@ -88,7 +90,7 @@ export const DownloadResolutionCard = forwardRef<DownloadResolutionEditorHandle,
   });
 
   useEffect(() => {
-    if (!data || isEditing) return;
+    if (!data || (isEditing && initializedEventId.current === eventId)) return;
     const next = {
       standard: data.overrides.download_standard_resolution ?? INHERIT,
       picker: triToSelect(data.overrides.download_resolution_picker_enabled),
@@ -96,7 +98,8 @@ export const DownloadResolutionCard = forwardRef<DownloadResolutionEditorHandle,
     };
     setDraft(next);
     setSaved(next);
-  }, [data, isEditing]);
+    initializedEventId.current = eventId;
+  }, [data, eventId, isEditing]);
 
   const isDirty = useCallback(() => draft.standard !== saved.standard
     || draft.picker !== saved.picker
@@ -155,7 +158,10 @@ export const DownloadResolutionCard = forwardRef<DownloadResolutionEditorHandle,
   const selectClass = 'w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-700 border border-neutral-300 dark:border-neutral-600 text-neutral-900 dark:text-neutral-100 rounded-lg text-sm';
 
   return (
-    <Card>
+    <Card
+      className={compact ? 'border-0 bg-transparent shadow-none dark:border-0 dark:bg-transparent' : undefined}
+      padding={compact ? 'none' : 'md'}
+    >
       <div className="flex items-center gap-2 mb-1">
         <Download className="w-5 h-5 text-neutral-500" />
         <h3 className="text-base font-semibold text-neutral-900 dark:text-neutral-100">

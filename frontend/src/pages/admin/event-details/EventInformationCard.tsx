@@ -15,7 +15,8 @@ import {
   Droplets,
   MousePointer,
   Layout,
-  Trash2
+  Trash2,
+  ChevronDown
 } from 'lucide-react';
 import type { Event } from '../../../types';
 import { Input, Card, Loading, MarkdownContent, LocalizedDateInput } from '../../../components/common';
@@ -44,9 +45,39 @@ interface EventInformationCardProps {
   photos: AdminPhoto[];
   phoneFieldEnabled: boolean;
   daysUntilExpiration: number | null;
+  downloadResolution?: React.ReactNode;
   // Reveal mode (#838): stamps revealed_at via POST /events/:id/reveal
   onRevealNow?: () => void;
 }
+
+const SettingsDisclosure: React.FC<{
+  title: string;
+  defaultOpen?: boolean;
+  children: React.ReactNode;
+}> = ({ title, defaultOpen = false, children }) => {
+  const [isOpen, setIsOpen] = useState(defaultOpen);
+  const contentId = React.useId();
+
+  return (
+    <section className="overflow-hidden rounded-lg border border-neutral-200 dark:border-neutral-700">
+      <h3>
+        <button
+          type="button"
+          aria-expanded={isOpen}
+          aria-controls={contentId}
+          onClick={() => setIsOpen((open) => !open)}
+          className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left text-sm font-semibold text-neutral-800 transition-colors hover:bg-neutral-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent dark:text-neutral-100 dark:hover:bg-neutral-800"
+        >
+          <span>{title}</span>
+          <ChevronDown className={`h-4 w-4 shrink-0 text-neutral-500 transition-transform ${isOpen ? 'rotate-180' : ''}`} aria-hidden="true" />
+        </button>
+      </h3>
+      <div id={contentId} hidden={!isOpen} className="space-y-4 border-t border-neutral-200 px-4 py-4 dark:border-neutral-700">
+        {children}
+      </div>
+    </section>
+  );
+};
 
 export const EventInformationCard: React.FC<EventInformationCardProps> = ({
   event,
@@ -62,6 +93,7 @@ export const EventInformationCard: React.FC<EventInformationCardProps> = ({
   photos,
   phoneFieldEnabled,
   daysUntilExpiration,
+  downloadResolution,
   onRevealNow
 }) => {
   const { t } = useTranslation();
@@ -123,403 +155,411 @@ export const EventInformationCard: React.FC<EventInformationCardProps> = ({
             />
           </div>
 
-          {phoneFieldEnabled && (
-            <div>
-              <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">
-                {t('events.customerPhone', 'Customer Phone')} ({t('common.optional')})
-              </label>
-              <Input
-                type="tel"
-                value={editForm.customer_phone}
-                onChange={(e) => setEditForm(prev => ({ ...prev, customer_phone: e.target.value }))}
-                placeholder={t('events.customerPhonePlaceholder', '+1 555 555 1234')}
-              />
-            </div>
-          )}
-
-          <div>
-            <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">
-              {t('events.expirationDate')}
-            </label>
-            <LocalizedDateInput
-              value={editForm.expires_at}
-              onChange={(iso) => setEditForm(prev => ({ ...prev, expires_at: iso }))}
-              min={format(new Date(), 'yyyy-MM-dd')}
-            />
-          </div>
-
-          {/* Hero Photo Selection */}
-          <HeroPhotoSelector
-            photos={photos || []}
-            currentHeroPhotoId={editForm.hero_photo_id}
-            onSelect={(photoId) => setEditForm(prev => ({ ...prev, hero_photo_id: photoId }))}
-            isEditing={isEditing}
-          />
-
-          {/* Per-event social-share opt-in (#474). Toggle is
-              disabled when no hero photo is picked — there's
-              nothing to surface as the cover. The help text
-              deliberately spells out the public-by-design
-              consequence so an admin doesn't flip this on for
-              a sensitive gallery without realising what they're
-              sharing with link-preview crawlers. */}
-          <div className="ml-6 mt-3">
-            <label className={`flex items-start gap-2 cursor-pointer ${editForm.hero_photo_id ? '' : 'opacity-60 cursor-not-allowed'}`}>
-              <input
-                type="checkbox"
-                className="mt-0.5 rounded border-neutral-300 dark:border-neutral-600 text-accent focus:ring-primary-500"
-                checked={editForm.og_image_share_enabled === true}
-                disabled={!editForm.hero_photo_id}
-                onChange={(e) => setEditForm(prev => ({ ...prev, og_image_share_enabled: e.target.checked }))}
-              />
-              <span className="text-sm">
-                <span className="font-medium text-neutral-900 dark:text-neutral-100">
-                  {t('events.ogShare.title', 'Use hero photo as social-share preview')}
-                </span>
-                <span className="block text-xs text-neutral-600 dark:text-neutral-400 mt-0.5">
-                  {editForm.hero_photo_id
-                    ? t('events.ogShare.help', 'When this gallery URL is shared on social platforms, the link preview will show the hero photo above. The thumbnail is fetched unauthenticated by link-preview crawlers — anyone with the URL effectively makes this image public. Off by default; pick a hero you are comfortable surfacing publicly before enabling.')
-                    : t('events.ogShare.heroRequired', 'Pick a hero photo above first — this option uses it as the social preview image.')}
-                </span>
-              </span>
-            </label>
-          </div>
-
-          {/* Hero Image Focal Point Picker (#162) */}
-          {editForm.hero_photo_id && (() => {
-            const heroPhoto = (photos || []).find((p) => p.id === editForm.hero_photo_id);
-            const heroImageUrl = heroPhoto?.thumbnail_url || heroPhoto?.url;
-            if (!heroImageUrl) return null;
-            return (
-              <div className="ml-6 mt-2">
-                <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">
-                  {t('events.heroImageAnchor', 'Hero Image Crop Position')}
-                </label>
-                <p className="text-xs text-neutral-500 dark:text-neutral-400 mb-2">
-                  {t('events.heroImageAnchorDescription', 'Click on the image to set the focal point for cropping.')}
-                </p>
-                <FocalPointPicker
-                  imageUrl={heroImageUrl}
-                  currentValue={editForm.hero_image_anchor}
-                  onChange={(value) => setEditForm(prev => ({ ...prev, hero_image_anchor: value }))}
-                  slug={event.slug}
-                />
-              </div>
-            );
-          })()}
-
-          <div>
-            <label className="flex items-start gap-2">
-              <input
-                type="checkbox"
-                className="mt-1 w-4 h-4 text-accent border-neutral-300 dark:border-neutral-600 rounded focus:ring-primary-500"
-                checked={editForm.require_password}
-                onChange={(e) => {
-                  const checked = e.target.checked;
-                  setEditForm(prev => ({
-                    ...prev,
-                    require_password: checked,
-                    new_password: checked ? prev.new_password : '',
-                    confirm_new_password: checked ? prev.confirm_new_password : '',
-                  }));
-                  if (!checked) {
-                    setShowNewPassword(false);
-                  }
-                }}
-              />
-              <div>
-                <span className="text-sm font-medium text-neutral-700 dark:text-neutral-300">{t('events.requirePasswordToggle')}</span>
-                <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1">
-                  {t('events.requirePasswordToggleHelp', 'Disable this if you want to share the gallery without a password. Anyone with the link will be able to view the photos.')}
-                </p>
-              </div>
-            </label>
-
-            {!editForm.require_password && (
-              <div className="mt-2 rounded-md border border-orange-200 dark:border-orange-800 bg-orange-50 dark:bg-orange-900/30 p-3 text-xs text-orange-800 dark:text-orange-300">
-                {t('events.publicGalleryWarning', 'Public galleries are accessible to anyone with the link. Consider enabling download watermarks and monitoring activity.')}
-              </div>
-            )}
-          </div>
-
-          {editForm.require_password && (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            {phoneFieldEnabled && (
               <div>
                 <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">
-                  {t('events.newPasswordLabel', 'New gallery password')}
-                </label>
-                <div className="relative">
-                  <Input
-                    type={showNewPassword ? 'text' : 'password'}
-                    value={editForm.new_password}
-                    onChange={(e) => setEditForm(prev => ({ ...prev, new_password: e.target.value }))}
-                    placeholder={t('events.enterPassword')}
-                    leftIcon={<Lock className="w-5 h-5 text-neutral-400" />}
-                    className="pr-10"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowNewPassword(!showNewPassword)}
-                    className="absolute inset-y-0 right-0 pr-3 flex items-center"
-                  >
-                    {showNewPassword ? (
-                      <EyeOff className="w-5 h-5 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300" />
-                    ) : (
-                      <Eye className="w-5 h-5 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300" />
-                    )}
-                  </button>
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">
-                  {t('events.confirmPassword')}
+                  {t('events.customerPhone', 'Customer Phone')} ({t('common.optional')})
                 </label>
                 <Input
-                  type={showNewPassword ? 'text' : 'password'}
-                  value={editForm.confirm_new_password}
-                  onChange={(e) => setEditForm(prev => ({ ...prev, confirm_new_password: e.target.value }))}
-                  placeholder={t('events.confirmPasswordPlaceholder')}
-                  leftIcon={<Lock className="w-5 h-5 text-neutral-400" />}
+                  type="tel"
+                  value={editForm.customer_phone}
+                  onChange={(e) => setEditForm(prev => ({ ...prev, customer_phone: e.target.value }))}
+                  placeholder={t('events.customerPhonePlaceholder', '+1 555 555 1234')}
                 />
               </div>
-            </div>
-          )}
+            )}
 
-          <div className="rounded-lg border border-neutral-200 dark:border-neutral-700 p-3 text-sm text-neutral-600 dark:text-neutral-300">
-            {t('nasFolder.manageInPhotos')}
-          </div>
-
-          {/* Photo Cap */}
-          <div>
-            <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">
-              {t('events.photoCap', 'Photo Limit')}
-            </label>
-            <div className="flex items-center gap-2">
-              <input
-                type="number"
-                value={editForm.photo_cap}
-                onChange={(e) => setEditForm(prev => ({ ...prev, photo_cap: parseInt(e.target.value) || 0 }))}
-                min={0}
-                // events.photo_cap is a signed 32-bit int (migration 074).
-                // Without an explicit max, input[type=number] reports
-                // aria-valuemax="0", and an out-of-range value only fails at
-                // INSERT.
-                max={2147483647}
-                className="w-24 px-3 py-2 border border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-accent-dark"
-              />
-              <span className="text-xs text-neutral-500 dark:text-neutral-400">
-                {t('events.photoCapHelp', 'Maximum number of photos allowed. 0 = unlimited')}
-              </span>
-            </div>
-          </div>
-
-          {/* Default Photo Sort */}
-          <div>
-            <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">
-              {t('photoSort.defaultSort', 'Default Photo Sort')}
-            </label>
-            <select
-              value={editForm.default_photo_sort}
-              onChange={(e) => setEditForm(prev => ({ ...prev, default_photo_sort: e.target.value }))}
-              className="w-full px-3 py-2 border border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-accent-dark"
-            >
-              <option value="upload_date_desc">{t('photoSort.uploadDateNewest', 'Upload Date (Newest First)')}</option>
-              <option value="upload_date_asc">{t('photoSort.uploadDateOldest', 'Upload Date (Oldest First)')}</option>
-              <option value="capture_date_desc">{t('photoSort.captureDateNewest', 'Date Taken (Newest First)')}</option>
-              <option value="capture_date_asc">{t('photoSort.captureDateOldest', 'Date Taken (Oldest First)')}</option>
-              <option value="filename_asc">{t('photoSort.filenameAZ', 'Filename (A-Z)')}</option>
-              <option value="filename_desc">{t('photoSort.filenameZA', 'Filename (Z-A)')}</option>
-            </select>
-          </div>
-
-          <div>
-            <label className="flex items-center">
-              <input
-                type="checkbox"
-                checked={editForm.allow_user_uploads}
-                onChange={(e) => setEditForm(prev => ({ ...prev, allow_user_uploads: e.target.checked }))}
-                className="w-4 h-4 text-accent border-neutral-300 dark:border-neutral-600 rounded focus:ring-primary-500"
-              />
-              <span className="ml-2 text-sm text-neutral-700 dark:text-neutral-300">{t('events.allowUserUploads')}</span>
-            </label>
-            <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1 ml-6">
-              {t('events.allowUserUploadsHelp')}
-            </p>
-          </div>
-
-          {editForm.allow_user_uploads && (
             <div>
               <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">
-                {t('events.uploadCategory')}
+                {t('events.expirationDate')}
               </label>
-              <select
-                value={editForm.upload_category_id || ''}
-                onChange={(e) => setEditForm(prev => ({
-                  ...prev,
-                  upload_category_id: e.target.value ? parseInt(e.target.value) : null
-                }))}
-                className="w-full px-3 py-2 border border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-accent-dark"
-              >
-                <option value="">{t('events.selectCategory')}</option>
-                {categories?.map(category => (
-                  <option key={category.id} value={category.id}>
-                    {categoryLabel(category, t)}
-                  </option>
-                ))}
-              </select>
-              <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1">
-                {t('events.uploadCategoryHelp')}
-              </p>
+              <LocalizedDateInput
+                value={editForm.expires_at}
+                onChange={(iso) => setEditForm(prev => ({ ...prev, expires_at: iso }))}
+                min={format(new Date(), 'yyyy-MM-dd')}
+              />
             </div>
-          )}
+          </div>
 
-          {/* Reveal mode (#838) — only meaningful with guest uploads */}
-          {editForm.allow_user_uploads && (
-            <div>
-              <label className="flex items-center">
-                <input
-                  type="checkbox"
-                  checked={editForm.reveal_mode}
-                  onChange={(e) => setEditForm(prev => ({ ...prev, reveal_mode: e.target.checked }))}
-                  className="w-4 h-4 text-accent border-neutral-300 dark:border-neutral-600 rounded focus:ring-primary-500"
-                />
-                <span className="ml-2 text-sm text-neutral-700 dark:text-neutral-300">
-                  {t('events.revealMode', 'Reveal mode (hide gallery until reveal)')}
-                </span>
-              </label>
-              <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1 ml-6">
-                {t('events.revealModeHelp', 'Guests can upload but see no photos until you reveal the gallery — manually or at the scheduled time. Slideshow and client access keep working.')}
-              </p>
-              {editForm.reveal_mode && (
-                <div className="mt-2 ml-6">
-                  <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">
-                    {t('events.revealAt', 'Scheduled reveal (optional)')}
-                  </label>
+          <SettingsDisclosure title={t('events.editSections.access')}>
+            <div className="space-y-4">
+              {/* Hero Photo Selection */}
+              <HeroPhotoSelector
+                photos={photos || []}
+                currentHeroPhotoId={editForm.hero_photo_id}
+                onSelect={(photoId) => setEditForm(prev => ({ ...prev, hero_photo_id: photoId }))}
+                isEditing={isEditing}
+              />
+
+              {/* Per-event social-share opt-in (#474). Toggle is
+                  disabled when no hero photo is picked — there's
+                  nothing to surface as the cover. The help text
+                  deliberately spells out the public-by-design
+                  consequence so an admin doesn't flip this on for
+                  a sensitive gallery without realising what they're
+                  sharing with link-preview crawlers. */}
+              <div className="ml-6 mt-3">
+                <label className={`flex items-start gap-2 cursor-pointer ${editForm.hero_photo_id ? '' : 'opacity-60 cursor-not-allowed'}`}>
                   <input
-                    type="datetime-local"
-                    value={editForm.reveal_at}
-                    onChange={(e) => setEditForm(prev => ({ ...prev, reveal_at: e.target.value }))}
-                    className="px-3 py-2 border border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 rounded-lg focus:ring-2 focus:ring-primary-500"
+                    type="checkbox"
+                    className="mt-0.5 rounded border-neutral-300 dark:border-neutral-600 text-accent focus:ring-primary-500"
+                    checked={editForm.og_image_share_enabled === true}
+                    disabled={!editForm.hero_photo_id}
+                    onChange={(e) => setEditForm(prev => ({ ...prev, og_image_share_enabled: e.target.checked }))}
                   />
-                  <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1">
-                    {t('events.revealAtHelp', 'Leave empty to reveal manually with the "Reveal now" button.')}
-                  </p>
+                  <span className="text-sm">
+                    <span className="font-medium text-neutral-900 dark:text-neutral-100">
+                      {t('events.ogShare.title', 'Use hero photo as social-share preview')}
+                    </span>
+                    <span className="block text-xs text-neutral-600 dark:text-neutral-400 mt-0.5">
+                      {editForm.hero_photo_id
+                        ? t('events.ogShare.help', 'When this gallery URL is shared on social platforms, the link preview will show the hero photo above. The thumbnail is fetched unauthenticated by link-preview crawlers — anyone with the URL effectively makes this image public. Off by default; pick a hero you are comfortable surfacing publicly before enabling.')
+                        : t('events.ogShare.heroRequired', 'Pick a hero photo above first — this option uses it as the social preview image.')}
+                    </span>
+                  </span>
+                </label>
+              </div>
+
+              {/* Hero Image Focal Point Picker (#162) */}
+              {editForm.hero_photo_id && (() => {
+                const heroPhoto = (photos || []).find((p) => p.id === editForm.hero_photo_id);
+                const heroImageUrl = heroPhoto?.thumbnail_url || heroPhoto?.url;
+                if (!heroImageUrl) return null;
+                return (
+                  <div className="ml-6 mt-2">
+                    <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">
+                      {t('events.heroImageAnchor', 'Hero Image Crop Position')}
+                    </label>
+                    <p className="text-xs text-neutral-500 dark:text-neutral-400 mb-2">
+                      {t('events.heroImageAnchorDescription', 'Click on the image to set the focal point for cropping.')}
+                    </p>
+                    <FocalPointPicker
+                      imageUrl={heroImageUrl}
+                      currentValue={editForm.hero_image_anchor}
+                      onChange={(value) => setEditForm(prev => ({ ...prev, hero_image_anchor: value }))}
+                      slug={event.slug}
+                    />
+                  </div>
+                );
+              })()}
+            </div>
+            <div className="space-y-4">
+              <div>
+                <label className="flex items-start gap-2">
+                  <input
+                    type="checkbox"
+                    className="mt-1 w-4 h-4 text-accent border-neutral-300 dark:border-neutral-600 rounded focus:ring-primary-500"
+                    checked={editForm.require_password}
+                    onChange={(e) => {
+                      const checked = e.target.checked;
+                      setEditForm(prev => ({
+                        ...prev,
+                        require_password: checked,
+                        new_password: checked ? prev.new_password : '',
+                        confirm_new_password: checked ? prev.confirm_new_password : '',
+                      }));
+                      if (!checked) {
+                        setShowNewPassword(false);
+                      }
+                    }}
+                  />
+                  <div>
+                    <span className="text-sm font-medium text-neutral-700 dark:text-neutral-300">{t('events.requirePasswordToggle')}</span>
+                    <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1">
+                      {t('events.requirePasswordToggleHelp', 'Disable this if you want to share the gallery without a password. Anyone with the link will be able to view the photos.')}
+                    </p>
+                  </div>
+                </label>
+
+                {!editForm.require_password && (
+                  <div className="mt-2 rounded-md border border-orange-200 dark:border-orange-800 bg-orange-50 dark:bg-orange-900/30 p-3 text-xs text-orange-800 dark:text-orange-300">
+                    {t('events.publicGalleryWarning', 'Public galleries are accessible to anyone with the link. Consider enabling download watermarks and monitoring activity.')}
+                  </div>
+                )}
+              </div>
+
+              {editForm.require_password && (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">
+                      {t('events.newPasswordLabel', 'New gallery password')}
+                    </label>
+                    <div className="relative">
+                      <Input
+                        type={showNewPassword ? 'text' : 'password'}
+                        value={editForm.new_password}
+                        onChange={(e) => setEditForm(prev => ({ ...prev, new_password: e.target.value }))}
+                        placeholder={t('events.enterPassword')}
+                        leftIcon={<Lock className="w-5 h-5 text-neutral-400" />}
+                        className="pr-10"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowNewPassword(!showNewPassword)}
+                        className="absolute inset-y-0 right-0 pr-3 flex items-center"
+                      >
+                        {showNewPassword ? (
+                          <EyeOff className="w-5 h-5 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300" />
+                        ) : (
+                          <Eye className="w-5 h-5 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300" />
+                        )}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">
+                      {t('events.confirmPassword')}
+                    </label>
+                    <Input
+                      type={showNewPassword ? 'text' : 'password'}
+                      value={editForm.confirm_new_password}
+                      onChange={(e) => setEditForm(prev => ({ ...prev, confirm_new_password: e.target.value }))}
+                      placeholder={t('events.confirmPasswordPlaceholder')}
+                      leftIcon={<Lock className="w-5 h-5 text-neutral-400" />}
+                    />
+                  </div>
                 </div>
               )}
+
             </div>
-          )}
+          </SettingsDisclosure>
 
           {/* Feedback Settings */}
-          <div className="mt-4 pt-4 border-t border-neutral-200 dark:border-neutral-700">
-            <h3 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100 mb-3">{t('feedback.settings.title', 'Guest Feedback Settings')}</h3>
+          <SettingsDisclosure title={t('events.editSections.feedback')}>
             <FeedbackSettings
               settings={feedbackSettings}
               onChange={setFeedbackSettings}
+              compact
             />
-          </div>
+          </SettingsDisclosure>
 
-          {/* Promotional Banner Override (#440) — three-way: inherit / custom / off */}
-          <div className="mt-4 pt-4 border-t border-neutral-200 dark:border-neutral-700">
-            <h3 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100 mb-3">
-              {t('events.promoBanner.title', 'Promotional Banner')}
-            </h3>
-            <p className="text-xs text-neutral-500 dark:text-neutral-400 mb-3">
-              {t('events.promoBanner.help', 'Choose how this gallery handles the promotional banner. "Inherit" uses your global default; "Custom" overrides it for this event; "Off" hides it entirely.')}
-            </p>
-            <div className="space-y-2">
-              {(['inherit', 'custom', 'off'] as const).map((mode) => (
-                <label key={mode} className="flex items-center">
-                  <input
-                    type="radio"
-                    name="promo_mode"
-                    value={mode}
-                    checked={editForm.promo_mode === mode}
-                    onChange={() => setEditForm(prev => ({ ...prev, promo_mode: mode }))}
-                    className="w-4 h-4 text-accent border-neutral-300 dark:border-neutral-600 focus:ring-primary-500"
-                  />
-                  <span className="ml-2 text-sm text-neutral-700 dark:text-neutral-300">
-                    {t(`events.promoBanner.mode_${mode}`, mode === 'inherit' ? 'Inherit global default' : mode === 'custom' ? 'Custom override for this event' : 'Off (hide for this event)')}
-                  </span>
+          <SettingsDisclosure title={t('events.editSections.galleryContent')}>
+            <div className="space-y-4">
+              <div className="rounded-lg border border-neutral-200 dark:border-neutral-700 p-3 text-sm text-neutral-600 dark:text-neutral-300">
+                {t('nasFolder.manageInPhotos')}
+              </div>
+
+              {/* Photo Cap */}
+              <div>
+                <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">
+                  {t('events.photoCap', 'Photo Limit')}
                 </label>
-              ))}
-            </div>
-            {editForm.promo_mode === 'custom' && (
-              <div className="mt-3 space-y-2">
-                <textarea
-                  value={editForm.promo_markdown}
-                  onChange={(e) => setEditForm(prev => ({ ...prev, promo_markdown: e.target.value }))}
-                  rows={5}
-                  placeholder={t('events.promoBanner.placeholder', 'Markdown content (e.g. **Special offer:** [book your next session](https://example.com))')}
-                  className="w-full px-3 py-2 border border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-accent-dark font-mono text-sm"
-                />
-                {editForm.promo_markdown.trim() && (
-                  <div className="border border-neutral-200 dark:border-neutral-700 rounded-lg p-3 bg-neutral-50 dark:bg-neutral-900">
-                    <p className="text-xs uppercase tracking-wide text-neutral-500 dark:text-neutral-400 mb-2">
-                      {t('events.promoBanner.preview', 'Preview')}
-                    </p>
-                    <MarkdownContent source={editForm.promo_markdown} className="prose prose-sm dark:prose-invert max-w-none text-sm text-neutral-800 dark:text-neutral-200 prose-a:text-primary-600 dark:prose-a:text-primary-400" />
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    value={editForm.photo_cap}
+                    onChange={(e) => setEditForm(prev => ({ ...prev, photo_cap: parseInt(e.target.value) || 0 }))}
+                    min={0}
+                    // events.photo_cap is a signed 32-bit int (migration 074).
+                    // Without an explicit max, input[type=number] reports
+                    // aria-valuemax="0", and an out-of-range value only fails at
+                    // INSERT.
+                    max={2147483647}
+                    className="w-24 px-3 py-2 border border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-accent-dark"
+                  />
+                  <span className="text-xs text-neutral-500 dark:text-neutral-400">
+                    {t('events.photoCapHelp', 'Maximum number of photos allowed. 0 = unlimited')}
+                  </span>
+                </div>
+              </div>
+
+              {/* Default Photo Sort */}
+              <div>
+                <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">
+                  {t('photoSort.defaultSort', 'Default Photo Sort')}
+                </label>
+                <select
+                  value={editForm.default_photo_sort}
+                  onChange={(e) => setEditForm(prev => ({ ...prev, default_photo_sort: e.target.value }))}
+                  className="w-full px-3 py-2 border border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-accent-dark"
+                >
+                  <option value="upload_date_desc">{t('photoSort.uploadDateNewest', 'Upload Date (Newest First)')}</option>
+                  <option value="upload_date_asc">{t('photoSort.uploadDateOldest', 'Upload Date (Oldest First)')}</option>
+                  <option value="capture_date_desc">{t('photoSort.captureDateNewest', 'Date Taken (Newest First)')}</option>
+                  <option value="capture_date_asc">{t('photoSort.captureDateOldest', 'Date Taken (Oldest First)')}</option>
+                  <option value="filename_asc">{t('photoSort.filenameAZ', 'Filename (A-Z)')}</option>
+                  <option value="filename_desc">{t('photoSort.filenameZA', 'Filename (Z-A)')}</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="flex items-center">
+                  <input
+                    type="checkbox"
+                    checked={editForm.allow_user_uploads}
+                    onChange={(e) => setEditForm(prev => ({ ...prev, allow_user_uploads: e.target.checked }))}
+                    className="w-4 h-4 text-accent border-neutral-300 dark:border-neutral-600 rounded focus:ring-primary-500"
+                  />
+                  <span className="ml-2 text-sm text-neutral-700 dark:text-neutral-300">{t('events.allowUserUploads')}</span>
+                </label>
+                <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1 ml-6">
+                  {t('events.allowUserUploadsHelp')}
+                </p>
+              </div>
+
+              {editForm.allow_user_uploads && (
+                <div>
+                  <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">
+                    {t('events.uploadCategory')}
+                  </label>
+                  <select
+                    value={editForm.upload_category_id || ''}
+                    onChange={(e) => setEditForm(prev => ({
+                      ...prev,
+                      upload_category_id: e.target.value ? parseInt(e.target.value) : null
+                    }))}
+                    className="w-full px-3 py-2 border border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-accent-dark"
+                  >
+                    <option value="">{t('events.selectCategory')}</option>
+                    {categories?.map(category => (
+                      <option key={category.id} value={category.id}>
+                        {categoryLabel(category, t)}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1">
+                    {t('events.uploadCategoryHelp')}
+                  </p>
+                </div>
+              )}
+
+              {/* Reveal mode (#838) — only meaningful with guest uploads */}
+              {editForm.allow_user_uploads && (
+                <div>
+                  <label className="flex items-center">
+                    <input
+                      type="checkbox"
+                      checked={editForm.reveal_mode}
+                      onChange={(e) => setEditForm(prev => ({ ...prev, reveal_mode: e.target.checked }))}
+                      className="w-4 h-4 text-accent border-neutral-300 dark:border-neutral-600 rounded focus:ring-primary-500"
+                    />
+                    <span className="ml-2 text-sm text-neutral-700 dark:text-neutral-300">
+                      {t('events.revealMode', 'Reveal mode (hide gallery until reveal)')}
+                    </span>
+                  </label>
+                  <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1 ml-6">
+                    {t('events.revealModeHelp', 'Guests can upload but see no photos until you reveal the gallery — manually or at the scheduled time. Slideshow and client access keep working.')}
+                  </p>
+                  {editForm.reveal_mode && (
+                    <div className="mt-2 ml-6">
+                      <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">
+                        {t('events.revealAt', 'Scheduled reveal (optional)')}
+                      </label>
+                      <input
+                        type="datetime-local"
+                        value={editForm.reveal_at}
+                        onChange={(e) => setEditForm(prev => ({ ...prev, reveal_at: e.target.value }))}
+                        className="px-3 py-2 border border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 rounded-lg focus:ring-2 focus:ring-primary-500"
+                      />
+                      <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1">
+                        {t('events.revealAtHelp', 'Leave empty to reveal manually with the "Reveal now" button.')}
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+
+              {/* Promotional Banner Override (#440) — three-way: inherit / custom / off */}
+              <div className="border-t border-neutral-200 pt-4 dark:border-neutral-700">
+                <h3 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100 mb-3">
+                  {t('events.promoBanner.title', 'Promotional Banner')}
+                </h3>
+                <p className="text-xs text-neutral-500 dark:text-neutral-400 mb-3">
+                  {t('events.promoBanner.help', 'Choose how this gallery handles the promotional banner. "Inherit" uses your global default; "Custom" overrides it for this event; "Off" hides it entirely.')}
+                </p>
+                <div className="space-y-2">
+                  {(['inherit', 'custom', 'off'] as const).map((mode) => (
+                    <label key={mode} className="flex items-center">
+                      <input
+                        type="radio"
+                        name="promo_mode"
+                        value={mode}
+                        checked={editForm.promo_mode === mode}
+                        onChange={() => setEditForm(prev => ({ ...prev, promo_mode: mode }))}
+                        className="w-4 h-4 text-accent border-neutral-300 dark:border-neutral-600 focus:ring-primary-500"
+                      />
+                      <span className="ml-2 text-sm text-neutral-700 dark:text-neutral-300">
+                        {t(`events.promoBanner.mode_${mode}`, mode === 'inherit' ? 'Inherit global default' : mode === 'custom' ? 'Custom override for this event' : 'Off (hide for this event)')}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+                {editForm.promo_mode === 'custom' && (
+                  <div className="mt-3 space-y-2">
+                    <textarea
+                      value={editForm.promo_markdown}
+                      onChange={(e) => setEditForm(prev => ({ ...prev, promo_markdown: e.target.value }))}
+                      rows={5}
+                      placeholder={t('events.promoBanner.placeholder', 'Markdown content (e.g. **Special offer:** [book your next session](https://example.com))')}
+                      className="w-full px-3 py-2 border border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-accent-dark font-mono text-sm"
+                    />
+                    {editForm.promo_markdown.trim() && (
+                      <div className="border border-neutral-200 dark:border-neutral-700 rounded-lg p-3 bg-neutral-50 dark:bg-neutral-900">
+                        <p className="text-xs uppercase tracking-wide text-neutral-500 dark:text-neutral-400 mb-2">
+                          {t('events.promoBanner.preview', 'Preview')}
+                        </p>
+                        <MarkdownContent source={editForm.promo_markdown} className="prose prose-sm dark:prose-invert max-w-none text-sm text-neutral-800 dark:text-neutral-200 prose-a:text-primary-600 dark:prose-a:text-primary-400" />
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
-            )}
-          </div>
 
-          {/* Info Banner Override (#932) — three-way: inherit / custom / off.
-              Mirrors the promotional override above, but this banner renders
-              at the TOP of the gallery, above the photos. */}
-          <div className="mt-4 pt-4 border-t border-neutral-200 dark:border-neutral-700">
-            <h3 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100 mb-3">
-              {t('events.infoBanner.title', 'Info Banner')}
-            </h3>
-            <p className="text-xs text-neutral-500 dark:text-neutral-400 mb-3">
-              {t('events.infoBanner.help', 'A short note shown above the photos in this gallery. "Inherit" uses your global default; "Custom" overrides it for this event; "Off" hides it entirely.')}
-            </p>
-            <div className="space-y-2">
-              {(['inherit', 'custom', 'off'] as const).map((mode) => (
-                <label key={mode} className="flex items-center">
-                  <input
-                    type="radio"
-                    name="info_mode"
-                    value={mode}
-                    checked={editForm.info_mode === mode}
-                    onChange={() => setEditForm(prev => ({ ...prev, info_mode: mode }))}
-                    className="w-4 h-4 text-accent border-neutral-300 dark:border-neutral-600 focus:ring-primary-500"
-                  />
-                  <span className="ml-2 text-sm text-neutral-700 dark:text-neutral-300">
-                    {t(`events.infoBanner.mode_${mode}`, mode === 'inherit' ? 'Inherit global default' : mode === 'custom' ? 'Custom override for this event' : 'Off (hide for this event)')}
-                  </span>
-                </label>
-              ))}
-            </div>
-            {editForm.info_mode === 'custom' && (
-              <div className="mt-3 space-y-2">
-                <textarea
-                  value={editForm.info_markdown}
-                  onChange={(e) => setEditForm(prev => ({ ...prev, info_markdown: e.target.value }))}
-                  rows={3}
-                  placeholder={t('events.infoBanner.placeholder', 'Use the menu button in the top-left corner to filter the photos.')}
-                  className="w-full px-3 py-2 border border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-accent-dark font-mono text-sm"
-                />
-                {editForm.info_markdown.trim() && (
-                  <div className="border border-neutral-200 dark:border-neutral-700 rounded-lg p-3 bg-neutral-50 dark:bg-neutral-900">
-                    <p className="text-xs uppercase tracking-wide text-neutral-500 dark:text-neutral-400 mb-2">
-                      {t('events.infoBanner.preview', 'Preview')}
-                    </p>
-                    <MarkdownContent source={editForm.info_markdown} className="prose prose-sm dark:prose-invert max-w-none text-sm text-neutral-800 dark:text-neutral-200 prose-a:text-primary-600 dark:prose-a:text-primary-400" />
+              {/* Info Banner Override (#932) — three-way: inherit / custom / off.
+                  Mirrors the promotional override above, but this banner renders
+                  at the TOP of the gallery, above the photos. */}
+              <div className="border-t border-neutral-200 pt-4 dark:border-neutral-700">
+                <h3 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100 mb-3">
+                  {t('events.infoBanner.title', 'Info Banner')}
+                </h3>
+                <p className="text-xs text-neutral-500 dark:text-neutral-400 mb-3">
+                  {t('events.infoBanner.help', 'A short note shown above the photos in this gallery. "Inherit" uses your global default; "Custom" overrides it for this event; "Off" hides it entirely.')}
+                </p>
+                <div className="space-y-2">
+                  {(['inherit', 'custom', 'off'] as const).map((mode) => (
+                    <label key={mode} className="flex items-center">
+                      <input
+                        type="radio"
+                        name="info_mode"
+                        value={mode}
+                        checked={editForm.info_mode === mode}
+                        onChange={() => setEditForm(prev => ({ ...prev, info_mode: mode }))}
+                        className="w-4 h-4 text-accent border-neutral-300 dark:border-neutral-600 focus:ring-primary-500"
+                      />
+                      <span className="ml-2 text-sm text-neutral-700 dark:text-neutral-300">
+                        {t(`events.infoBanner.mode_${mode}`, mode === 'inherit' ? 'Inherit global default' : mode === 'custom' ? 'Custom override for this event' : 'Off (hide for this event)')}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+                {editForm.info_mode === 'custom' && (
+                  <div className="mt-3 space-y-2">
+                    <textarea
+                      value={editForm.info_markdown}
+                      onChange={(e) => setEditForm(prev => ({ ...prev, info_markdown: e.target.value }))}
+                      rows={3}
+                      placeholder={t('events.infoBanner.placeholder', 'Use the menu button in the top-left corner to filter the photos.')}
+                      className="w-full px-3 py-2 border border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-accent-dark font-mono text-sm"
+                    />
+                    {editForm.info_markdown.trim() && (
+                      <div className="border border-neutral-200 dark:border-neutral-700 rounded-lg p-3 bg-neutral-50 dark:bg-neutral-900">
+                        <p className="text-xs uppercase tracking-wide text-neutral-500 dark:text-neutral-400 mb-2">
+                          {t('events.infoBanner.preview', 'Preview')}
+                        </p>
+                        <MarkdownContent source={editForm.info_markdown} className="prose prose-sm dark:prose-invert max-w-none text-sm text-neutral-800 dark:text-neutral-200 prose-a:text-primary-600 dark:prose-a:text-primary-400" />
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
-            )}
-          </div>
+            </div>
+          </SettingsDisclosure>
 
           {/* Download Protection Settings */}
-          <div className="mt-4 pt-4 border-t border-neutral-200 dark:border-neutral-700">
-            <h3 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100 mb-3 flex items-center gap-2">
-              <Shield className="w-4 h-4 text-accent" />
-              {t('events.downloadProtection', 'Download Protection')}
-            </h3>
-
+          <SettingsDisclosure title={t('events.editSections.download')}>
             <div className="space-y-3">
               {(['original', 'delivery'] as const).map((kind) => {
                 const key = kind === 'original' ? 'allow_original_downloads' : 'allow_delivery_downloads';
@@ -589,16 +629,12 @@ export const EventInformationCard: React.FC<EventInformationCardProps> = ({
               <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-2">
                 {t('events.protectionInfo', 'Protection features help prevent unauthorized downloads but cannot block all methods.')}
               </p>
+              {downloadResolution}
             </div>
-          </div>
+          </SettingsDisclosure>
 
           {/* Hero Logo Settings */}
-          <div className="mt-4 pt-4 border-t border-neutral-200 dark:border-neutral-700">
-            <h3 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100 mb-3 flex items-center gap-2">
-              <Layout className="w-4 h-4 text-accent" />
-              {t('events.heroLogoSettings', 'Hero Logo Settings')}
-            </h3>
-
+          <SettingsDisclosure title={t('events.editSections.branding')}>
             <div className="space-y-3">
               <div>
                 <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1 flex items-center gap-1">
@@ -753,7 +789,7 @@ export const EventInformationCard: React.FC<EventInformationCardProps> = ({
                 {t('events.heroLogoInfo', 'These settings apply when the gallery uses the Hero layout. You can hide the logo or customize its size and position.')}
               </p>
             </div>
-          </div>
+          </SettingsDisclosure>
         </div>
       ) : (
         <dl className="space-y-4">
