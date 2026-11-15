@@ -9,12 +9,17 @@ function isLoopback(address) {
   return value === '127.0.0.1' || value === '::1';
 }
 
+function isPermittedBridgeRoute(method, path) {
+  const requestMethod = String(method || '').toUpperCase();
+  const requestPath = String(path || '');
+  const photoRoute = /^\/events\/\d+\/photos\/?$/.test(requestPath);
+  const metadataRoute = requestMethod === 'GET' && /^\/events\/\d+\/metadata\/?$/.test(requestPath);
+  return (['GET', 'POST'].includes(requestMethod) && photoRoute) || metadataRoute;
+}
+
 async function integratedBridgeAuth(req, res, next) {
   const enabled = /^(1|true)$/i.test(process.env.PICPEAK_INTEGRATED_BRIDGE || '');
-  const method = String(req.method || '').toUpperCase();
-  const path = String(req.path || '');
-  const permittedRoute = ['GET', 'POST'].includes(method)
-    && /^\/events\/\d+\/photos\/?$/.test(path);
+  const permittedRoute = isPermittedBridgeRoute(req.method, req.path);
   const remoteAddress = req.socket?.remoteAddress || req.connection?.remoteAddress;
 
   if (enabled && permittedRoute && req.headers?.[HEADER] === '1' && isLoopback(remoteAddress)) {
@@ -42,4 +47,4 @@ async function integratedBridgeAuth(req, res, next) {
   return adminAuth(req, res, next);
 }
 
-module.exports = { integratedBridgeAuth, isLoopback };
+module.exports = { integratedBridgeAuth, isLoopback, isPermittedBridgeRoute };
