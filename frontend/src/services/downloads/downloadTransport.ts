@@ -3,6 +3,7 @@ import {
   getGuestIdentity,
   getGuestToken,
 } from "../../utils/guestIdentityStorage";
+import { safeGetItem } from "../../utils/safeStorage";
 import type { DownloadAsset, DownloadTask, DownloadTransport } from "./types";
 const directUrls = new Map<string, string>();
 
@@ -71,11 +72,7 @@ function directChunk(
 }
 
 export function identityFor(slug: string): string {
-  try {
-    if (sessionStorage.getItem(`gallery_access_level_${slug}`) === 'delivery') return `delivery:${slug}`;
-  } catch {
-    // Storage restrictions should not prevent the ordinary download fallback.
-  }
+  if (safeGetItem('session', `gallery_access_level_${slug}`) === 'delivery') return `delivery:${slug}`;
   const guest = getGuestIdentity(slug);
   return guest ? `guest:${guest.id}:${guest.identifier}` : "anonymous";
 }

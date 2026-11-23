@@ -2,20 +2,15 @@ import { DownloadEngine } from "./downloadEngine";
 import { IndexedDownloadRepository } from "./downloadRepository";
 import { downloadTransport, identityFor } from "./downloadTransport";
 import { getGuestIdentity } from "../../utils/guestIdentityStorage";
+import { safeGetItem, safeSetItem } from "../../utils/safeStorage";
 import type { DownloadQueueItem } from "../../utils/downloadQueue";
 function deviceId() {
-  const fresh = () =>
-    `device-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-  try {
-    let value = localStorage.getItem("picflow-download-device");
-    if (!value) {
-      value = fresh();
-      localStorage.setItem("picflow-download-device", value);
-    }
-    return value;
-  } catch {
-    return fresh();
+  let value = safeGetItem('local', 'picflow-download-device');
+  if (!value) {
+    value = `device-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+    safeSetItem('local', 'picflow-download-device', value);
   }
+  return value;
 }
 export const customerDownloads = new DownloadEngine(
   new IndexedDownloadRepository(),

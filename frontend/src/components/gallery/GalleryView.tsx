@@ -54,10 +54,12 @@ import { versionedRetouchUrl } from '../../utils/versionedRetouchUrl';
 import { photoDisplayFilename } from '../../utils/photoFilename';
 import { shouldShowGalleryLogoutControl } from '../../utils/gallerySessionControls';
 import { galleryRefreshInterval } from '../../utils/galleryRefreshInterval';
+import { safeGetItem, safeSetItem } from '../../utils/safeStorage';
 import type { RetouchBatchPhotoState } from './photoSelection';
 import { switchWorkflowFilter } from './workflowFilterSelection';
 
 const UserPhotoUpload = React.lazy(() => import('./UserPhotoUpload').then((module) => ({ default: module.UserPhotoUpload })));
+let pageViewGuestId: string | null = null;
 
 interface GalleryViewProps {
   slug: string;
@@ -166,12 +168,13 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ slug, event, requiresP
 
   // Generate a unique guest ID for this session
   useEffect(() => {
-    // Use existing guest ID from localStorage or generate new one
-    let storedGuestId = localStorage.getItem('gallery_guest_id');
+    // Keep one identity for this page view when browser storage is unavailable.
+    let storedGuestId = safeGetItem('local', 'gallery_guest_id') || pageViewGuestId;
     if (!storedGuestId) {
       storedGuestId = `guest_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-      localStorage.setItem('gallery_guest_id', storedGuestId);
+      safeSetItem('local', 'gallery_guest_id', storedGuestId);
     }
+    pageViewGuestId = storedGuestId;
     setGuestId(storedGuestId);
   }, []);
 

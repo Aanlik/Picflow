@@ -116,6 +116,8 @@ scripts/e2e-local.sh
 tests/
 bridge/tests/
 backend/src/services/*.test.js
+backend/src/**/*.test.*
+frontend/src/**/*.test.*
 docs/acceptance-*
 docs/nas-material-folder-associations.md
 frontend/src/docs/IMAGE_PROTECTION.md

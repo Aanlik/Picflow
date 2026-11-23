@@ -7,6 +7,7 @@ import {
 } from '../utils/galleryAuthStorage';
 import { clearGuestIdentity, getGuestToken } from '../utils/guestIdentityStorage';
 import { getApiBaseUrl } from '../utils/url';
+import { safeRemoveItem } from '../utils/safeStorage';
 
 // Maintenance mode callback
 let maintenanceModeCallback: ((enabled: boolean) => void) | null = null;
@@ -181,7 +182,9 @@ api.interceptors.response.use(
           // Don't clear tokens for image requests - they might just need a retry
           if (!isImageRequest && galleryMatch && galleryMatch[1]) {
             const gallerySlug = galleryMatch[1];
-            if (!/\/download-history(?:\/|$)/.test(error.config?.url || '')) sessionStorage.removeItem(`gallery_event_${gallerySlug}`);
+            if (!/\/download-history(?:\/|$)/.test(error.config?.url || '')) {
+              safeRemoveItem('session', `gallery_event_${gallerySlug}`);
+            }
             // A guest identity the server no longer accepts must not stay on
             // the device. The JWT can be perfectly valid and unexpired while
             // its row has been soft-deleted or merged away by an admin, so no

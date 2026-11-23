@@ -109,7 +109,13 @@ class S3StorageAdapter extends stream.EventEmitter {
         // SDK's default agent behavior, unchanged.
         ...(this.config.httpAgent && { httpAgent: this.config.httpAgent }),
         ...(this.config.httpsAgent && { httpsAgent: this.config.httpsAgent })
-      }
+      },
+      // With the SDK's default WHEN_SUPPORTED behavior, older Smithy
+      // ChecksumStreams can leave a half-read GetObject response paused when
+      // its Body is destroyed. Cancelled downloads then retain pooled sockets
+      // indefinitely. Validate response checksums only when explicitly
+      // requested; request/upload checksums are unaffected.
+      responseChecksumValidation: 'WHEN_REQUIRED'
     };
     
     // Add credentials if provided

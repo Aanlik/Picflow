@@ -1,19 +1,8 @@
 import { clearImageBlobCache } from './imageBlobCache';
+import { safeGetItem, safeKeys, safeRemoveItem, safeSetItem } from './safeStorage';
 
 const TOKEN_STORAGE_PREFIX = 'gallery_token_';
 const ACTIVE_SLUG_KEY = 'gallery_active_slug';
-
-const isBrowser = typeof window !== 'undefined';
-
-const getSessionStorage = (): Storage | null => {
-  if (!isBrowser) return null;
-  try {
-    return window.sessionStorage;
-  } catch (error) {
-    console.warn('Session storage unavailable', error);
-    return null;
-  }
-};
 
 const extractSlugFromPath = (path: string): string | null => {
   if (!path) return null;
@@ -22,78 +11,62 @@ const extractSlugFromPath = (path: string): string | null => {
 };
 
 export const inferGallerySlugFromLocation = (): string | null => {
-  if (!isBrowser) return null;
-  return extractSlugFromPath(window.location.pathname);
+  if (typeof window === 'undefined') return null;
+  try {
+    return extractSlugFromPath(window.location.pathname);
+  } catch {
+    return null;
+  }
 };
 
 export const setActiveGallerySlug = (slug: string | null) => {
-  const storage = getSessionStorage();
-  if (!storage) return;
   if (slug) {
-    storage.setItem(ACTIVE_SLUG_KEY, slug);
+    safeSetItem('session', ACTIVE_SLUG_KEY, slug);
   } else {
-    storage.removeItem(ACTIVE_SLUG_KEY);
+    safeRemoveItem('session', ACTIVE_SLUG_KEY);
   }
 };
 
 export const getActiveGallerySlug = (): string | null => {
-  const storage = getSessionStorage();
-  if (!storage) return null;
-  return storage.getItem(ACTIVE_SLUG_KEY);
+  return safeGetItem('session', ACTIVE_SLUG_KEY);
 };
 
 export const clearActiveGallerySlug = () => {
-  const storage = getSessionStorage();
-  if (!storage) return;
-  const active = storage.getItem(ACTIVE_SLUG_KEY);
+  const active = safeGetItem('session', ACTIVE_SLUG_KEY);
   if (active) clearImageBlobCache(active);
-  storage.removeItem(ACTIVE_SLUG_KEY);
+  safeRemoveItem('session', ACTIVE_SLUG_KEY);
 };
 
 export const storeGalleryToken = (slug: string, token: string) => {
-  const storage = getSessionStorage();
-  if (!storage || !slug) return;
-  if (storage.getItem(`${TOKEN_STORAGE_PREFIX}${slug}`) !== token) clearImageBlobCache(slug);
-  storage.setItem(`${TOKEN_STORAGE_PREFIX}${slug}`, token);
+  if (!slug) return;
+  const key = `${TOKEN_STORAGE_PREFIX}${slug}`;
+  if (safeGetItem('session', key) !== token) clearImageBlobCache(slug);
+  safeSetItem('session', key, token);
 };
 
 export const getGalleryToken = (slug?: string | null): string | null => {
-  const storage = getSessionStorage();
-  if (!storage) return null;
   const resolvedSlug = slug || getActiveGallerySlug() || inferGallerySlugFromLocation();
   if (!resolvedSlug) return null;
-  return storage.getItem(`${TOKEN_STORAGE_PREFIX}${resolvedSlug}`);
+  return safeGetItem('session', `${TOKEN_STORAGE_PREFIX}${resolvedSlug}`);
 };
 
 export const clearGalleryToken = (slug?: string | null) => {
-  const storage = getSessionStorage();
-  if (!storage) return;
-
   if (slug) {
     clearImageBlobCache(slug);
-    storage.removeItem(`${TOKEN_STORAGE_PREFIX}${slug}`);
+    safeRemoveItem('session', `${TOKEN_STORAGE_PREFIX}${slug}`);
     return;
   }
 
-  const active = storage.getItem(ACTIVE_SLUG_KEY);
-  if (active) storage.removeItem(`${TOKEN_STORAGE_PREFIX}${active}`);
+  const active = safeGetItem('session', ACTIVE_SLUG_KEY);
+  if (active) safeRemoveItem('session', `${TOKEN_STORAGE_PREFIX}${active}`);
   clearImageBlobCache(active || undefined);
 };
 
 export const clearAllGalleryTokens = () => {
-  const storage = getSessionStorage();
   clearImageBlobCache();
-  if (!storage) return;
-
-  const keysToRemove: string[] = [];
-  for (let i = 0; i < storage.length; i += 1) {
-    const key = storage.key(i);
-    if (key && key.startsWith(TOKEN_STORAGE_PREFIX)) {
-      keysToRemove.push(key);
-    }
-  }
-
-  keysToRemove.forEach((key) => storage.removeItem(key));
+  safeKeys('session')
+    .filter((key) => key.startsWith(TOKEN_STORAGE_PREFIX))
+    .forEach((key) => safeRemoveItem('session', key));
 };
 
 export const resolveSlugFromRequestUrl = (url?: string | null): string | null => {
