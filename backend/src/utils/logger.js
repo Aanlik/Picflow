@@ -1,6 +1,12 @@
 const winston = require('winston');
 const path = require('path');
 const fs = require('fs');
+const {
+  LOG_MAX_SIZE_BYTES,
+  LOG_MAX_FILES,
+  LOG_RETENTION_DAYS,
+  startLogRetentionCleanup,
+} = require('./logRetention');
 
 // Ensure logs directory exists.
 //
@@ -12,6 +18,9 @@ const logDir = process.env.LOG_DIR || path.join(__dirname, '../../logs');
 if (!fs.existsSync(logDir)) {
   fs.mkdirSync(logDir, { recursive: true });
 }
+
+// Keep three 10 MiB generations per log and prune rotated files older than
+// 14 days once a day, including when traffic is too low to trigger rotation.
 
 // Custom format for production logs
 const productionFormat = winston.format.combine(
@@ -43,22 +52,22 @@ const logger = winston.createLogger({
     new winston.transports.File({ 
       filename: path.join(logDir, 'error.log'), 
       level: 'error',
-      maxsize: 10 * 1024 * 1024, // 10MB
-      maxFiles: 5,
+      maxsize: LOG_MAX_SIZE_BYTES,
+      maxFiles: LOG_MAX_FILES,
       tailable: true
     }),
     new winston.transports.File({ 
       filename: path.join(logDir, 'combined.log'),
-      maxsize: 50 * 1024 * 1024, // 50MB
-      maxFiles: 10,
+      maxsize: LOG_MAX_SIZE_BYTES,
+      maxFiles: LOG_MAX_FILES,
       tailable: true
     }),
     // Separate security log for authentication and rate limiting
     new winston.transports.File({
       filename: path.join(logDir, 'security.log'),
       level: 'warn',
-      maxsize: 20 * 1024 * 1024, // 20MB
-      maxFiles: 10,
+      maxsize: LOG_MAX_SIZE_BYTES,
+      maxFiles: LOG_MAX_FILES,
       tailable: true,
       format: winston.format.combine(
         winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss.SSS' }),
@@ -79,6 +88,8 @@ const logger = winston.createLogger({
     })
   ].filter(Boolean)
 });
+
+startLogRetentionCleanup({ logDir, logger, retentionDays: LOG_RETENTION_DAYS });
 
 // Add console logging for non-production environments
 if (process.env.NODE_ENV !== 'production') {
