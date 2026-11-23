@@ -27,7 +27,25 @@ const MAX_BYTES = 2 * 1024 ** 3;
 const TTL = 24 * 60 * 60 * 1000;
 const entries = new Map();
 const preparing = new Map();
+const pendingByEvent = new Map();
+const deletingEvents = new Set();
 const lastCleanupByRoot = new Map();
+
+function eventKey(eventId) {
+  if (eventId === undefined || eventId === null || String(eventId) === '')
+    throw failure(404, 'EVENT_NOT_FOUND');
+  return `event-${crypto.createHash('sha256').update(String(eventId)).digest('hex')}`;
+}
+
+function cacheBase(sourceIsCloud) {
+  return sourceIsCloud
+    ? path.join(os.tmpdir(), 'picpeak-cloud-downloads')
+    : path.join(getStoragePath(), 'cache', 'customer-downloads');
+}
+
+function cacheRootForEvent(base, eventId) {
+  return path.join(base, eventKey(eventId));
+}
 
 function failure(status, code) {
   return Object.assign(new Error(code), { status, code });
@@ -55,32 +73,90 @@ async function prune(root, force = false) {
   const now = Date.now();
   if (!force && now - (lastCleanupByRoot.get(root) || 0) < 60000) return;
   lastCleanupByRoot.set(root, now);
-  const names = await fsp.readdir(root);
-  for (const name of names.filter((n) => /^[a-f0-9-]+\.part$/.test(n))) {
-    const file = path.join(root, name);
-    const stat = await fsp.stat(file).catch(() => null);
-    if (stat && Date.now() - stat.mtimeMs > TTL)
-      await fsp.unlink(file).catch(() => {});
+  const rootEntries = await fsp.readdir(root, { withFileTypes: true }).catch((error) => {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  });
+  // New cache entries are partitioned by project so deletion can reclaim them
+  // precisely. Flat files are the legacy layout; this sweep keeps their TTL
+  // and the byte limit intact while they age out during upgrade.
+  const directories = [root, ...rootEntries
+    .filter((entry) => entry.isDirectory() && /^event-[a-f0-9]{64}$/.test(entry.name))
+    .map((entry) => path.join(root, entry.name))];
+  const files = [];
+  for (const directory of directories) {
+    const names = await fsp.readdir(directory, { withFileTypes: true }).catch((error) => {
+      if (error.code === 'ENOENT') return [];
+      throw error;
+    });
+    for (const entry of names) {
+      if (!entry.isFile()) continue;
+      const file = path.join(directory, entry.name);
+      if (/^[a-f0-9-]+\.part$/.test(entry.name)) {
+        const stat = await fsp.stat(file).catch(() => null);
+        if (stat && Date.now() - stat.mtimeMs > TTL)
+          await fsp.unlink(file).catch(() => {});
+      } else if (/^[a-f0-9]{64}\.bin$/.test(entry.name)) {
+        const stat = await fsp.stat(file).catch(() => null);
+        if (stat) files.push({ file, ...stat });
+      }
+    }
   }
-  const files = (
-    await Promise.all(
-      names
-        .filter((n) => /^[a-f0-9]{64}\.bin$/.test(n))
-        .map(async (name) => {
-          const file = path.join(root, name);
-          const stat = await fsp.stat(file).catch(() => null);
-          return stat ? { file, ...stat } : null;
-        }),
-    )
-  )
-    .filter(Boolean)
-    .sort((a, b) => b.mtimeMs - a.mtimeMs);
+  files.sort((a, b) => b.mtimeMs - a.mtimeMs);
   let kept = 0;
   for (const item of files) {
     if (Date.now() - item.mtimeMs > TTL || kept + item.size > MAX_BYTES)
       await fsp.unlink(item.file).catch(() => {});
     else kept += item.size;
   }
+}
+
+async function sweepExpiredCache() {
+  await Promise.all([
+    prune(cacheBase(false), true),
+    prune(cacheBase(true), true),
+  ]);
+}
+
+function trackPending(eventId, promise) {
+  const id = String(eventId);
+  const pending = pendingByEvent.get(id) || new Set();
+  pending.add(promise);
+  pendingByEvent.set(id, pending);
+  promise.finally(() => {
+    pending.delete(promise);
+    if (pending.size === 0) pendingByEvent.delete(id);
+  }).catch(() => {});
+  return promise;
+}
+
+async function prepareForEventDeletion(eventId) {
+  const id = String(eventId);
+  deletingEvents.add(id);
+  // Fence new renders before draining existing ones, so a late completion
+  // cannot recreate a cache directory after the deletion sweep.
+  while (pendingByEvent.has(id)) {
+    await Promise.allSettled([...pendingByEvent.get(id)]);
+  }
+}
+
+function releaseEventDeletion(eventId) {
+  deletingEvents.delete(String(eventId));
+}
+
+async function removeProjectCache(eventId) {
+  const id = String(eventId);
+  const name = eventKey(eventId);
+  await Promise.all([
+    fsp.rm(path.join(cacheBase(false), name), { recursive: true, force: true }),
+    fsp.rm(path.join(cacheBase(true), name), { recursive: true, force: true }),
+  ]);
+  for (const [key, asset] of entries) {
+    if (String(asset.eventId) === id) entries.delete(key);
+  }
+  // Legacy flat files have no persisted project mapping. Expired ones are
+  // safe to remove under the existing 24-hour cache contract.
+  await sweepExpiredCache();
 }
 
 async function sourceInfo(event, photo) {
@@ -141,13 +217,12 @@ async function sourceInfo(event, photo) {
   };
 }
 
-async function prepare(event, photo, box, watermark) {
+async function prepareAsset(event, photo, box, watermark) {
   const source = await sourceInfo(event, photo);
-  const root = source.cloud
-    ? path.join(os.tmpdir(), 'picpeak-cloud-downloads')
-    : path.join(getStoragePath(), 'cache', 'customer-downloads');
+  const base = cacheBase(source.cloud);
+  const root = cacheRootForEvent(base, event.id);
   await fsp.mkdir(root, { recursive: true });
-  await prune(root);
+  await prune(base);
   if (source.stat.size > MAX_BYTES) throw failure(413, 'DOWNLOAD_TOO_LARGE');
   const key = JSON.stringify([
     root,
@@ -205,6 +280,7 @@ async function prepare(event, photo, box, watermark) {
             etag: `"sha256-${sha}"`,
             content_type: resolvePhotoContentType(photo),
             cloudObjectKey: source.cloudObjectKey || null,
+            eventId: String(event.id),
           };
           entries.set(key, asset);
           while (entries.size > 200)
@@ -221,6 +297,12 @@ async function prepare(event, photo, box, watermark) {
   }
   const filename = pickRawDownloadName(photo, await getUseOriginalFilenames());
   return { ...data, filename };
+}
+
+async function prepare(event, photo, box, watermark) {
+  const eventId = String(event?.id ?? '');
+  if (deletingEvents.has(eventId)) throw failure(404, 'EVENT_NOT_FOUND');
+  return trackPending(eventId, prepareAsset(event, photo, box, watermark));
 }
 
 function rangeOf(value, size) {
@@ -330,4 +412,15 @@ async function respond(req, res, event, photo, box, watermark) {
     { context: 'managed customer download' },
   );
 }
-module.exports = { prepare, respond, publicMetadata, customerMetadata, rangeOf, requiresCloudDelivery };
+module.exports = {
+  prepare,
+  respond,
+  publicMetadata,
+  customerMetadata,
+  rangeOf,
+  requiresCloudDelivery,
+  prepareForEventDeletion,
+  releaseEventDeletion,
+  removeProjectCache,
+  sweepExpiredCache,
+};

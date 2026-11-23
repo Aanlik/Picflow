@@ -16,7 +16,12 @@ const { scheduledTask } = require('./scheduledTask');
 const logger = require('../utils/logger');
 const downloadJobService = require('./downloadJobService');
 
-const task = scheduledTask(runDownloadJobCleanup, { schedule: '7,27,47 * * * *' });
+// Clean once shortly after boot as well as on the 20-minute cadence. This
+// reclaims expired customer renditions left by older flat-cache layouts.
+const task = scheduledTask(runDownloadJobCleanup, {
+  schedule: '7,27,47 * * * *',
+  initialDelay: 10_000,
+});
 function startDownloadJobCleanup() { task.start(); }
 const stopDownloadJobCleanup = () => task.stop();
 
@@ -25,6 +30,11 @@ async function runDownloadJobCleanup() {
     await downloadJobService.sweepExpired();
   } catch (err) {
     logger.error('Download job cleanup failed', { error: err.message });
+  }
+  try {
+    await require('./customerDownloadAsset').sweepExpiredCache();
+  } catch (err) {
+    logger.error('Customer download cache cleanup failed', { error: err.message });
   }
 }
 

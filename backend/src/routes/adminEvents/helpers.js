@@ -178,6 +178,8 @@ async function deleteEventCascade(eventId, adminContext, { deleteCloudCopies = t
 
   const downloadZipService = require('../../services/downloadZipService');
   await downloadZipService.prepareForEventDeletion(eventId, event.slug);
+  const customerDownloadAsset = require('../../services/customerDownloadAsset');
+  await customerDownloadAsset.prepareForEventDeletion(eventId);
   const deleteTransaction = db.transaction(async (trx) => {
     if (!deleteCloudCopies) {
       // The remote bytes are intentionally kept, but their project/photo rows
@@ -265,11 +267,26 @@ async function deleteEventCascade(eventId, adminContext, { deleteCloudCopies = t
     await deleteTransaction;
   } catch (error) {
     downloadZipService.releaseEventDeletion(eventId);
+    customerDownloadAsset.releaseEventDeletion(eventId);
     throw error;
   }
   // The row is now gone, so a late request that was holding an old event
   // object can no longer start a build. Release the temporary fence.
   downloadZipService.releaseEventDeletion(eventId);
+
+  // Customer download renditions are disposable cache files, but unlike the
+  // event's ZIP they used to live in one global directory with no project
+  // ownership, so deleting the event folder could never remove them. New
+  // entries are event-scoped; remove those now and sweep expired legacy files.
+  try {
+    await customerDownloadAsset.removeProjectCache(eventId);
+  } catch (cacheErr) {
+    logger.warn('Failed to delete customer download cache during cascade delete', {
+      eventId, error: cacheErr.message,
+    });
+  } finally {
+    customerDownloadAsset.releaseEventDeletion(eventId);
+  }
 
   // The intent is durable before the event row is deleted. Kick off a
   // best-effort cleanup without keeping the admin request open for Bridge;

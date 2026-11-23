@@ -8,9 +8,10 @@
  *   - in reference mode the originals are never copied. Those bytes are on the
  *     NAS. The reporter's tile read ~80 GB against 21 GB of real local usage.
  *   - duplicate rows counted the same file twice (#1162).
- *   - it ignored everything Picflow genuinely does write: thumbnails, previews,
- *     hero renditions, and the per-event download cache — an 11.8 GB
- *     `.download-cache/all.zip` sat outside the figure entirely.
+ *   - it ignored everything Picflow genuinely does write: thumbnails,
+ *     previews, hero renditions, and download caches. An 11.8 GB
+ *     `.download-cache/all.zip` was invisible in the old figure, and customer
+ *     download renditions were lumped into `other` instead of `downloadCache`.
  *
  * So the one number an admin reaches for when asking "am I running out of
  * disk" pointed away from the answer and omitted exactly the things filling
@@ -90,7 +91,9 @@ function nestedExternalRoot(storageRoot) {
  */
 function categorize(relPath) {
   const segments = relPath.split(path.sep);
-  if (segments.includes('.download-cache')) return 'downloadCache';
+  if (segments.includes('.download-cache')
+      || (segments[0] === 'cache' && segments[1] === 'customer-downloads'))
+    return 'downloadCache';
   switch (segments[0]) {
   case 'thumbnails': return 'thumbnails';
   case 'previews': return 'previews';
